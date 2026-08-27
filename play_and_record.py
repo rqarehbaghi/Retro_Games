@@ -48,7 +48,18 @@ def build_policy(model_path, action_space):
     return policy
 
 
-def play_agent_episode(game, state, model_path, max_steps, record_dir, render):
+def play_agent_episode(game, state, model_path, max_steps, record_dir, render,
+                       stop_on_death=True):
+    """Plays one episode and records it.
+
+    stop_on_death: end the recording the moment a life is lost. This game's
+    scenario does NOT terminate the episode on death, so without this the
+    emulator runs on past the death into the post-death world map / continue
+    screen -- which the agent was never trained on (training resets to the
+    level start on death, see train.py's end_on_life_loss), so it just stalls
+    there and the tail of every recording is a frozen menu. Keyed off `lives`
+    in info; if the integration doesn't expose it, this silently does nothing.
+    """
     # stable-retro defaults to render_mode='human', which pulls in pyglet/OpenGL
     # and opens a window on env.reset() -- that needs GLU + a display, which a
     # headless WSL2/EC2 box doesn't have. Only ask for 'human' when --render was
@@ -86,6 +97,7 @@ def play_agent_episode(game, state, model_path, max_steps, record_dir, render):
         steps = 0
         frames = 0
         total_reward = 0.0
+        prev_lives = None
         start = time.time()
 
         while True:
@@ -97,6 +109,13 @@ def play_agent_episode(game, state, model_path, max_steps, record_dir, render):
 
             if render:
                 env.render()
+
+            lives = info[0].get("lives")
+            if stop_on_death and lives is not None:
+                if prev_lives is not None and lives < prev_lives:
+                    print("Died -- ending the recording here (not following the game onto the world map).")
+                    break
+                prev_lives = lives
 
             if done[0] or frames >= max_steps:
                 break
@@ -111,6 +130,7 @@ def play_agent_episode(game, state, model_path, max_steps, record_dir, render):
 
         steps = 0
         total_reward = 0.0
+        prev_lives = info.get("lives")
         start = time.time()
 
         while True:
@@ -121,6 +141,13 @@ def play_agent_episode(game, state, model_path, max_steps, record_dir, render):
 
             if render:
                 env.render()
+
+            lives = info.get("lives")
+            if stop_on_death and lives is not None:
+                if prev_lives is not None and lives < prev_lives:
+                    print("Died -- ending the recording here (not following the game onto the world map).")
+                    break
+                prev_lives = lives
 
             if terminated or truncated or steps >= max_steps:
                 break
@@ -225,6 +252,8 @@ def main():
     parser.add_argument("--max-steps", type=int, default=10800, help="Safety cap in emulator frames for agent play (60fps NES -> 10800 = ~3 min). Ignored with --human -- that runs until you close the window. (default: %(default)s)")
     parser.add_argument("--record-dir", default="./recordings", help="Where .bk2/.mp4 files land (default: %(default)s)")
     parser.add_argument("--render", action="store_true", help="Also show a live window while an agent plays (slower). Ignored with --human, which always shows a window. Needs a display.")
+    parser.add_argument("--no-stop-on-death", dest="stop_on_death", action="store_false", help="By default an agent recording ends the moment a life is lost, since the game doesn't end the episode on death and the agent -- trained to reset at the level start -- just stalls on the post-death world map, leaving every clip with a frozen-menu tail. Pass this to keep recording past the death instead. Ignored with --human.")
+    parser.set_defaults(stop_on_death=True)
     parser.add_argument("--scale", type=int, default=4, help="Upscale factor for the final video, e.g. 4 turns ~256x224 into ~1024x896. Set to 1 to skip upscaling and keep the native-resolution file. (default: %(default)s)")
     parser.add_argument("--scale-mode", choices=["sharp", "smooth"], default="sharp", help="'sharp' = crisp nearest-neighbor (retro pixel look). 'smooth' = anti-aliased lanczos (softer, less blocky). (default: %(default)s)")
     args = parser.parse_args()
@@ -242,6 +271,7 @@ def main():
             max_steps=args.max_steps,
             record_dir=args.record_dir,
             render=args.render,
+            stop_on_death=args.stop_on_death,
         )
 
     bk2_path = find_new_bk2(args.record_dir, before)

@@ -49,7 +49,7 @@ def build_policy(model_path, action_space):
 
 
 def play_agent_episode(game, state, model_path, max_steps, record_dir, render,
-                       stop_on_death=True):
+                       stop_on_death=True, stochastic=False):
     """Plays one episode and records it.
 
     stop_on_death: end the recording the moment a life is lost. This game's
@@ -101,7 +101,13 @@ def play_agent_episode(game, state, model_path, max_steps, record_dir, render,
         start = time.time()
 
         while True:
-            action, _ = model.predict(obs, deterministic=True)
+            # deterministic=True is the model's single best guess each frame --
+            # but on a half-trained policy the argmax action can repeat forever
+            # (walk into the same pipe until the timer runs out). --stochastic
+            # samples from the policy's action distribution instead, which is
+            # what PPO itself does during training and usually looks far less
+            # broken on an undertrained checkpoint.
+            action, _ = model.predict(obs, deterministic=not stochastic)
             obs, reward, done, info = env.step(action)
             total_reward += reward[0]
             steps += 1
@@ -254,6 +260,7 @@ def main():
     parser.add_argument("--render", action="store_true", help="Also show a live window while an agent plays (slower). Ignored with --human, which always shows a window. Needs a display.")
     parser.add_argument("--no-stop-on-death", dest="stop_on_death", action="store_false", help="By default an agent recording ends the moment a life is lost, since the game doesn't end the episode on death and the agent -- trained to reset at the level start -- just stalls on the post-death world map, leaving every clip with a frozen-menu tail. Pass this to keep recording past the death instead. Ignored with --human.")
     parser.set_defaults(stop_on_death=True)
+    parser.add_argument("--stochastic", action="store_true", help="Sample actions from the policy's distribution instead of always taking its single best guess. On a half-trained model the deterministic argmax can lock into repeating one action (e.g. walking into a pipe until the timer kills it); sampling matches how PPO acted during training and usually produces a much more representative clip.")
     parser.add_argument("--scale", type=int, default=4, help="Upscale factor for the final video, e.g. 4 turns ~256x224 into ~1024x896. Set to 1 to skip upscaling and keep the native-resolution file. (default: %(default)s)")
     parser.add_argument("--scale-mode", choices=["sharp", "smooth"], default="sharp", help="'sharp' = crisp nearest-neighbor (retro pixel look). 'smooth' = anti-aliased lanczos (softer, less blocky). (default: %(default)s)")
     args = parser.parse_args()
@@ -272,6 +279,7 @@ def main():
             record_dir=args.record_dir,
             render=args.render,
             stop_on_death=args.stop_on_death,
+            stochastic=args.stochastic,
         )
 
     bk2_path = find_new_bk2(args.record_dir, before)

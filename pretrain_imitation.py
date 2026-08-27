@@ -91,11 +91,18 @@ def extract_demo_pairs(bk2_path, action_table):
     obs, info = env.reset()
     buttons = env.unwrapped.buttons
 
-    # Advance this every emulator frame so it always holds 4 CONSECUTIVE
-    # frames -- matching how VecFrameStack feeds the policy at inference time.
-    # (The previous version only appended one frame per button-run, so a
-    # training observation was 4 non-adjacent run-boundary frames, a different
-    # distribution from what the trained policy actually sees when playing.)
+    # One stack entry per DECISION (button-run), not per emulator frame.
+    # This must match what the deployed policy sees: at inference, WarpFrame
+    # sits above VariableHoldDiscretizer, so VecFrameStack's 4 slots each hold
+    # the observation at a decision boundary -- frames separated by each
+    # action's 4-20 frame hold, NOT 4 consecutive emulator frames. A human
+    # button-run is exactly one decision, so the stack advances once per run
+    # (with the run's final frame), and the observation labeled with a run's
+    # action is the stack as it stood when that run began -- the last 4
+    # decision-boundary frames the human had seen when they made the choice.
+    # (A per-emulator-frame stack here would train on ~4-frame-span stacks
+    # while the policy plays on ~16-80-frame-span stacks -- a distribution
+    # mismatch that quietly degrades the warm start.)
     frame_stack = deque(maxlen=4)
     frame_stack.extend([warp(obs)] * 4)
 
@@ -106,7 +113,11 @@ def extract_demo_pairs(bk2_path, action_table):
     current_run_len = 0
     run_start_stack = None
 
-    def close_run():
+    def close_run(end_frame):
+        """Close the run that just finished: emit its (obs, action) pair and
+        advance the per-decision frame stack with the run's final frame --
+        even for runs whose combo has no ACTION_TABLE match (time still
+        passed; the stack must advance regardless)."""
         nonlocal skipped
         if current_combo is None or current_run_len == 0:
             return
@@ -114,29 +125,30 @@ def extract_demo_pairs(bk2_path, action_table):
         if action_idx is None:
             skipped += 1
         else:
-            # run_start_stack is the observation the human was looking at when
-            # they BEGAN pressing this combo -> the state the decision was made
-            # on. Pair it with the action that decision produced.
             pairs.append((np.stack(run_start_stack, axis=0), action_idx))
+        frame_stack.append(end_frame)
 
+    last_obs = obs
     while movie.step():
         keys = [movie.get_key(i, 0) for i in range(env.num_buttons)]
         obs, reward, terminated, truncated, info = env.step(keys)
         combo = frozenset(b for b, pressed in zip(buttons, keys) if pressed)
 
         if combo != current_combo:
-            close_run()
+            # last_obs is the final frame of the run that just ended -- the
+            # screen the human was looking at when they chose the new combo.
+            close_run(warp(last_obs))
             current_combo = combo
             current_run_len = 0
-            run_start_stack = list(frame_stack)  # 4 frames up to (not incl.) this one
+            run_start_stack = list(frame_stack)
 
         current_run_len += 1
-        frame_stack.append(warp(obs))
+        last_obs = obs
 
         if terminated or truncated:
             break
 
-    close_run()
+    close_run(warp(last_obs))
     env.close()
 
     return pairs, skipped

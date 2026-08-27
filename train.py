@@ -61,7 +61,7 @@ from gymnasium import ObservationWrapper, Wrapper
 from gymnasium.spaces import Box, Discrete
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback
-from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecFrameStack
+from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecFrameStack, VecMonitor
 
 # Each entry is (button combo, hold_frames): how many raw emulator frames
 # the buttons stay pressed once this action is chosen. This is what makes
@@ -510,6 +510,11 @@ def main():
                      score_bonus=args.score_bonus, time_penalty=args.time_penalty)
             for _ in range(args.num_envs)
         ])
+    # Without a Monitor layer SB3 has no episode statistics at all --
+    # rollout/ep_rew_mean and ep_len_mean simply never appear in the console
+    # table, leaving no way to tell whether training is working. VecMonitor
+    # records per-episode shaped reward and length at the vec-env level.
+    env = VecMonitor(env)
     env = VecFrameStack(env, n_stack=4)
 
     if args.resume_from:

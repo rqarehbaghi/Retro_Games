@@ -280,9 +280,10 @@ class JumpIncentiveWrapper(Wrapper):
         return obs, reward, terminated, truncated, info
 
 
-def make_env(game, state, death_penalty, jump_bonus):
+def make_env(game, state, death_penalty, jump_bonus, render=False):
     def _init():
-        env = retro.make(game=game, state=state or retro.State.DEFAULT, render_mode="rgb_array")
+        render_mode = "human" if render else "rgb_array"
+        env = retro.make(game=game, state=state or retro.State.DEFAULT, render_mode=render_mode)
         # Order matters. The discretizer must be innermost so everything
         # above it operates at the level of one agent decision. JumpIncentive
         # must wrap the discretizer directly (it reads .jump_action_indices
@@ -371,6 +372,7 @@ def main():
     parser.add_argument("--checkpoint-iterations", type=int, nargs="+", default=None, help="Which cumulative iterations to snapshot as named milestones. Defaults to [1, <the iteration this run ends on>] if omitted.")
     parser.add_argument("--checkpoint-dir", default="./checkpoints", help="Parent folder -- a subfolder named after --game is created inside it. (default: %(default)s)")
     parser.add_argument("--autosave-every", type=int, default=25, help="Also save a rolling latest_iter_N.zip every N iterations, regardless of --checkpoint-iterations -- your crash/resume safety net. Set to 0 to disable. (default: %(default)s)")
+    parser.add_argument("--render", action="store_true", help="Open a live emulator window for ONE of the parallel envs so you can watch training happen. Needs a display (see README) and slows training down. To watch cleanly WITHOUT the slowdown, train headless and periodically play a checkpoint with: play_and_record.py --model <ckpt> --render")
     parser.add_argument("--resume-from", default=None, help="Path to a checkpoint to continue training from -- a previous PPO run, OR an imitation-pretrained checkpoint from pretrain_imitation.py. The cumulative iteration count is read from its filename.")
     parser.add_argument("--start-iteration", type=int, default=None, help="Override the cumulative iteration count when resuming, if the checkpoint filename doesn't encode it (e.g. you renamed it).")
     args = parser.parse_args()
@@ -412,9 +414,12 @@ def main():
         "not a promise -- actual time depends heavily on the game."
     )
 
+    # With --render, only the FIRST of the parallel envs opens a live window --
+    # rendering all of them would spawn --num-envs windows and slow everything to
+    # a crawl. The rest stay headless and keep training at full speed.
     env = SubprocVecEnv([
-        make_env(args.game, args.state, args.death_penalty, args.jump_bonus)
-        for _ in range(args.num_envs)
+        make_env(args.game, args.state, args.death_penalty, args.jump_bonus, render=(args.render and i == 0))
+        for i in range(args.num_envs)
     ])
     env = VecFrameStack(env, n_stack=4)
 

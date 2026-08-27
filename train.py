@@ -188,11 +188,21 @@ class RewardShaper(Wrapper):
     them (varies by game -- check yours if this seems to have no effect,
     see the README). Silently does nothing extra if it doesn't."""
 
-    def __init__(self, env, death_penalty=50.0, survival_tick=0.01, progress_scale=0.1):
+    def __init__(self, env, death_penalty=50.0, survival_tick=0.01, progress_scale=0.1,
+                 end_on_life_loss=True):
         super().__init__(env)
         self.death_penalty = death_penalty
         self.survival_tick = survival_tick
         self.progress_scale = progress_scale
+        # End the episode the moment a life is lost, so the vec-env auto-reset
+        # returns to the clean in-level default state instead of letting the
+        # emulator run on into the post-death world map / continue screen --
+        # an out-of-distribution screen with no shaped reward where the policy
+        # has no signal and just stalls. Requires the integration to expose
+        # `lives` in info; if it doesn't, this silently has no effect (see the
+        # info-keys check in the README) and the episode ends only when the
+        # game's own scenario says so.
+        self.end_on_life_loss = end_on_life_loss
         self.prev_x = None
         self.prev_lives = None
         self.prev_health = None
@@ -216,8 +226,10 @@ class RewardShaper(Wrapper):
             self.prev_x = current_x
 
         current_lives = info.get("lives")
-        if current_lives is not None and self.prev_lives is not None and current_lives < self.prev_lives:
-            reward -= self.death_penalty
+        lost_life = (
+            current_lives is not None and self.prev_lives is not None
+            and current_lives < self.prev_lives
+        )
         if current_lives is not None:
             self.prev_lives = current_lives
 
@@ -227,7 +239,17 @@ class RewardShaper(Wrapper):
         if current_health is not None:
             self.prev_health = current_health
 
+        if lost_life and self.end_on_life_loss:
+            terminated = True
+
+        # One death penalty per non-clear episode end. This now also covers a
+        # life-loss death (it just terminated the episode above), so we don't
+        # add a second, separate life-loss penalty and double-count.
         if (terminated or truncated) and not info.get("is_stage_clear", False):
+            reward -= self.death_penalty
+        elif lost_life:
+            # Life lost but end_on_life_loss is off and the game didn't end the
+            # episode: still penalize the death, play just continues.
             reward -= self.death_penalty
 
         return obs, reward, terminated, truncated, info
@@ -280,7 +302,7 @@ class JumpIncentiveWrapper(Wrapper):
         return obs, reward, terminated, truncated, info
 
 
-def make_env(game, state, death_penalty, jump_bonus, render=False):
+def make_env(game, state, death_penalty, jump_bonus, render=False, end_on_life_loss=True):
     def _init():
         render_mode = "human" if render else "rgb_array"
         env = retro.make(game=game, state=state or retro.State.DEFAULT, render_mode=render_mode)
@@ -292,7 +314,7 @@ def make_env(game, state, death_penalty, jump_bonus, render=False):
         # decision, not once per emulator frame (see RewardShaper docstring).
         env = VariableHoldDiscretizer(env, ACTION_TABLE)
         env = JumpIncentiveWrapper(env, jump_bonus=jump_bonus)
-        env = RewardShaper(env, death_penalty=death_penalty)
+        env = RewardShaper(env, death_penalty=death_penalty, end_on_life_loss=end_on_life_loss)
         env = WarpFrame(env)
         return env
     return _init
@@ -369,6 +391,8 @@ def main():
     parser.add_argument("--ent-coef", type=float, default=0.01, help="PPO entropy coefficient -- higher encourages more exploration. Lower this (e.g. 0.001) when fine-tuning a pretrained checkpoint. (default: %(default)s)")
     parser.add_argument("--death-penalty", type=float, default=50.0, help="Reward subtracted on death/episode-end without clearing the stage. (default: %(default)s)")
     parser.add_argument("--jump-bonus", type=float, default=0.2, help="Reward added for choosing a jump action. Set to 0 to disable jump-incentive shaping entirely. (default: %(default)s)")
+    parser.add_argument("--no-end-on-death", dest="end_on_life_loss", action="store_false", help="By default the episode ends the instant a life is lost, so training always restarts from the clean in-level state instead of wandering onto the post-death world map / continue screen. Pass this to disable that and let the game's own scenario decide when an episode ends. (Requires the integration to expose 'lives' in info either way.)")
+    parser.set_defaults(end_on_life_loss=True)
     parser.add_argument("--checkpoint-iterations", type=int, nargs="+", default=None, help="Which cumulative iterations to snapshot as named milestones. Defaults to [1, <the iteration this run ends on>] if omitted.")
     parser.add_argument("--checkpoint-dir", default="./checkpoints", help="Parent folder -- a subfolder named after --game is created inside it. (default: %(default)s)")
     parser.add_argument("--autosave-every", type=int, default=25, help="Also save a rolling latest_iter_N.zip every N iterations, regardless of --checkpoint-iterations -- your crash/resume safety net. Set to 0 to disable. (default: %(default)s)")
@@ -419,7 +443,7 @@ def main():
     print(f"Checkpoints folder: {checkpoint_dir}")
     print(f"Steps per iteration: {steps_per_iteration:,} ({args.n_steps} n_steps x {args.num_envs} envs)")
     print(f"This run: iterations {start_iteration + 1}-{end_iteration} ({total_timesteps:,} env steps)")
-    print(f"Reward shaping: death_penalty={args.death_penalty}, jump_bonus={args.jump_bonus}")
+    print(f"Reward shaping: death_penalty={args.death_penalty}, jump_bonus={args.jump_bonus}, end_on_life_loss={args.end_on_life_loss}")
     print(
         "Rough guide from earlier: simple games often reach solid play in "
         "hours, medium-complexity platformers in about a day, on a modern "
@@ -432,11 +456,13 @@ def main():
     # SubprocVecEnv for true parallelism across --num-envs processes.
     if args.render:
         env = DummyVecEnv([
-            make_env(args.game, args.state, args.death_penalty, args.jump_bonus, render=True)
+            make_env(args.game, args.state, args.death_penalty, args.jump_bonus,
+                     render=True, end_on_life_loss=args.end_on_life_loss)
         ])
     else:
         env = SubprocVecEnv([
-            make_env(args.game, args.state, args.death_penalty, args.jump_bonus)
+            make_env(args.game, args.state, args.death_penalty, args.jump_bonus,
+                     end_on_life_loss=args.end_on_life_loss)
             for _ in range(args.num_envs)
         ])
     env = VecFrameStack(env, n_stack=4)

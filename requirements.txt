@@ -1,0 +1,8 @@
+stable-retro
+gymnasium
+numpy
+stable-baselines3[extra]
+
+# Needed for train.py's frame preprocessing (grayscale/resize). Headless
+# build -- no GUI libs needed, matches the rest of this headless setup.
+opencv-python-headless

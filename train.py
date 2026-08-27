@@ -442,9 +442,24 @@ def main():
     env = VecFrameStack(env, n_stack=4)
 
     if args.resume_from:
-        model = PPO.load(args.resume_from, env=env)
-        model.learning_rate = args.lr
-        model.ent_coef = args.ent_coef
+        # PPO.load restores the checkpoint's OWN saved hyperparameters,
+        # including n_steps. The imitation checkpoint from pretrain_imitation.py
+        # is built with PPO's default n_steps=2048, so a plain load would make a
+        # resumed run collect 2048 steps/env per iteration instead of --n-steps
+        # -- ~16x the printed steps-per-iteration, so iteration 1 appears to
+        # hang for a very long time. custom_objects is applied BEFORE the
+        # rollout buffer and LR schedule are rebuilt, so overriding n_steps here
+        # actually resizes the buffer (and reschedules the LR) correctly, unlike
+        # assigning the attributes after load.
+        model = PPO.load(
+            args.resume_from,
+            env=env,
+            custom_objects={
+                "n_steps": args.n_steps,
+                "learning_rate": args.lr,
+                "ent_coef": args.ent_coef,
+            },
+        )
     else:
         model = PPO("CnnPolicy", env, n_steps=args.n_steps, learning_rate=args.lr, ent_coef=args.ent_coef, verbose=1)
 

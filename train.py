@@ -108,6 +108,25 @@ def jump_action_indices(action_table=ACTION_TABLE):
     return {i for i, (combo, _hold) in enumerate(action_table) if JUMP_BUTTON in combo}
 
 
+# Different stable-retro integrations expose horizontal position under
+# different info keys. SuperMarioBros3-Nes-v0, for instance, calls it 'hpos',
+# while others use 'x' or 'x_pos'. The progress-reward and stuck-detection
+# shaping is worthless if it reads the wrong name (it silently sees None and
+# does nothing), so look the value up across the known aliases.
+X_POS_KEYS = ("x", "x_pos", "hpos", "xpos", "x_position")
+
+
+def read_x(info):
+    """Horizontal position from `info`, across the key names different game
+    integrations use. Returns None if the integration exposes none of them --
+    in which case progress/stuck shaping simply can't apply (check your game's
+    info keys, see the README)."""
+    for key in X_POS_KEYS:
+        if key in info:
+            return info[key]
+    return None
+
+
 class VariableHoldDiscretizer(Wrapper):
     """Collapses stable-retro's full MultiBinary button space down to a
     small set of meaningful (combo, hold_frames) actions, and internally
@@ -209,7 +228,7 @@ class RewardShaper(Wrapper):
 
     def reset(self, **kwargs):
         obs, info = self.env.reset(**kwargs)
-        self.prev_x = info.get("x", info.get("x_pos"))
+        self.prev_x = read_x(info)
         self.prev_lives = info.get("lives")
         self.prev_health = info.get("health")
         return obs, info
@@ -219,7 +238,7 @@ class RewardShaper(Wrapper):
 
         reward += self.survival_tick
 
-        current_x = info.get("x", info.get("x_pos"))
+        current_x = read_x(info)
         if current_x is not None and self.prev_x is not None:
             reward += max(0, current_x - self.prev_x) * self.progress_scale
         if current_x is not None:
@@ -278,7 +297,7 @@ class JumpIncentiveWrapper(Wrapper):
 
     def reset(self, **kwargs):
         obs, info = self.env.reset(**kwargs)
-        self.prev_x = info.get("x", info.get("x_pos"))
+        self.prev_x = read_x(info)
         self.stalled_frames = 0
         return obs, info
 
@@ -288,7 +307,7 @@ class JumpIncentiveWrapper(Wrapper):
         if action in self.jump_action_indices:
             reward += self.jump_bonus
 
-        current_x = info.get("x", info.get("x_pos"))
+        current_x = read_x(info)
         if current_x is not None and self.prev_x is not None:
             if abs(current_x - self.prev_x) < 0.5:
                 self.stalled_frames += 1

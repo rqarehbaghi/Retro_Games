@@ -128,6 +128,7 @@ def process_frame(rgb_frame, target_size=84):
 def play_match(game, state, model_path, record_dir, scale=3, fps_cap=60, mode="versus"):
     os.makedirs(record_dir, exist_ok=True)
     before_bk2s = set(glob.glob(os.path.join(record_dir, "*.bk2")))
+    session_start = time.time()
 
     # 1. Initialize stable-retro with 2 players
     try:
@@ -253,10 +254,11 @@ def play_match(game, state, model_path, record_dir, scale=3, fps_cap=60, mode="v
     pygame.quit()
 
     # Find the recorded .bk2 file
-    candidates = glob.glob(os.path.join(record_dir, "*.bk2"))
-    new_files = [f for f in candidates if f not in before_bk2s]
-    # Only the replay THIS match produced -- don't fall back to a stale one.
-    bk2_path = max(new_files, key=os.path.getmtime) if new_files else None
+    # Same session-aware detection as play_and_record: stable-retro reuses
+    # -000000 numbering per process, so a rerun OVERWRITES the previous file
+    # and path-membership alone would miss it.
+    from play_and_record import find_new_bk2
+    bk2_path = find_new_bk2(record_dir, before_bk2s, started_at=session_start)
 
     if bk2_path:
         print(f"\\nMatch replay recorded to: {bk2_path}")

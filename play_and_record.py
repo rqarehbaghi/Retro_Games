@@ -278,15 +278,29 @@ def play_human_episode(game, state, record_dir):
         sys.exit(result.returncode)
 
 
-def find_new_bk2(record_dir, before):
-    """The .bk2 stable-retro just wrote is the one that wasn't there before.
+def find_new_bk2(record_dir, before, started_at=None):
+    """The .bk2 THIS session wrote.
 
-    Returns None if no NEW file appeared. We deliberately do NOT fall back to
-    the newest pre-existing .bk2: if this run failed to record, rendering a
-    stale replay from a previous session as if it were this one is worse than
-    reporting the failure."""
+    stable-retro numbers recordings from -000000 for every new env/process, so
+    a rerun into the same folder OVERWRITES the previous run's file instead of
+    creating a new name. That means path membership against `before` alone is
+    wrong: the fresh recording has a path that was already there, gets filtered
+    out as 'pre-existing', and the run reports no recording at all. So a file
+    counts as this session's if its path wasn't there before OR its mtime is
+    at/after `started_at` (i.e. it was rewritten during this session).
+
+    Still returns None when nothing was written or rewritten this session --
+    rendering a genuinely stale replay from an earlier session as if it were
+    this run is worse than reporting the failure."""
     candidates = glob.glob(os.path.join(record_dir, "*.bk2"))
-    new_files = [f for f in candidates if f not in before]
+
+    def is_this_session(f):
+        if f not in before:
+            return True
+        # 1s slack for coarse filesystem mtime resolution.
+        return started_at is not None and os.path.getmtime(f) >= started_at - 1.0
+
+    new_files = [f for f in candidates if is_this_session(f)]
     if not new_files:
         return None
     return max(new_files, key=os.path.getmtime)
@@ -354,6 +368,7 @@ def main():
 
     os.makedirs(args.record_dir, exist_ok=True)
     before = set(glob.glob(os.path.join(args.record_dir, "*.bk2")))
+    session_start = time.time()
 
     if args.human:
         play_human_episode(game=args.game, state=args.state, record_dir=args.record_dir)
@@ -369,7 +384,7 @@ def main():
             stochastic=args.stochastic,
         )
 
-    bk2_path = find_new_bk2(args.record_dir, before)
+    bk2_path = find_new_bk2(args.record_dir, before, started_at=session_start)
     if bk2_path is None:
         print("No .bk2 recording found -- something went wrong with recording.")
         sys.exit(1)

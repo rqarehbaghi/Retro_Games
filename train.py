@@ -61,7 +61,7 @@ from gymnasium import ObservationWrapper, Wrapper
 from gymnasium.spaces import Box, Discrete
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback
-from stable_baselines3.common.vec_env import SubprocVecEnv, VecFrameStack
+from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecFrameStack
 
 # Each entry is (button combo, hold_frames): how many raw emulator frames
 # the buttons stay pressed once this action is chosen. This is what makes
@@ -377,6 +377,19 @@ def main():
     parser.add_argument("--start-iteration", type=int, default=None, help="Override the cumulative iteration count when resuming, if the checkpoint filename doesn't encode it (e.g. you renamed it).")
     args = parser.parse_args()
 
+    # A live window means one env in THIS process (DummyVecEnv). SubprocVecEnv
+    # requires every env share a render mode, and running many "human" windows
+    # would be unwatchable and crawl -- so --render forces a single visible env.
+    # Drop --render to go back to full headless parallelism.
+    if args.render and args.num_envs > 1:
+        print(
+            f"--render is on: using a single live env instead of {args.num_envs} "
+            f"parallel ones (you can only sanely watch one window, and mixing "
+            f"render modes isn't allowed). Remove --render to train with "
+            f"{args.num_envs} envs at full speed."
+        )
+        args.num_envs = 1
+
     checkpoint_dir = os.path.join(args.checkpoint_dir, safe_name(args.game))
 
     start_iteration = 0
@@ -414,13 +427,18 @@ def main():
         "not a promise -- actual time depends heavily on the game."
     )
 
-    # With --render, only the FIRST of the parallel envs opens a live window --
-    # rendering all of them would spawn --num-envs windows and slow everything to
-    # a crawl. The rest stay headless and keep training at full speed.
-    env = SubprocVecEnv([
-        make_env(args.game, args.state, args.death_penalty, args.jump_bonus, render=(args.render and i == 0))
-        for i in range(args.num_envs)
-    ])
+    # --render runs the single env in-process (DummyVecEnv) so its window lives
+    # in the main process and stays responsive. Headless training keeps using
+    # SubprocVecEnv for true parallelism across --num-envs processes.
+    if args.render:
+        env = DummyVecEnv([
+            make_env(args.game, args.state, args.death_penalty, args.jump_bonus, render=True)
+        ])
+    else:
+        env = SubprocVecEnv([
+            make_env(args.game, args.state, args.death_penalty, args.jump_bonus)
+            for _ in range(args.num_envs)
+        ])
     env = VecFrameStack(env, n_stack=4)
 
     if args.resume_from:

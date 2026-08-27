@@ -47,7 +47,7 @@ import torch.nn.functional as F
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv, VecFrameStack
 
-from train import ACTION_TABLE, WarpFrame, jump_action_indices
+from train import ACTION_TABLE, VariableHoldDiscretizer, WarpFrame, jump_action_indices
 
 
 def warp(frame, size=84):
@@ -187,7 +187,16 @@ def main():
     # Build a real PPO model with the exact same architecture train.py
     # will use, so the saved checkpoint is a drop-in --resume-from for it.
     def make_dummy_env():
+        # Must reproduce train.py's action space EXACTLY. VariableHoldDiscretizer
+        # collapses the raw MultiBinary buttons into Discrete(len(ACTION_TABLE)).
+        # Without it, PPO builds a MultiBinary/Bernoulli policy whose log_prob
+        # expects a per-button vector, so evaluate_actions() on our discrete
+        # action indices fails with a shape mismatch ([B] vs [B, n_buttons]).
+        # It also guarantees the saved checkpoint is a drop-in --resume-from for
+        # train.py. Reward-shaping wrappers are intentionally omitted here: they
+        # change only the reward, not the observation/action space.
         env = retro.make(game=args.game, state=retro.State.DEFAULT, render_mode="rgb_array")
+        env = VariableHoldDiscretizer(env, ACTION_TABLE)
         env = WarpFrame(env)
         return env
 

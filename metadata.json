@@ -1,0 +1,6 @@
+{
+  "name": "Retro AI Arena & Video Studio",
+  "description": "2-Player Human vs. AI retro gaming pipeline, match generator, checkpoint analyzer, and automated viral progress reel studio for stable-retro.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

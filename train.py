@@ -207,12 +207,21 @@ class RewardShaper(Wrapper):
     them (varies by game -- check yours if this seems to have no effect,
     see the README). Silently does nothing extra if it doesn't."""
 
-    def __init__(self, env, death_penalty=50.0, survival_tick=0.01, progress_scale=0.1,
-                 end_on_life_loss=True):
+    def __init__(self, env, death_penalty=50.0, survival_tick=0.0, progress_scale=0.1,
+                 score_scale=0.01, time_penalty=0.0, end_on_life_loss=True):
         super().__init__(env)
         self.death_penalty = death_penalty
         self.survival_tick = survival_tick
         self.progress_scale = progress_scale
+        # Reward for the game's own score going up: coins, power-ups, stomped
+        # enemies, AND the leftover-time bonus paid out when a level is cleared
+        # all raise `score`. So this single term rewards "collect points" and,
+        # because finishing faster leaves more time to convert to score, also
+        # rewards finishing quickly. `time_penalty` is a small per-decision cost
+        # that discourages dawdling before the agent can reliably clear levels.
+        self.score_scale = score_scale
+        self.time_penalty = time_penalty
+        self.prev_score = None
         # End the episode the moment a life is lost, so the vec-env auto-reset
         # returns to the clean in-level default state instead of letting the
         # emulator run on into the post-death world map / continue screen --
@@ -231,18 +240,29 @@ class RewardShaper(Wrapper):
         self.prev_x = read_x(info)
         self.prev_lives = info.get("lives")
         self.prev_health = info.get("health")
+        self.prev_score = info.get("score")
         return obs, info
 
     def step(self, action):
         obs, reward, terminated, truncated, info = self.env.step(action)
 
         reward += self.survival_tick
+        reward -= self.time_penalty
 
         current_x = read_x(info)
         if current_x is not None and self.prev_x is not None:
             reward += max(0, current_x - self.prev_x) * self.progress_scale
         if current_x is not None:
             self.prev_x = current_x
+
+        # Points: coins, power-ups, stomped enemies, and the level-clear time
+        # bonus all raise score. Clamp to >=0 so a score reset on death/new
+        # level isn't read as a negative reward.
+        current_score = info.get("score")
+        if current_score is not None and self.prev_score is not None:
+            reward += max(0, current_score - self.prev_score) * self.score_scale
+        if current_score is not None:
+            self.prev_score = current_score
 
         current_lives = info.get("lives")
         lost_life = (
@@ -321,7 +341,8 @@ class JumpIncentiveWrapper(Wrapper):
         return obs, reward, terminated, truncated, info
 
 
-def make_env(game, state, death_penalty, jump_bonus, render=False, end_on_life_loss=True):
+def make_env(game, state, death_penalty, jump_bonus, render=False, end_on_life_loss=True,
+             score_bonus=0.01, time_penalty=0.0):
     def _init():
         render_mode = "human" if render else "rgb_array"
         env = retro.make(game=game, state=state or retro.State.DEFAULT, render_mode=render_mode)
@@ -333,7 +354,8 @@ def make_env(game, state, death_penalty, jump_bonus, render=False, end_on_life_l
         # decision, not once per emulator frame (see RewardShaper docstring).
         env = VariableHoldDiscretizer(env, ACTION_TABLE)
         env = JumpIncentiveWrapper(env, jump_bonus=jump_bonus)
-        env = RewardShaper(env, death_penalty=death_penalty, end_on_life_loss=end_on_life_loss)
+        env = RewardShaper(env, death_penalty=death_penalty, end_on_life_loss=end_on_life_loss,
+                           score_scale=score_bonus, time_penalty=time_penalty)
         env = WarpFrame(env)
         return env
     return _init
@@ -410,6 +432,8 @@ def main():
     parser.add_argument("--ent-coef", type=float, default=0.01, help="PPO entropy coefficient -- higher encourages more exploration. Lower this (e.g. 0.001) when fine-tuning a pretrained checkpoint. (default: %(default)s)")
     parser.add_argument("--death-penalty", type=float, default=50.0, help="Reward subtracted on death/episode-end without clearing the stage. (default: %(default)s)")
     parser.add_argument("--jump-bonus", type=float, default=0.2, help="Reward added for choosing a jump action. Set to 0 to disable jump-incentive shaping entirely. (default: %(default)s)")
+    parser.add_argument("--score-bonus", type=float, default=0.01, help="Reward per point the game's own score goes up -- coins, power-ups, stomped enemies, and the level-clear leftover-time bonus. This is what makes the agent value points AND finishing fast (faster clear = more time converted to score). Raise it to prioritize collecting/points, lower toward 0 for a pure speedrun-right agent. Tune to your game's score magnitudes. (default: %(default)s)")
+    parser.add_argument("--time-penalty", type=float, default=0.0, help="Small reward subtracted every decision, to discourage dawdling and push toward finishing the level sooner. Start around 0.01-0.05 if the agent loiters; too high and it rushes into danger. (default: %(default)s)")
     parser.add_argument("--no-end-on-death", dest="end_on_life_loss", action="store_false", help="By default the episode ends the instant a life is lost, so training always restarts from the clean in-level state instead of wandering onto the post-death world map / continue screen. Pass this to disable that and let the game's own scenario decide when an episode ends. (Requires the integration to expose 'lives' in info either way.)")
     parser.set_defaults(end_on_life_loss=True)
     parser.add_argument("--checkpoint-iterations", type=int, nargs="+", default=None, help="Which cumulative iterations to snapshot as named milestones. Defaults to [1, <the iteration this run ends on>] if omitted.")
@@ -462,7 +486,7 @@ def main():
     print(f"Checkpoints folder: {checkpoint_dir}")
     print(f"Steps per iteration: {steps_per_iteration:,} ({args.n_steps} n_steps x {args.num_envs} envs)")
     print(f"This run: iterations {start_iteration + 1}-{end_iteration} ({total_timesteps:,} env steps)")
-    print(f"Reward shaping: death_penalty={args.death_penalty}, jump_bonus={args.jump_bonus}, end_on_life_loss={args.end_on_life_loss}")
+    print(f"Reward shaping: death_penalty={args.death_penalty}, jump_bonus={args.jump_bonus}, score_bonus={args.score_bonus}, time_penalty={args.time_penalty}, end_on_life_loss={args.end_on_life_loss}")
     print(
         "Rough guide from earlier: simple games often reach solid play in "
         "hours, medium-complexity platformers in about a day, on a modern "
@@ -476,12 +500,14 @@ def main():
     if args.render:
         env = DummyVecEnv([
             make_env(args.game, args.state, args.death_penalty, args.jump_bonus,
-                     render=True, end_on_life_loss=args.end_on_life_loss)
+                     render=True, end_on_life_loss=args.end_on_life_loss,
+                     score_bonus=args.score_bonus, time_penalty=args.time_penalty)
         ])
     else:
         env = SubprocVecEnv([
             make_env(args.game, args.state, args.death_penalty, args.jump_bonus,
-                     end_on_life_loss=args.end_on_life_loss)
+                     end_on_life_loss=args.end_on_life_loss,
+                     score_bonus=args.score_bonus, time_penalty=args.time_penalty)
             for _ in range(args.num_envs)
         ])
     env = VecFrameStack(env, n_stack=4)

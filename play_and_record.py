@@ -31,6 +31,7 @@ import subprocess
 import sys
 import time
 
+import numpy as np
 import stable_retro as retro
 
 
@@ -49,16 +50,30 @@ def build_policy(model_path, action_space):
 
 
 def play_agent_episode(game, state, model_path, max_steps, record_dir, render,
-                       stop_on_death=True, stochastic=False):
-    """Plays one episode and records it.
+                       on_death="continue", stochastic=False):
+    """Plays one session and records it.
 
-    stop_on_death: end the recording the moment a life is lost. This game's
-    scenario does NOT terminate the episode on death, so without this the
-    emulator runs on past the death into the post-death world map / continue
-    screen -- which the agent was never trained on (training resets to the
-    level start on death, see train.py's end_on_life_loss), so it just stalls
-    there and the tail of every recording is a frozen menu. Keyed off `lives`
-    in info; if the integration doesn't expose it, this silently does nothing.
+    on_death="continue" (default): the game plays itself through deaths. The
+    trained policy has never seen the world map / menu screens (training
+    resets straight to the level on death, see train.py's end_on_life_loss)
+    and there is no reward signal on them, so the policy alone would stall
+    there forever. Instead, whenever we detect we're NOT in a level -- a life
+    was just lost, or the game timer has been frozen for a while (in a level
+    the timer always ticks, even standing still; on maps/menus it's frozen) --
+    a small scripted navigator takes over: it waits out the transition, then
+    taps A (enter the level node) with an occasional RIGHT (advance to the
+    next node after a clear). The moment the timer starts ticking again, the
+    policy takes back over. The script goes through the same discrete action
+    space as the policy, so the .bk2 stays one seamless recording. The session
+    still ends at game over (lives run out -- ACTION_TABLE has no START, and
+    auto-mashing a continue screen would loop forever) or at --max-steps.
+
+    on_death="stop": end the recording at the first lost life -- one clean
+    single-life clip.
+
+    Detection keys off `lives` and `time` in info; if the integration exposes
+    neither, it all silently does nothing and the run ends at the scenario's
+    own end or --max-steps.
     """
     # stable-retro defaults to render_mode='human', which pulls in pyglet/OpenGL
     # and opens a window on env.reset() -- that needs GLU + a display, which a
@@ -93,21 +108,55 @@ def play_agent_episode(game, state, model_path, max_steps, record_dir, render,
 
         model = PPO.load(model_path)
 
+        # ACTION_TABLE indices the map navigator needs. Looked up by combo, not
+        # hardcoded, so table edits don't silently break this.
+        def table_index(combo_set):
+            for i, (combo, _hold) in enumerate(ACTION_TABLE):
+                if set(combo) == combo_set:
+                    return i
+            return None
+
+        noop_idx = table_index(set())
+        a_idx = table_index({"A"})
+        right_idx = table_index({"RIGHT"})
+        can_navigate = None not in (noop_idx, a_idx, right_idx)
+        if on_death == "continue" and not can_navigate:
+            print("ACTION_TABLE lacks a plain no-op/A/RIGHT entry -- map navigation unavailable, falling back to stopping on death.")
+            on_death = "stop"
+
+        # The navigator: a dozen no-op decisions to let the death/clear
+        # transition play out, then a repeating tap pattern -- mostly A (enter
+        # the level node you're standing on), with an occasional RIGHT (walk to
+        # the next node after a level clear).
+        MAP_WAIT = 12
+        MAP_PATTERN = [a_idx, noop_idx, noop_idx, a_idx, noop_idx, noop_idx, right_idx, noop_idx]
+        MAP_GIVE_UP = 400  # decisions before concluding we can't get off this screen
+        TIMER_FROZEN_LIMIT = 50  # in-level the timer ALWAYS ticks; frozen this long = map/menu
+
         obs = env.reset()
         steps = 0
         frames = 0
         total_reward = 0.0
         prev_lives = None
+        prev_time = None
+        frozen_count = 0
+        map_pos = None   # None = policy is playing; an int = navigator decision counter
+        map_ticks = 0    # timer ticks seen while navigating (2 = we're back in a level)
         start = time.time()
 
         while True:
-            # deterministic=True is the model's single best guess each frame --
-            # but on a half-trained policy the argmax action can repeat forever
-            # (walk into the same pipe until the timer runs out). --stochastic
-            # samples from the policy's action distribution instead, which is
-            # what PPO itself does during training and usually looks far less
-            # broken on an undertrained checkpoint.
-            action, _ = model.predict(obs, deterministic=not stochastic)
+            if map_pos is not None:
+                idx = noop_idx if map_pos < MAP_WAIT else MAP_PATTERN[(map_pos - MAP_WAIT) % len(MAP_PATTERN)]
+                action = np.array([idx])
+                map_pos += 1
+            else:
+                # deterministic=True is the model's single best guess each
+                # decision -- but on a half-trained policy the argmax action can
+                # repeat forever (walk into the same pipe until the timer runs
+                # out). --stochastic samples from the policy's distribution
+                # instead, which is what PPO itself did during training and
+                # usually looks far less broken on an undertrained checkpoint.
+                action, _ = model.predict(obs, deterministic=not stochastic)
             obs, reward, done, info = env.step(action)
             total_reward += reward[0]
             steps += 1
@@ -116,12 +165,45 @@ def play_agent_episode(game, state, model_path, max_steps, record_dir, render,
             if render:
                 env.render()
 
+            game_time = info[0].get("time")
             lives = info[0].get("lives")
-            if stop_on_death and lives is not None:
+
+            # --- in-level vs map/menu bookkeeping (timer ticks only in-level) ---
+            if game_time is not None and prev_time is not None:
+                if game_time == prev_time:
+                    frozen_count += 1
+                else:
+                    frozen_count = 0
+                    if map_pos is not None and map_pos > MAP_WAIT and game_time < prev_time:
+                        map_ticks += 1
+                        if map_ticks >= 2:
+                            print("Timer is ticking again -- back in a level, policy takes over.")
+                            map_pos = None
+            prev_time = game_time
+
+            # --- death handling ---
+            if lives is not None:
                 if prev_lives is not None and lives < prev_lives:
-                    print("Died -- ending the recording here (not following the game onto the world map).")
-                    break
+                    if lives <= 0:
+                        print("Out of lives -- game over, ending the recording.")
+                        break
+                    if on_death == "stop":
+                        print("Died -- ending the recording here (--on-death stop).")
+                        break
+                    print("Died -- scripted navigator taking over to re-enter the level.")
+                    map_pos, map_ticks, frozen_count = 0, 0, 0
                 prev_lives = lives
+
+            # --- frozen-timer fallback: catches level-clear -> map and other
+            # non-level screens where no life was lost ---
+            if (map_pos is None and on_death == "continue"
+                    and frozen_count >= TIMER_FROZEN_LIMIT):
+                print("Game timer frozen -- looks like a map/menu screen, scripted navigator taking over.")
+                map_pos, map_ticks, frozen_count = 0, 0, 0
+
+            if map_pos is not None and map_pos > MAP_GIVE_UP:
+                print(f"Navigator couldn't reach a level within {MAP_GIVE_UP} decisions -- ending the recording.")
+                break
 
             if done[0] or frames >= max_steps:
                 break
@@ -149,10 +231,16 @@ def play_agent_episode(game, state, model_path, max_steps, record_dir, render,
                 env.render()
 
             lives = info.get("lives")
-            if stop_on_death and lives is not None:
+            if lives is not None:
                 if prev_lives is not None and lives < prev_lives:
-                    print("Died -- ending the recording here (not following the game onto the world map).")
-                    break
+                    if lives <= 0:
+                        print("Out of lives -- game over, ending the recording.")
+                        break
+                    if on_death == "stop":
+                        print("Died -- ending the recording here (--on-death stop).")
+                        break
+                    # Random play just keeps mashing -- it'll blunder through
+                    # the map on its own, no scripted navigation needed.
                 prev_lives = lives
 
             if terminated or truncated or steps >= max_steps:
@@ -258,8 +346,7 @@ def main():
     parser.add_argument("--max-steps", type=int, default=10800, help="Safety cap in emulator frames for agent play (60fps NES -> 10800 = ~3 min). Ignored with --human -- that runs until you close the window. (default: %(default)s)")
     parser.add_argument("--record-dir", default="./recordings", help="Where .bk2/.mp4 files land (default: %(default)s)")
     parser.add_argument("--render", action="store_true", help="Also show a live window while an agent plays (slower). Ignored with --human, which always shows a window. Needs a display.")
-    parser.add_argument("--no-stop-on-death", dest="stop_on_death", action="store_false", help="By default an agent recording ends the moment a life is lost, since the game doesn't end the episode on death and the agent -- trained to reset at the level start -- just stalls on the post-death world map, leaving every clip with a frozen-menu tail. Pass this to keep recording past the death instead. Ignored with --human.")
-    parser.set_defaults(stop_on_death=True)
+    parser.add_argument("--on-death", choices=["continue", "stop"], default="continue", help="'continue' (default): the game plays itself through deaths -- a scripted navigator handles the world map (waits out the transition, taps A / occasional RIGHT to re-enter a level) and hands control back to the policy the moment the in-level timer starts ticking again; the run ends at game over or --max-steps. 'stop': end the recording at the first lost life for one clean single-life clip. Ignored with --human.")
     parser.add_argument("--stochastic", action="store_true", help="Sample actions from the policy's distribution instead of always taking its single best guess. On a half-trained model the deterministic argmax can lock into repeating one action (e.g. walking into a pipe until the timer kills it); sampling matches how PPO acted during training and usually produces a much more representative clip.")
     parser.add_argument("--scale", type=int, default=4, help="Upscale factor for the final video, e.g. 4 turns ~256x224 into ~1024x896. Set to 1 to skip upscaling and keep the native-resolution file. (default: %(default)s)")
     parser.add_argument("--scale-mode", choices=["sharp", "smooth"], default="sharp", help="'sharp' = crisp nearest-neighbor (retro pixel look). 'smooth' = anti-aliased lanczos (softer, less blocky). (default: %(default)s)")
@@ -278,7 +365,7 @@ def main():
             max_steps=args.max_steps,
             record_dir=args.record_dir,
             render=args.render,
-            stop_on_death=args.stop_on_death,
+            on_death=args.on_death,
             stochastic=args.stochastic,
         )
 

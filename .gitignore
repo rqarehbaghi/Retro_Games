@@ -6,3 +6,18 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+
+# Training / recording outputs
+checkpoints/
+recordings/
+human_demos/
+progress_reels/
+*.bk2
+*.mp4
+*.zip

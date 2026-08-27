@@ -51,6 +51,18 @@ import stable_retro as retro
 from gymnasium.spaces import Box, Discrete
 from stable_baselines3 import PPO
 
+# The AI (Player 2) is a model trained by train.py, which ALWAYS uses
+# train.py's ACTION_TABLE as its discrete action space. The model therefore
+# only ever emits indices into ACTION_TABLE -- decoding those indices through
+# any other table (an earlier version used a separate 20-entry FIGHTER_COMBOS
+# list) makes the agent press semantically unrelated buttons. We import the
+# real table and derive the same (index -> button combo) mapping the model
+# was trained with. The per-action hold length is irrelevant here because we
+# re-query the policy every frame.
+from train import ACTION_TABLE
+
+AI_COMBOS = [combo for combo, _hold in ACTION_TABLE]
+
 # Key mappings for Player 1 Keyboard -> Retro Button Names
 KEY_MAPPING = {
     # Movement
@@ -83,31 +95,6 @@ KEY_MAPPING = {
     pygame.K_SPACE: "MODE",
 }
 
-# Standard Platformer / Fighter Discrete Action combinations for AI
-FIGHTER_COMBOS = [
-    [],                      # 0: Idle
-    ["RIGHT"],               # 1: Walk forward
-    ["LEFT"],                # 2: Walk back / block
-    ["UP"],                  # 3: Jump up
-    ["UP", "RIGHT"],         # 4: Jump forward
-    ["UP", "LEFT"],          # 5: Jump back
-    ["DOWN"],                # 6: Crouch / block low
-    ["DOWN", "RIGHT"],       # 7: Offensive crouch
-    ["A"],                   # 8: Light punch / Low attack
-    ["B"],                   # 9: Light kick / High attack
-    ["C"],                   # 10: Heavy / Special attack
-    ["X"],                   # 11: High punch
-    ["Y"],                   # 12: Block
-    ["Z"],                   # 13: Uppercut / Special
-    ["DOWN", "A"],           # 14: Low sweep
-    ["DOWN", "B"],           # 15: Low kick / slide
-    ["RIGHT", "A"],          # 16: Forward jab / projectile
-    ["RIGHT", "B"],          # 17: Forward roundhouse
-    ["UP", "A"],             # 18: Air attack 1
-    ["UP", "B"],             # 19: Air attack 2
-]
-
-
 def make_p1_action(env_buttons, pressed_keys):
     """Converts currently pressed pygame keys into a boolean array matching env.buttons."""
     action = np.array([False] * len(env_buttons), dtype=bool)
@@ -118,10 +105,13 @@ def make_p1_action(env_buttons, pressed_keys):
     return action
 
 
-def discretize_ai_action(action_idx, env_buttons, combos=FIGHTER_COMBOS):
-    """Converts a single discrete index from PPO into a boolean array for Player 2."""
+def discretize_ai_action(action_idx, env_buttons, combos=AI_COMBOS):
+    """Converts a single discrete index from PPO into a boolean array for
+    Player 2. `combos` MUST be the same action table the model was trained
+    with (train.py's ACTION_TABLE, exposed here as AI_COMBOS) -- otherwise
+    the index the policy chose maps to the wrong buttons."""
     action = np.array([False] * len(env_buttons), dtype=bool)
-    if action_idx < len(combos):
+    if 0 <= action_idx < len(combos):
         for button_name in combos[action_idx]:
             if button_name in env_buttons:
                 action[env_buttons.index(button_name)] = True
@@ -213,7 +203,10 @@ def play_match(game, state, model_path, record_dir, scale=3, fps_cap=60, mode="v
             p2_discrete_action, _ = model.predict(stacked_obs, deterministic=True)
             p2_action = discretize_ai_action(int(p2_discrete_action), buttons)
         else:
-            p2_action = np.random.choice([True, False], size=len(buttons), p=[0.2, 0.8])
+            # No trained model: pick a random *valid* action from the same
+            # table (a coherent combo), not independent per-button coin flips
+            # -- the latter produces impossible inputs like LEFT+RIGHT.
+            p2_action = discretize_ai_action(np.random.randint(len(AI_COMBOS)), buttons)
 
         # Combine actions based on player count
         if num_players == 2:
@@ -249,6 +242,12 @@ def play_match(game, state, model_path, record_dir, scale=3, fps_cap=60, mode="v
             print(f"Round finished at step {step_count}! Resetting...")
             obs, info = env.reset()
             step_count = 0
+            # Refill the AI's frame-stack from the fresh round so it doesn't
+            # keep reacting to stale frames from the round that just ended.
+            reset_frame = process_frame(obs)
+            frame_stack.clear()
+            for _ in range(4):
+                frame_stack.append(reset_frame)
 
     env.close()
     pygame.quit()
@@ -256,7 +255,8 @@ def play_match(game, state, model_path, record_dir, scale=3, fps_cap=60, mode="v
     # Find the recorded .bk2 file
     candidates = glob.glob(os.path.join(record_dir, "*.bk2"))
     new_files = [f for f in candidates if f not in before_bk2s]
-    bk2_path = max(new_files, key=os.path.getmtime) if new_files else (max(candidates, key=os.path.getmtime) if candidates else None)
+    # Only the replay THIS match produced -- don't fall back to a stale one.
+    bk2_path = max(new_files, key=os.path.getmtime) if new_files else None
 
     if bk2_path:
         print(f"\\nMatch replay recorded to: {bk2_path}")

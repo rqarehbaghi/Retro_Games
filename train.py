@@ -168,13 +168,21 @@ class WarpFrame(ObservationWrapper):
 
 
 class RewardShaper(Wrapper):
-    """Adds a death penalty, a tiny per-frame survival reward, and a
+    """Adds a death penalty, a tiny per-decision survival reward, and a
     reward for horizontal progress, on top of whatever the game's own
     stable-retro integration already provides. Without this, PPO on a
     sparse/naive reward commonly converges on exactly the failure mode of
     'walk right until something kills you' -- that's the cheapest way to
     rack up a little reward before dying, and nothing here was pushing
     back against it.
+
+    Placement matters: this wraps the discretizer (see make_env), so one
+    step() here == one agent DECISION, not one emulator frame. That keeps
+    the flat survival_tick worth the same regardless of an action's hold
+    length -- wrapping the raw env instead would multiply the tick by the
+    hold length (4-20 frames), silently biasing the policy toward
+    longer-hold actions just for existing. The horizontal-progress reward
+    telescopes to the true per-decision x-delta either way.
 
     Reads x/lives/health from `info` if the game's integration exposes
     them (varies by game -- check yours if this seems to have no effect,
@@ -275,9 +283,15 @@ class JumpIncentiveWrapper(Wrapper):
 def make_env(game, state, death_penalty, jump_bonus):
     def _init():
         env = retro.make(game=game, state=state or retro.State.DEFAULT, render_mode="rgb_array")
-        env = RewardShaper(env, death_penalty=death_penalty)
+        # Order matters. The discretizer must be innermost so everything
+        # above it operates at the level of one agent decision. JumpIncentive
+        # must wrap the discretizer directly (it reads .jump_action_indices
+        # and receives the discrete action). RewardShaper then sits on top so
+        # its survival tick / progress / death shaping is applied once per
+        # decision, not once per emulator frame (see RewardShaper docstring).
         env = VariableHoldDiscretizer(env, ACTION_TABLE)
         env = JumpIncentiveWrapper(env, jump_bonus=jump_bonus)
+        env = RewardShaper(env, death_penalty=death_penalty)
         env = WarpFrame(env)
         return env
     return _init

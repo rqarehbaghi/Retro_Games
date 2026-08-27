@@ -17,12 +17,23 @@ class JumpIncentiveWrapper(Wrapper):
     2. Detects when horizontal progress is blocked (stuck on obstacle/pipe)
        and rewards triggering a jump to overcome the blockage.
     3. Rewards vertical airtime while moving horizontally.
+
+    IMPORTANT -- must wrap a discretizer (e.g. train.py's
+    VariableHoldDiscretizer) that exposes `jump_action_indices` and whose
+    action space is Discrete. The `action` this wrapper receives is then the
+    DISCRETE index the policy chose, not a raw MultiBinary button array.
+    (An earlier version tried to index `action[jump_idx]` as if `action` were
+    already a button array -- at this point in the wrapper stack it is still
+    the discrete index, so that check silently never matched and the jump
+    bonus was dead. This is the same fix applied in train.py.)
     """
-    def __init__(self, env, jump_bonus=0.2, stuck_penalty=0.05, jump_button="A"):
+    def __init__(self, env, jump_bonus=0.2, stuck_penalty=0.05):
         super().__init__(env)
         self.jump_bonus = jump_bonus
         self.stuck_penalty = stuck_penalty
-        self.jump_button = jump_button
+        # The set of discrete action indices that press the jump button,
+        # provided by the discretizer this wrapper sits on top of.
+        self.jump_action_indices = getattr(env, "jump_action_indices", set())
         self.prev_x = 0
         self.stalled_frames = 0
         self.prev_y = None
@@ -36,18 +47,13 @@ class JumpIncentiveWrapper(Wrapper):
 
     def step(self, action):
         obs, reward, term, trunc, info = self.env.step(action)
-        
+
         current_x = info.get("x", info.get("x_pos", None))
         current_y = info.get("y", info.get("y_pos", None))
 
-        # Check if the agent is actively pressing the jump button or airborne
-        buttons = getattr(self.env.unwrapped, "buttons", [])
-        jump_idx = buttons.index(self.jump_button) if self.jump_button in buttons else None
-
-        # Detect forward jump attempt
-        if jump_idx is not None and isinstance(action, (list, np.ndarray)) and len(action) > jump_idx:
-            if action[jump_idx]:
-                reward += self.jump_bonus
+        # Detect a jump attempt directly from the discrete action index.
+        if action in self.jump_action_indices:
+            reward += self.jump_bonus
 
         # Detect if horizontal progress is stalled (wall/obstacle collision)
         if current_x is not None and self.prev_x is not None:

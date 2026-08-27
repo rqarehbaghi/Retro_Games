@@ -158,12 +158,17 @@ def play_human_episode(game, state, record_dir):
 
 
 def find_new_bk2(record_dir, before):
-    """The .bk2 stable-retro just wrote is the one that wasn't there before."""
+    """The .bk2 stable-retro just wrote is the one that wasn't there before.
+
+    Returns None if no NEW file appeared. We deliberately do NOT fall back to
+    the newest pre-existing .bk2: if this run failed to record, rendering a
+    stale replay from a previous session as if it were this one is worse than
+    reporting the failure."""
     candidates = glob.glob(os.path.join(record_dir, "*.bk2"))
     new_files = [f for f in candidates if f not in before]
-    if new_files:
-        return max(new_files, key=os.path.getmtime)
-    return max(candidates, key=os.path.getmtime) if candidates else None
+    if not new_files:
+        return None
+    return max(new_files, key=os.path.getmtime)
 
 
 def render_to_mp4(bk2_path):

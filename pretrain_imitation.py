@@ -91,6 +91,11 @@ def extract_demo_pairs(bk2_path, action_table):
     obs, info = env.reset()
     buttons = env.unwrapped.buttons
 
+    # Advance this every emulator frame so it always holds 4 CONSECUTIVE
+    # frames -- matching how VecFrameStack feeds the policy at inference time.
+    # (The previous version only appended one frame per button-run, so a
+    # training observation was 4 non-adjacent run-boundary frames, a different
+    # distribution from what the trained policy actually sees when playing.)
     frame_stack = deque(maxlen=4)
     frame_stack.extend([warp(obs)] * 4)
 
@@ -101,7 +106,7 @@ def extract_demo_pairs(bk2_path, action_table):
     current_run_len = 0
     run_start_stack = None
 
-    def close_run(last_frame):
+    def close_run():
         nonlocal skipped
         if current_combo is None or current_run_len == 0:
             return
@@ -109,28 +114,29 @@ def extract_demo_pairs(bk2_path, action_table):
         if action_idx is None:
             skipped += 1
         else:
+            # run_start_stack is the observation the human was looking at when
+            # they BEGAN pressing this combo -> the state the decision was made
+            # on. Pair it with the action that decision produced.
             pairs.append((np.stack(run_start_stack, axis=0), action_idx))
-        frame_stack.append(last_frame)
 
-    last_obs = obs
     while movie.step():
         keys = [movie.get_key(i, 0) for i in range(env.num_buttons)]
         obs, reward, terminated, truncated, info = env.step(keys)
         combo = frozenset(b for b, pressed in zip(buttons, keys) if pressed)
 
         if combo != current_combo:
-            close_run(warp(last_obs))
+            close_run()
             current_combo = combo
             current_run_len = 0
-            run_start_stack = list(frame_stack)
+            run_start_stack = list(frame_stack)  # 4 frames up to (not incl.) this one
 
         current_run_len += 1
-        last_obs = obs
+        frame_stack.append(warp(obs))
 
         if terminated or truncated:
             break
 
-    close_run(warp(last_obs))
+    close_run()
     env.close()
 
     return pairs, skipped

@@ -287,7 +287,14 @@ class RewardShaper(Wrapper):
         if current_score is not None:
             self.prev_score = current_score
 
-        # Power-up state (small -> big -> fire -> raccoon ...). Only available
+        # Power-up tier. Verified empirically for SuperMarioBros3-Nes-v0 at
+        # RAM 0x00ED: 0=small, 1=big (mushroom), 2=fire, 3=raccoon -- i.e.
+        # monotonically ordered by power, which is what makes the linear
+        # `delta * power_bonus` below correct in both directions (each tier
+        # gained pays the same, and a hit dropping raccoon->small costs 3x a
+        # big->small hit). If you port this to a game whose numbering is NOT
+        # ordered by desirability, replace the linear term with an explicit
+        # per-tier value table. Only available
         # if the integration publishes it; see find_ram_variable.py for
         # locating the RAM address and the README for adding it to the
         # integration's data.json as `powerup`. Rewarded on INCREASE and

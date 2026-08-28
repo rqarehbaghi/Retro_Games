@@ -209,7 +209,7 @@ class RewardShaper(Wrapper):
 
     def __init__(self, env, death_penalty=50.0, survival_tick=0.0, progress_scale=0.1,
                  score_scale=0.01, time_penalty=0.0, life_bonus=25.0,
-                 power_bonus=0.0, end_on_life_loss=True):
+                 power_bonus=0.0, powerup_address=None, end_on_life_loss=True):
         super().__init__(env)
         self.death_penalty = death_penalty
         self.survival_tick = survival_tick
@@ -224,6 +224,13 @@ class RewardShaper(Wrapper):
         self.time_penalty = time_penalty
         self.life_bonus = life_bonus
         self.power_bonus = power_bonus
+        # Optional RAM index to read the power-up tier from directly.
+        # Integrations often don't publish power state in `info` (this one
+        # doesn't), and adding it to the integration's data.json means
+        # editing site-packages -- lost on any venv rebuild and outside
+        # version control. Reading the byte here keeps it in the repo.
+        # Locate the address for your game with find_ram_variable.py.
+        self.powerup_address = powerup_address
         self.prev_score = None
         self.prev_power = None
         # End the episode the moment a life is lost, so the vec-env auto-reset
@@ -239,13 +246,24 @@ class RewardShaper(Wrapper):
         self.prev_lives = None
         self.prev_health = None
 
+    def _read_power(self, info):
+        """Power-up tier: from the configured RAM address if one was given,
+        else from `info` if the integration happens to publish it. Returns
+        None if neither is available, which disables power shaping."""
+        if self.powerup_address is not None:
+            try:
+                return int(self.env.unwrapped.get_ram()[self.powerup_address])
+            except Exception:
+                return None
+        return info.get("powerup", info.get("power", info.get("status")))
+
     def reset(self, **kwargs):
         obs, info = self.env.reset(**kwargs)
         self.prev_x = read_x(info)
         self.prev_lives = info.get("lives")
         self.prev_health = info.get("health")
         self.prev_score = info.get("score")
-        self.prev_power = info.get("powerup", info.get("power", info.get("status")))
+        self.prev_power = self._read_power(info)
         return obs, info
 
     def step(self, action):
@@ -275,7 +293,7 @@ class RewardShaper(Wrapper):
         # integration's data.json as `powerup`. Rewarded on INCREASE and
         # penalized on decrease (taking a hit and shrinking is a real loss),
         # scaled by how many tiers changed.
-        current_power = info.get("powerup", info.get("power", info.get("status")))
+        current_power = self._read_power(info)
         if current_power is not None and self.prev_power is not None and self.power_bonus:
             delta = int(current_power) - int(self.prev_power)
             if delta > 0:
@@ -373,7 +391,7 @@ class JumpIncentiveWrapper(Wrapper):
 
 
 def make_env(game, state, death_penalty, jump_bonus, render=False, end_on_life_loss=True,
-             score_bonus=0.01, time_penalty=0.0, life_bonus=25.0, power_bonus=0.0):
+             score_bonus=0.01, time_penalty=0.0, life_bonus=25.0, power_bonus=0.0, powerup_address=None):
     def _init():
         render_mode = "human" if render else "rgb_array"
         env = retro.make(game=game, state=state or retro.State.DEFAULT, render_mode=render_mode)
@@ -387,7 +405,8 @@ def make_env(game, state, death_penalty, jump_bonus, render=False, end_on_life_l
         env = JumpIncentiveWrapper(env, jump_bonus=jump_bonus)
         env = RewardShaper(env, death_penalty=death_penalty, end_on_life_loss=end_on_life_loss,
                            score_scale=score_bonus, time_penalty=time_penalty,
-                           life_bonus=life_bonus, power_bonus=power_bonus)
+                           life_bonus=life_bonus, power_bonus=power_bonus,
+                           powerup_address=powerup_address)
         env = WarpFrame(env)
         return env
     return _init
@@ -467,6 +486,7 @@ def main():
     parser.add_argument("--score-bonus", type=float, default=0.01, help="Reward per point the game's own score goes up -- coins, power-ups, stomped enemies, and the level-clear leftover-time bonus. This is what makes the agent value points AND finishing fast (faster clear = more time converted to score). Raise it to prioritize collecting/points, lower toward 0 for a pure speedrun-right agent. Tune to your game's score magnitudes. (default: %(default)s)")
     parser.add_argument("--life-bonus", type=float, default=25.0, help="Reward for each extra life GAINED -- 1-Up mushrooms, the 100-coin threshold, score milestones. An extra life is worth far more strategically than the few points a 1-Up adds to score, so --score-bonus alone undervalues it. Set to 0 to disable. Note regular power-up mushrooms can't be rewarded directly (this integration exposes no power-state variable), only via their score. (default: %(default)s)")
     parser.add_argument("--power-bonus", type=float, default=0.0, help="Reward per power-up TIER gained (small->big->fire->raccoon...), and the same penalty per tier lost when you take a hit. Requires the integration to publish the power state in info as `powerup` -- it is NOT exposed by default. Use find_ram_variable.py to locate the RAM address in your own recording, add it to the integration data.json, then set this (try 10-20). Left at 0 it does nothing. (default: %(default)s)")
+    parser.add_argument("--powerup-address", type=lambda v: int(v, 0), default=None, help="RAM index holding the power-up tier, read directly so the integration does not need to publish it (SuperMarioBros3-Nes-v0: 0x00ED, found with find_ram_variable.py -- verify for your own game/version). Accepts hex (0x00ED) or decimal. Needed for --power-bonus to do anything here. (default: %(default)s)")
     parser.add_argument("--time-penalty", type=float, default=0.0, help="Small reward subtracted every decision, to discourage dawdling and push toward finishing the level sooner. Start around 0.01-0.05 if the agent loiters; too high and it rushes into danger. (default: %(default)s)")
     parser.add_argument("--no-end-on-death", dest="end_on_life_loss", action="store_false", help="By default the episode ends the instant a life is lost, so training always restarts from the clean in-level state instead of wandering onto the post-death world map / continue screen. Pass this to disable that and let the game's own scenario decide when an episode ends. (Requires the integration to expose 'lives' in info either way.)")
     parser.set_defaults(end_on_life_loss=True)
@@ -520,7 +540,7 @@ def main():
     print(f"Checkpoints folder: {checkpoint_dir}")
     print(f"Steps per iteration: {steps_per_iteration:,} ({args.n_steps} n_steps x {args.num_envs} envs)")
     print(f"This run: iterations {start_iteration + 1}-{end_iteration} ({total_timesteps:,} env steps)")
-    print(f"Reward shaping: death_penalty={args.death_penalty}, jump_bonus={args.jump_bonus}, score_bonus={args.score_bonus}, life_bonus={args.life_bonus}, power_bonus={args.power_bonus}, time_penalty={args.time_penalty}, end_on_life_loss={args.end_on_life_loss}")
+    print(f"Reward shaping: death_penalty={args.death_penalty}, jump_bonus={args.jump_bonus}, score_bonus={args.score_bonus}, life_bonus={args.life_bonus}, power_bonus={args.power_bonus}, powerup_address={args.powerup_address}, time_penalty={args.time_penalty}, end_on_life_loss={args.end_on_life_loss}")
     print(
         "Rough guide from earlier: simple games often reach solid play in "
         "hours, medium-complexity platformers in about a day, on a modern "
@@ -536,14 +556,16 @@ def main():
             make_env(args.game, args.state, args.death_penalty, args.jump_bonus,
                      render=True, end_on_life_loss=args.end_on_life_loss,
                      score_bonus=args.score_bonus, time_penalty=args.time_penalty,
-                     life_bonus=args.life_bonus, power_bonus=args.power_bonus)
+                     life_bonus=args.life_bonus, power_bonus=args.power_bonus,
+                     powerup_address=args.powerup_address)
         ])
     else:
         env = SubprocVecEnv([
             make_env(args.game, args.state, args.death_penalty, args.jump_bonus,
                      end_on_life_loss=args.end_on_life_loss,
                      score_bonus=args.score_bonus, time_penalty=args.time_penalty,
-                     life_bonus=args.life_bonus, power_bonus=args.power_bonus)
+                     life_bonus=args.life_bonus, power_bonus=args.power_bonus,
+                     powerup_address=args.powerup_address)
             for _ in range(args.num_envs)
         ])
     # Without a Monitor layer SB3 has no episode statistics at all --

@@ -53,26 +53,22 @@ def play_agent_episode(game, state, model_path, max_steps, record_dir, render,
                        on_death="continue", stochastic=False, max_attempts=5):
     """Plays one session and records it.
 
-    on_death="restart" (default): the game plays itself continuously -- on each
-    death the level restarts and the agent tries again, up to max_attempts.
-    Every attempt is its own .bk2 (stable-retro starts a new movie per reset)
-    and main() joins the rendered clips into one video.
+    on_death="continue" (default): the game plays itself through deaths. The
+    policy never saw the world map during training (training resets straight to
+    the level) and there's no reward signal there, so a scripted navigator
+    handles it: it waits out the death animation, then WALKS the map -- tap
+    RIGHT, tap UP, press A -- and hands control back the moment a level loads.
+    That sequence was measured with probe_after_death.py, not guessed: from the
+    post-death state it takes time 43 -> 299 and hpos -> 24, the level start.
+    Movement must be TAPPED (one node per tap); holding a direction, or pressing
+    A while between nodes, does nothing, which is why simpler patterns failed.
 
-    Why not navigate the world map? Measured with probe_after_death.py: from
-    this integration's save state -- which begins INSIDE World 1-1 -- no input
-    at all (A, B, START, SELECT, any direction, held or tapped) gets the game
-    back into a level after a death. The post-death map was never properly
-    entered from a mid-level save state and simply isn't navigable, so no
-    scripted button pattern can work. Restarting the level is the honest
-    alternative. Progressing through actual levels needs per-level save states,
-    not map navigation.
+    on_death="restart": skip the map entirely -- reset to the level start on
+    each death, up to max_attempts. Each attempt is its own .bk2 (stable-retro
+    starts a new movie per reset) and main() joins the clips into one video.
 
     on_death="stop": end at the first lost life -- one clean single-life clip,
     the best way to judge what the policy alone actually does.
-
-    on_death="continue": the old scripted-navigator path. Retained for games
-    whose save state does start on a navigable map; it gives up after a bounded
-    number of decisions rather than hanging.
 
     Detection keys off `lives` and `time` in info; if the integration exposes
     neither, it all silently does nothing and the run ends at the scenario's
@@ -122,18 +118,39 @@ def play_agent_episode(game, state, model_path, max_steps, record_dir, render,
         noop_idx = table_index(set())
         a_idx = table_index({"A"})
         right_idx = table_index({"RIGHT"})
-        can_navigate = None not in (noop_idx, a_idx, right_idx)
+        up_idx = table_index({"UP"})
+        can_navigate = None not in (noop_idx, a_idx, right_idx, up_idx)
         if on_death == "continue" and not can_navigate:
-            print("ACTION_TABLE lacks a plain no-op/A/RIGHT entry -- map navigation unavailable, falling back to stopping on death.")
-            on_death = "stop"
+            print("ACTION_TABLE lacks a plain no-op/A/RIGHT/UP entry -- map navigation unavailable, falling back to restarting the level on death.")
+            on_death = "restart"
 
-        # The navigator: a dozen no-op decisions to let the death/clear
-        # transition play out, then a repeating tap pattern -- mostly A (enter
-        # the level node you're standing on), with an occasional RIGHT (walk to
-        # the next node after a level clear).
-        MAP_WAIT = 12
-        MAP_PATTERN = [a_idx, noop_idx, noop_idx, a_idx, noop_idx, noop_idx, right_idx, noop_idx]
-        MAP_GIVE_UP = 800  # decisions before concluding we can't get off this screen
+        # World-map navigation, measured with probe_after_death.py rather than
+        # guessed. On the SMB3 map you WALK the path first -- each tap moves
+        # Mario one node -- and only then press A to enter the level you are
+        # standing on. Holding a button, or pressing A while between nodes,
+        # does nothing, which is why earlier single-button patterns all failed.
+        # Confirmed working from the post-death state: tap RIGHT, tap UP, then
+        # press A (time jumps 43 -> 299 and hpos -> 24, i.e. the level start).
+        # Variations are cycled because how far Mario must walk depends on
+        # where on the map he died.
+        def taps(idx, n_taps, hold=3, gap=3):
+            """A press/release pattern: map movement registers per tap, so a
+            held direction will not step node to node."""
+            out = []
+            for _ in range(n_taps):
+                out += [idx] * hold + [noop_idx] * gap
+            return out
+
+        MAP_VARIATIONS = [
+            taps(right_idx, 1) + taps(up_idx, 1) + taps(a_idx, 1) + [noop_idx] * 12,
+            taps(right_idx, 2) + taps(up_idx, 1) + taps(a_idx, 1) + [noop_idx] * 12,
+            taps(right_idx, 1) + taps(a_idx, 1) + [noop_idx] * 12,
+            taps(up_idx, 1) + taps(a_idx, 1) + [noop_idx] * 12,
+            taps(right_idx, 3) + taps(up_idx, 1) + taps(a_idx, 1) + [noop_idx] * 12,
+        ]
+        MAP_WAIT = 30  # decisions of no-op first, so the death animation finishes
+        MAP_SCRIPT = [i for variation in MAP_VARIATIONS for i in variation]
+        MAP_GIVE_UP = MAP_WAIT + len(MAP_SCRIPT) * 3  # a few passes, then give up
         # The in-level timer is the map/menu tell, but it is NOT reliable on its
         # own: at level start the timer hasn't begun counting yet, and a level
         # tick spans many decisions, so a naive "frozen for N decisions" check
@@ -158,7 +175,7 @@ def play_agent_episode(game, state, model_path, max_steps, record_dir, render,
 
         while True:
             if map_pos is not None:
-                idx = noop_idx if map_pos < MAP_WAIT else MAP_PATTERN[(map_pos - MAP_WAIT) % len(MAP_PATTERN)]
+                idx = noop_idx if map_pos < MAP_WAIT else MAP_SCRIPT[(map_pos - MAP_WAIT) % len(MAP_SCRIPT)]
                 action = np.array([idx])
                 map_pos += 1
             else:
@@ -189,11 +206,16 @@ def play_agent_episode(game, state, model_path, max_steps, record_dir, render,
                     if game_time < prev_time:
                         # A countdown tick: we are definitely inside a level.
                         seen_tick = True
-                        if map_pos is not None and map_pos > MAP_WAIT:
-                            map_ticks += 1
-                            if map_ticks >= 2:
-                                print("Timer is ticking again -- back in a level, policy takes over.")
-                                map_pos, map_ticks, frozen_count = None, 0, 0
+                    elif game_time > prev_time and map_pos is not None:
+                        # The timer RESET UPWARD -- a fresh level just loaded.
+                        # This, not a countdown tick, is the level-entry signal:
+                        # on entry the timer jumps back to its full value and
+                        # hasn't started counting yet. Watching only for a tick
+                        # DOWN is exactly what made an earlier probe score a
+                        # working RIGHT/UP/A sequence as a failure.
+                        print(f"Level loaded (timer reset to {game_time}) -- policy takes over.")
+                        map_pos, map_ticks, frozen_count = None, 0, 0
+                        seen_tick = False
             prev_time = game_time
 
             # --- death handling ---
@@ -421,7 +443,7 @@ def main():
     parser.add_argument("--max-steps", type=int, default=10800, help="Safety cap in emulator frames for agent play (60fps NES -> 10800 = ~3 min). Ignored with --human -- that runs until you close the window. (default: %(default)s)")
     parser.add_argument("--record-dir", default="./recordings", help="Where .bk2/.mp4 files land (default: %(default)s)")
     parser.add_argument("--render", action="store_true", help="Also show a live window while an agent plays (slower). Ignored with --human, which always shows a window. Needs a display.")
-    parser.add_argument("--on-death", choices=["restart", "stop", "continue"], default="restart", help="'restart' (default): play continuously -- restart the level on each death, up to --max-attempts, and join every attempt into one video. 'stop': end at the first death for a single clean clip of what the policy alone does. 'continue': try to navigate the world map with a scripted button pattern -- measured NOT to work from SuperMarioBros3-Nes-v0's mid-level save state (see probe_after_death.py), kept for games that start on a navigable map. Ignored with --human.")
+    parser.add_argument("--on-death", choices=["continue", "restart", "stop"], default="continue", help="'continue' (default): play continuously through deaths -- a scripted navigator walks the world map (tap RIGHT, tap UP, press A: the sequence measured to work by probe_after_death.py) and hands control back to the policy the moment a level loads. 'restart': skip the map and reset to the level start on each death, up to --max-attempts, joining every attempt into one video. 'stop': end at the first death for a single clean clip of what the policy alone does. Ignored with --human.")
     parser.add_argument("--max-attempts", type=int, default=5, help="With --on-death restart, how many level attempts to record before stopping. Each attempt becomes one clip and they are joined into a single video. (default: %(default)s)")
     parser.add_argument("--stochastic", action="store_true", help="Sample actions from the policy's distribution instead of always taking its single best guess. On a half-trained model the deterministic argmax can lock into repeating one action (e.g. walking into a pipe until the timer kills it); sampling matches how PPO acted during training and usually produces a much more representative clip.")
     parser.add_argument("--scale", type=int, default=4, help="Upscale factor for the final video, e.g. 4 turns ~256x224 into ~1024x896. Set to 1 to skip upscaling and keep the native-resolution file. (default: %(default)s)")

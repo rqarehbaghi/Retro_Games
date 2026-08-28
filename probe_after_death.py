@@ -81,8 +81,17 @@ def tap(env, buttons, button, times_to_tap, press=10, release=12):
 
 
 def timer_ticked(times):
+    """Did we get back into a level? Two signals, and the SECOND one matters
+    most: the timer counting DOWN means we're in a level, but on level ENTRY
+    the timer first jumps back UP to its full value and hasn't started counting
+    yet. An earlier version checked only for a decrease and therefore scored a
+    genuinely working RIGHT/UP/A sequence as a failure -- the giveaway was
+    time going 43 -> 299 with hpos -> 24 (the level start) while the row still
+    printed '-'. Treat a significant upward reset as entry too."""
     vals = [t for t in times if t is not None]
-    return any(b < a for a, b in zip(vals, vals[1:]))
+    ticked_down = any(b < a for a, b in zip(vals, vals[1:]))
+    reset_up = any(b > a for a, b in zip(vals, vals[1:]))
+    return ticked_down or reset_up
 
 
 def save_shot(env, path):

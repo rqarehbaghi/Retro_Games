@@ -39,7 +39,9 @@ def main():
     p.add_argument("--state", default=None)
     p.add_argument("--frames", type=int, default=900, help="Frames to run right (default: %(default)s)")
     p.add_argument("--every", type=int, default=30, help="Sample interval (default: %(default)s)")
+    p.add_argument("--watch", default=None, help="Comma-separated RAM addresses to print alongside hpos, e.g. 0x053C,0x053D. Use this to CONFIRM a candidate really is level progress: it should climb steadily while hpos flatlines.")
     args = p.parse_args()
+    watch = [int(a, 0) for a in args.watch.split(",")] if args.watch else []
 
     env = retro.make(game=args.game, state=args.state or retro.State.DEFAULT, render_mode="rgb_array")
     buttons = env.unwrapped.buttons
@@ -47,7 +49,10 @@ def main():
 
     _obs, info = env.reset()
     print(f"Holding RIGHT+B for {args.frames} frames.\n")
-    print(f"  {'FRAME':>6}  {'hpos':>6}  {'time':>5}  {'score':>6}")
+    header = f"  {'FRAME':>6}  {'hpos':>6}  {'time':>5}  {'score':>6}"
+    for a in watch:
+        header += f"  {('0x%04X' % a):>8}"
+    print(header)
 
     rams = []
     hpos_series = []
@@ -56,7 +61,10 @@ def main():
         rams.append(env.get_ram().copy())
         hpos_series.append(info.get("hpos"))
         if frame % args.every == 0:
-            print(f"  {frame:6d}  {str(info.get('hpos')):>6}  {str(info.get('time')):>5}  {str(info.get('score')):>6}")
+            line = f"  {frame:6d}  {str(info.get('hpos')):>6}  {str(info.get('time')):>5}  {str(info.get('score')):>6}"
+            for a in watch:
+                line += f"  {int(rams[-1][a]):>8}"
+            print(line)
         if terminated or truncated:
             print(f"  (episode ended at frame {frame})")
             break

@@ -127,6 +127,35 @@ def read_x(info):
     return None
 
 
+def make_progress_reader(env, addr_lo, addr_hi=None):
+    """A function(info) -> horizontal progress.
+
+    Prefers a direct RAM read when addr_lo is given, because the info-published
+    value is often the WRONG quantity: SuperMarioBros3-Nes-v0's `hpos` is
+    Mario's ON-SCREEN x, which climbs to the scroll threshold (144) and then
+    flatlines while the level scrolls -- so rewarding it pays for the first
+    ~1.5s of a level and nothing after, no matter how far the agent actually
+    gets. A true level-position counter keeps rising the whole level.
+
+    A single byte wraps at 255, which a long level will exceed several times,
+    so pass addr_hi for the high byte of a 16-bit little-endian position and
+    the two are combined. Falls back to info when no address is configured.
+    """
+    if addr_lo is None:
+        return read_x
+
+    def reader(info):
+        try:
+            ram = env.unwrapped.get_ram()
+            value = int(ram[addr_lo])
+            if addr_hi is not None:
+                value += int(ram[addr_hi]) << 8
+            return value
+        except Exception:
+            return None
+    return reader
+
+
 class VariableHoldDiscretizer(Wrapper):
     """Collapses stable-retro's full MultiBinary button space down to a
     small set of meaningful (combo, hold_frames) actions, and internally
@@ -210,7 +239,8 @@ class RewardShaper(Wrapper):
     def __init__(self, env, death_penalty=50.0, survival_tick=0.0, progress_scale=0.1,
                  score_scale=0.01, time_penalty=0.0, life_bonus=25.0,
                  power_bonus=0.0, powerup_address=None, x_jump_limit=64,
-                 backtrack_scale=0.5, end_on_life_loss=True):
+                 backtrack_scale=0.5, progress_address=None, progress_address_high=None,
+                 end_on_life_loss=True):
         super().__init__(env)
         self.death_penalty = death_penalty
         self.survival_tick = survival_tick
@@ -249,6 +279,7 @@ class RewardShaper(Wrapper):
         self.max_travelled = 0.0
         self.x_jump_limit = x_jump_limit
         self.backtrack_scale = backtrack_scale
+        self._read_x = make_progress_reader(env, progress_address, progress_address_high)
         self.prev_x = None
         self.prev_lives = None
         self.prev_health = None
@@ -266,7 +297,7 @@ class RewardShaper(Wrapper):
 
     def reset(self, **kwargs):
         obs, info = self.env.reset(**kwargs)
-        self.prev_x = read_x(info)
+        self.prev_x = self._read_x(info)
         self.travelled = 0.0
         self.max_travelled = 0.0
         self.prev_lives = info.get("lives")
@@ -291,7 +322,7 @@ class RewardShaper(Wrapper):
         # Rewarding only NEW furthest-progress removes the exploit at the source:
         # re-covering old ground pays nothing, so the only way to earn is to get
         # somewhere new.
-        current_x = read_x(info)
+        current_x = self._read_x(info)
         if current_x is not None and self.prev_x is not None:
             delta = current_x - self.prev_x
             # Ignore teleports: screen wraps and level/room transitions show up
@@ -394,8 +425,10 @@ class JumpIncentiveWrapper(Wrapper):
     an obstacle without jumping -- targets the specific 'runs into a pipe
     and just keeps walking into it' failure mode."""
 
-    def __init__(self, discretizer_env, jump_bonus=0.2, stuck_penalty=0.05, stuck_frames=8):
+    def __init__(self, discretizer_env, jump_bonus=0.2, stuck_penalty=0.05, stuck_frames=8,
+                 progress_address=None, progress_address_high=None):
         super().__init__(discretizer_env)
+        self._read_x = make_progress_reader(discretizer_env, progress_address, progress_address_high)
         self.jump_action_indices = discretizer_env.jump_action_indices
         self.jump_bonus = jump_bonus
         self.stuck_penalty = stuck_penalty
@@ -405,7 +438,7 @@ class JumpIncentiveWrapper(Wrapper):
 
     def reset(self, **kwargs):
         obs, info = self.env.reset(**kwargs)
-        self.prev_x = read_x(info)
+        self.prev_x = self._read_x(info)
         self.stalled_frames = 0
         return obs, info
 
@@ -415,7 +448,7 @@ class JumpIncentiveWrapper(Wrapper):
         if action in self.jump_action_indices:
             reward += self.jump_bonus
 
-        current_x = read_x(info)
+        current_x = self._read_x(info)
         if current_x is not None and self.prev_x is not None:
             if abs(current_x - self.prev_x) < 0.5:
                 self.stalled_frames += 1
@@ -430,7 +463,8 @@ class JumpIncentiveWrapper(Wrapper):
 
 
 def make_env(game, state, death_penalty, jump_bonus, render=False, end_on_life_loss=True,
-             score_bonus=0.01, time_penalty=0.0, life_bonus=25.0, power_bonus=0.0, powerup_address=None):
+             score_bonus=0.01, time_penalty=0.0, life_bonus=25.0, power_bonus=0.0, powerup_address=None,
+             progress_address=None, progress_address_high=None):
     def _init():
         render_mode = "human" if render else "rgb_array"
         env = retro.make(game=game, state=state or retro.State.DEFAULT, render_mode=render_mode)
@@ -441,11 +475,15 @@ def make_env(game, state, death_penalty, jump_bonus, render=False, end_on_life_l
         # its survival tick / progress / death shaping is applied once per
         # decision, not once per emulator frame (see RewardShaper docstring).
         env = VariableHoldDiscretizer(env, ACTION_TABLE)
-        env = JumpIncentiveWrapper(env, jump_bonus=jump_bonus)
+        env = JumpIncentiveWrapper(env, jump_bonus=jump_bonus,
+                                   progress_address=progress_address,
+                                   progress_address_high=progress_address_high)
         env = RewardShaper(env, death_penalty=death_penalty, end_on_life_loss=end_on_life_loss,
                            score_scale=score_bonus, time_penalty=time_penalty,
                            life_bonus=life_bonus, power_bonus=power_bonus,
-                           powerup_address=powerup_address)
+                           powerup_address=powerup_address,
+                           progress_address=progress_address,
+                           progress_address_high=progress_address_high)
         env = WarpFrame(env)
         return env
     return _init
@@ -525,6 +563,8 @@ def main():
     parser.add_argument("--score-bonus", type=float, default=0.01, help="Reward per point the game's own score goes up -- coins, power-ups, stomped enemies, and the level-clear leftover-time bonus. This is what makes the agent value points AND finishing fast (faster clear = more time converted to score). Raise it to prioritize collecting/points, lower toward 0 for a pure speedrun-right agent. Tune to your game's score magnitudes. (default: %(default)s)")
     parser.add_argument("--life-bonus", type=float, default=25.0, help="Reward for each extra life GAINED -- 1-Up mushrooms, the 100-coin threshold, score milestones. An extra life is worth far more strategically than the few points a 1-Up adds to score, so --score-bonus alone undervalues it. Set to 0 to disable. Note regular power-up mushrooms can't be rewarded directly (this integration exposes no power-state variable), only via their score. (default: %(default)s)")
     parser.add_argument("--power-bonus", type=float, default=0.0, help="Reward per power-up TIER gained (small->big->fire->raccoon...), and the same penalty per tier lost when you take a hit. Requires the integration to publish the power state in info as `powerup` -- it is NOT exposed by default. Use find_ram_variable.py to locate the RAM address in your own recording, add it to the integration data.json, then set this (try 10-20). Left at 0 it does nothing. (default: %(default)s)")
+    parser.add_argument("--progress-address", type=lambda v: int(v, 0), default=None, help="RAM index of the real level-position counter, read directly. STRONGLY recommended: SuperMarioBros3-Nes-v0's published `hpos` is Mario's ON-SCREEN x, which flatlines at the scroll threshold (144), so rewarding it pays only for the first ~1.5s of a level. Candidate found with inspect_progress.py: 0x053C. Hex or decimal. (default: %(default)s)")
+    parser.add_argument("--progress-address-high", type=lambda v: int(v, 0), default=None, help="High byte of a 16-bit little-endian level position (e.g. 0x053D), combined with --progress-address. A single byte wraps at 255, which a full level exceeds several times. (default: %(default)s)")
     parser.add_argument("--powerup-address", type=lambda v: int(v, 0), default=None, help="RAM index holding the power-up tier, read directly so the integration does not need to publish it (SuperMarioBros3-Nes-v0: 0x00ED, found with find_ram_variable.py -- verify for your own game/version). Accepts hex (0x00ED) or decimal. Needed for --power-bonus to do anything here. (default: %(default)s)")
     parser.add_argument("--time-penalty", type=float, default=0.0, help="Small reward subtracted every decision, to discourage dawdling and push toward finishing the level sooner. Start around 0.01-0.05 if the agent loiters; too high and it rushes into danger. (default: %(default)s)")
     parser.add_argument("--no-end-on-death", dest="end_on_life_loss", action="store_false", help="By default the episode ends the instant a life is lost, so training always restarts from the clean in-level state instead of wandering onto the post-death world map / continue screen. Pass this to disable that and let the game's own scenario decide when an episode ends. (Requires the integration to expose 'lives' in info either way.)")
@@ -579,7 +619,7 @@ def main():
     print(f"Checkpoints folder: {checkpoint_dir}")
     print(f"Steps per iteration: {steps_per_iteration:,} ({args.n_steps} n_steps x {args.num_envs} envs)")
     print(f"This run: iterations {start_iteration + 1}-{end_iteration} ({total_timesteps:,} env steps)")
-    print(f"Reward shaping: death_penalty={args.death_penalty}, jump_bonus={args.jump_bonus}, score_bonus={args.score_bonus}, life_bonus={args.life_bonus}, power_bonus={args.power_bonus}, powerup_address={args.powerup_address}, time_penalty={args.time_penalty}, end_on_life_loss={args.end_on_life_loss}")
+    print(f"Reward shaping: death_penalty={args.death_penalty}, jump_bonus={args.jump_bonus}, score_bonus={args.score_bonus}, life_bonus={args.life_bonus}, power_bonus={args.power_bonus}, powerup_address={args.powerup_address}, progress_address={args.progress_address}, time_penalty={args.time_penalty}, end_on_life_loss={args.end_on_life_loss}")
     print(
         "Rough guide from earlier: simple games often reach solid play in "
         "hours, medium-complexity platformers in about a day, on a modern "
@@ -596,7 +636,9 @@ def main():
                      render=True, end_on_life_loss=args.end_on_life_loss,
                      score_bonus=args.score_bonus, time_penalty=args.time_penalty,
                      life_bonus=args.life_bonus, power_bonus=args.power_bonus,
-                     powerup_address=args.powerup_address)
+                     powerup_address=args.powerup_address,
+                     progress_address=args.progress_address,
+                     progress_address_high=args.progress_address_high)
         ])
     else:
         env = SubprocVecEnv([
@@ -604,7 +646,9 @@ def main():
                      end_on_life_loss=args.end_on_life_loss,
                      score_bonus=args.score_bonus, time_penalty=args.time_penalty,
                      life_bonus=args.life_bonus, power_bonus=args.power_bonus,
-                     powerup_address=args.powerup_address)
+                     powerup_address=args.powerup_address,
+                     progress_address=args.progress_address,
+                     progress_address_high=args.progress_address_high)
             for _ in range(args.num_envs)
         ])
     # Without a Monitor layer SB3 has no episode statistics at all --

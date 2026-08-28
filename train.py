@@ -208,7 +208,8 @@ class RewardShaper(Wrapper):
     see the README). Silently does nothing extra if it doesn't."""
 
     def __init__(self, env, death_penalty=50.0, survival_tick=0.0, progress_scale=0.1,
-                 score_scale=0.01, time_penalty=0.0, end_on_life_loss=True):
+                 score_scale=0.01, time_penalty=0.0, life_bonus=25.0,
+                 end_on_life_loss=True):
         super().__init__(env)
         self.death_penalty = death_penalty
         self.survival_tick = survival_tick
@@ -221,6 +222,7 @@ class RewardShaper(Wrapper):
         # that discourages dawdling before the agent can reliably clear levels.
         self.score_scale = score_scale
         self.time_penalty = time_penalty
+        self.life_bonus = life_bonus
         self.prev_score = None
         # End the episode the moment a life is lost, so the vec-env auto-reset
         # returns to the clean in-level default state instead of letting the
@@ -269,6 +271,16 @@ class RewardShaper(Wrapper):
             current_lives is not None and self.prev_lives is not None
             and current_lives < self.prev_lives
         )
+        # Lives going UP means a 1-Up: the green mushroom, the 100-coin
+        # threshold, or a score milestone. Worth an explicit reward -- an extra
+        # life is strategically far more valuable than the handful of points a
+        # 1-Up adds to `score`, so score_scale alone badly undervalues it.
+        # (Regular power-up mushrooms are NOT detectable here: this
+        # integration exposes no health/power-state variable, only hpos/lives/
+        # score/time -- so those are rewarded solely through their score.)
+        if (current_lives is not None and self.prev_lives is not None
+                and current_lives > self.prev_lives):
+            reward += (current_lives - self.prev_lives) * self.life_bonus
         if current_lives is not None:
             self.prev_lives = current_lives
 
@@ -342,7 +354,7 @@ class JumpIncentiveWrapper(Wrapper):
 
 
 def make_env(game, state, death_penalty, jump_bonus, render=False, end_on_life_loss=True,
-             score_bonus=0.01, time_penalty=0.0):
+             score_bonus=0.01, time_penalty=0.0, life_bonus=25.0):
     def _init():
         render_mode = "human" if render else "rgb_array"
         env = retro.make(game=game, state=state or retro.State.DEFAULT, render_mode=render_mode)
@@ -355,7 +367,8 @@ def make_env(game, state, death_penalty, jump_bonus, render=False, end_on_life_l
         env = VariableHoldDiscretizer(env, ACTION_TABLE)
         env = JumpIncentiveWrapper(env, jump_bonus=jump_bonus)
         env = RewardShaper(env, death_penalty=death_penalty, end_on_life_loss=end_on_life_loss,
-                           score_scale=score_bonus, time_penalty=time_penalty)
+                           score_scale=score_bonus, time_penalty=time_penalty,
+                           life_bonus=life_bonus)
         env = WarpFrame(env)
         return env
     return _init
@@ -433,6 +446,7 @@ def main():
     parser.add_argument("--death-penalty", type=float, default=50.0, help="Reward subtracted on death/episode-end without clearing the stage. (default: %(default)s)")
     parser.add_argument("--jump-bonus", type=float, default=0.2, help="Reward added for choosing a jump action. Set to 0 to disable jump-incentive shaping entirely. (default: %(default)s)")
     parser.add_argument("--score-bonus", type=float, default=0.01, help="Reward per point the game's own score goes up -- coins, power-ups, stomped enemies, and the level-clear leftover-time bonus. This is what makes the agent value points AND finishing fast (faster clear = more time converted to score). Raise it to prioritize collecting/points, lower toward 0 for a pure speedrun-right agent. Tune to your game's score magnitudes. (default: %(default)s)")
+    parser.add_argument("--life-bonus", type=float, default=25.0, help="Reward for each extra life GAINED -- 1-Up mushrooms, the 100-coin threshold, score milestones. An extra life is worth far more strategically than the few points a 1-Up adds to score, so --score-bonus alone undervalues it. Set to 0 to disable. Note regular power-up mushrooms can't be rewarded directly (this integration exposes no power-state variable), only via their score. (default: %(default)s)")
     parser.add_argument("--time-penalty", type=float, default=0.0, help="Small reward subtracted every decision, to discourage dawdling and push toward finishing the level sooner. Start around 0.01-0.05 if the agent loiters; too high and it rushes into danger. (default: %(default)s)")
     parser.add_argument("--no-end-on-death", dest="end_on_life_loss", action="store_false", help="By default the episode ends the instant a life is lost, so training always restarts from the clean in-level state instead of wandering onto the post-death world map / continue screen. Pass this to disable that and let the game's own scenario decide when an episode ends. (Requires the integration to expose 'lives' in info either way.)")
     parser.set_defaults(end_on_life_loss=True)
@@ -486,7 +500,7 @@ def main():
     print(f"Checkpoints folder: {checkpoint_dir}")
     print(f"Steps per iteration: {steps_per_iteration:,} ({args.n_steps} n_steps x {args.num_envs} envs)")
     print(f"This run: iterations {start_iteration + 1}-{end_iteration} ({total_timesteps:,} env steps)")
-    print(f"Reward shaping: death_penalty={args.death_penalty}, jump_bonus={args.jump_bonus}, score_bonus={args.score_bonus}, time_penalty={args.time_penalty}, end_on_life_loss={args.end_on_life_loss}")
+    print(f"Reward shaping: death_penalty={args.death_penalty}, jump_bonus={args.jump_bonus}, score_bonus={args.score_bonus}, life_bonus={args.life_bonus}, time_penalty={args.time_penalty}, end_on_life_loss={args.end_on_life_loss}")
     print(
         "Rough guide from earlier: simple games often reach solid play in "
         "hours, medium-complexity platformers in about a day, on a modern "
@@ -501,13 +515,15 @@ def main():
         env = DummyVecEnv([
             make_env(args.game, args.state, args.death_penalty, args.jump_bonus,
                      render=True, end_on_life_loss=args.end_on_life_loss,
-                     score_bonus=args.score_bonus, time_penalty=args.time_penalty)
+                     score_bonus=args.score_bonus, time_penalty=args.time_penalty,
+                     life_bonus=args.life_bonus)
         ])
     else:
         env = SubprocVecEnv([
             make_env(args.game, args.state, args.death_penalty, args.jump_bonus,
                      end_on_life_loss=args.end_on_life_loss,
-                     score_bonus=args.score_bonus, time_penalty=args.time_penalty)
+                     score_bonus=args.score_bonus, time_penalty=args.time_penalty,
+                     life_bonus=args.life_bonus)
             for _ in range(args.num_envs)
         ])
     # Without a Monitor layer SB3 has no episode statistics at all --

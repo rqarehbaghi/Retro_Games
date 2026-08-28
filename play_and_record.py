@@ -50,26 +50,29 @@ def build_policy(model_path, action_space):
 
 
 def play_agent_episode(game, state, model_path, max_steps, record_dir, render,
-                       on_death="continue", stochastic=False):
+                       on_death="continue", stochastic=False, max_attempts=5):
     """Plays one session and records it.
 
-    on_death="continue" (default): the game plays itself through deaths. The
-    trained policy has never seen the world map / menu screens (training
-    resets straight to the level on death, see train.py's end_on_life_loss)
-    and there is no reward signal on them, so the policy alone would stall
-    there forever. Instead, whenever we detect we're NOT in a level -- a life
-    was just lost, or the game timer has been frozen for a while (in a level
-    the timer always ticks, even standing still; on maps/menus it's frozen) --
-    a small scripted navigator takes over: it waits out the transition, then
-    taps A (enter the level node) with an occasional RIGHT (advance to the
-    next node after a clear). The moment the timer starts ticking again, the
-    policy takes back over. The script goes through the same discrete action
-    space as the policy, so the .bk2 stays one seamless recording. The session
-    still ends at game over (lives run out -- ACTION_TABLE has no START, and
-    auto-mashing a continue screen would loop forever) or at --max-steps.
+    on_death="restart" (default): the game plays itself continuously -- on each
+    death the level restarts and the agent tries again, up to max_attempts.
+    Every attempt is its own .bk2 (stable-retro starts a new movie per reset)
+    and main() joins the rendered clips into one video.
 
-    on_death="stop": end the recording at the first lost life -- one clean
-    single-life clip.
+    Why not navigate the world map? Measured with probe_after_death.py: from
+    this integration's save state -- which begins INSIDE World 1-1 -- no input
+    at all (A, B, START, SELECT, any direction, held or tapped) gets the game
+    back into a level after a death. The post-death map was never properly
+    entered from a mid-level save state and simply isn't navigable, so no
+    scripted button pattern can work. Restarting the level is the honest
+    alternative. Progressing through actual levels needs per-level save states,
+    not map navigation.
+
+    on_death="stop": end at the first lost life -- one clean single-life clip,
+    the best way to judge what the policy alone actually does.
+
+    on_death="continue": the old scripted-navigator path. Retained for games
+    whose save state does start on a navigable map; it gives up after a bounded
+    number of decisions rather than hanging.
 
     Detection keys off `lives` and `time` in info; if the integration exposes
     neither, it all silently does nothing and the run ends at the scenario's
@@ -148,6 +151,7 @@ def play_agent_episode(game, state, model_path, max_steps, record_dir, render,
         prev_time = None
         frozen_count = 0
         seen_tick = False  # has the timer ticked since we (re)entered a level?
+        attempts = 0     # completed level attempts, for --on-death restart
         map_pos = None   # None = policy is playing; an int = navigator decision counter
         map_ticks = 0    # timer ticks seen while navigating (2 = we're back in a level)
         start = time.time()
@@ -201,6 +205,17 @@ def play_agent_episode(game, state, model_path, max_steps, record_dir, render,
                     if on_death == "stop":
                         print("Died -- ending the recording here (--on-death stop).")
                         break
+                    if on_death == "restart":
+                        attempts += 1
+                        if attempts >= max_attempts:
+                            print(f"Died -- reached --max-attempts ({max_attempts}), ending.")
+                            break
+                        print(f"Died -- restarting the level (attempt {attempts + 1}).")
+                        obs = env.reset()
+                        prev_lives = prev_time = None
+                        seen_tick = False
+                        frozen_count = 0
+                        continue
                     print("Died -- scripted navigator taking over to re-enter the level.")
                     map_pos, map_ticks, frozen_count = 0, 0, 0
                     seen_tick = False
@@ -322,6 +337,36 @@ def find_new_bk2(record_dir, before, started_at=None):
     return max(new_files, key=os.path.getmtime)
 
 
+def find_all_new_bk2(record_dir, before, started_at=None):
+    """Every .bk2 this session wrote, oldest first. --on-death restart resets
+    the env per attempt, and stable-retro starts a NEW movie file on each
+    reset, so a session can produce several."""
+    candidates = glob.glob(os.path.join(record_dir, "*.bk2"))
+
+    def is_this_session(f):
+        if f not in before:
+            return True
+        return started_at is not None and os.path.getmtime(f) >= started_at - 1.0
+
+    return sorted((f for f in candidates if is_this_session(f)), key=os.path.getmtime)
+
+
+def concat_mp4s(mp4_paths, out_path):
+    """Join per-attempt clips into one continuous video. All clips come from
+    the same emulator at the same resolution, so a stream copy is safe."""
+    listfile = out_path + ".txt"
+    with open(listfile, "w") as f:
+        for m in mp4_paths:
+            f.write("file '%s'\n" % os.path.abspath(m))
+    subprocess.run(
+        ["ffmpeg", "-nostdin", "-y", "-f", "concat", "-safe", "0",
+         "-i", listfile, "-c", "copy", out_path],
+        check=True,
+    )
+    os.remove(listfile)
+    return out_path if os.path.exists(out_path) else None
+
+
 def render_to_mp4(bk2_path):
     """Calls stable-retro's built-in playback script. Requires ffmpeg on PATH.
     Writes a .mp4 next to the .bk2 with video and audio synced.
@@ -376,7 +421,8 @@ def main():
     parser.add_argument("--max-steps", type=int, default=10800, help="Safety cap in emulator frames for agent play (60fps NES -> 10800 = ~3 min). Ignored with --human -- that runs until you close the window. (default: %(default)s)")
     parser.add_argument("--record-dir", default="./recordings", help="Where .bk2/.mp4 files land (default: %(default)s)")
     parser.add_argument("--render", action="store_true", help="Also show a live window while an agent plays (slower). Ignored with --human, which always shows a window. Needs a display.")
-    parser.add_argument("--on-death", choices=["continue", "stop"], default="continue", help="'continue' (default): the game plays itself through deaths -- a scripted navigator handles the world map (waits out the transition, taps A / occasional RIGHT to re-enter a level) and hands control back to the policy the moment the in-level timer starts ticking again; the run ends at game over or --max-steps. 'stop': end the recording at the first lost life for one clean single-life clip. Ignored with --human.")
+    parser.add_argument("--on-death", choices=["restart", "stop", "continue"], default="restart", help="'restart' (default): play continuously -- restart the level on each death, up to --max-attempts, and join every attempt into one video. 'stop': end at the first death for a single clean clip of what the policy alone does. 'continue': try to navigate the world map with a scripted button pattern -- measured NOT to work from SuperMarioBros3-Nes-v0's mid-level save state (see probe_after_death.py), kept for games that start on a navigable map. Ignored with --human.")
+    parser.add_argument("--max-attempts", type=int, default=5, help="With --on-death restart, how many level attempts to record before stopping. Each attempt becomes one clip and they are joined into a single video. (default: %(default)s)")
     parser.add_argument("--stochastic", action="store_true", help="Sample actions from the policy's distribution instead of always taking its single best guess. On a half-trained model the deterministic argmax can lock into repeating one action (e.g. walking into a pipe until the timer kills it); sampling matches how PPO acted during training and usually produces a much more representative clip.")
     parser.add_argument("--scale", type=int, default=4, help="Upscale factor for the final video, e.g. 4 turns ~256x224 into ~1024x896. Set to 1 to skip upscaling and keep the native-resolution file. (default: %(default)s)")
     parser.add_argument("--scale-mode", choices=["sharp", "smooth"], default="sharp", help="'sharp' = crisp nearest-neighbor (retro pixel look). 'smooth' = anti-aliased lanczos (softer, less blocky). (default: %(default)s)")
@@ -398,18 +444,36 @@ def main():
             render=args.render,
             on_death=args.on_death,
             stochastic=args.stochastic,
+            max_attempts=args.max_attempts,
         )
 
-    bk2_path = find_new_bk2(args.record_dir, before, started_at=session_start)
-    if bk2_path is None:
+    # --on-death restart resets the env per attempt, and stable-retro starts a
+    # new movie file on each reset, so render every clip this session produced
+    # and join them into one continuous video.
+    bk2_paths = find_all_new_bk2(args.record_dir, before, started_at=session_start)
+    if not bk2_paths:
         print("No .bk2 recording found -- something went wrong with recording.")
         sys.exit(1)
 
-    mp4_path = render_to_mp4(bk2_path)
-    if not mp4_path:
+    rendered = []
+    for i, path in enumerate(bk2_paths, 1):
+        if len(bk2_paths) > 1:
+            print(f"\n[attempt {i}/{len(bk2_paths)}]")
+        clip = render_to_mp4(path)
+        if clip:
+            rendered.append(clip)
+
+    if not rendered:
         print("\nbk2 saved but MP4 render failed -- check that ffmpeg is installed and on PATH.")
-        print(f"Raw replay file: {bk2_path}")
+        print(f"Raw replay file(s): {', '.join(bk2_paths)}")
         return
+
+    if len(rendered) > 1:
+        joined = os.path.join(args.record_dir, "session_all_attempts.mp4")
+        print(f"\nJoining {len(rendered)} attempts into one video ...")
+        mp4_path = concat_mp4s(rendered, joined) or rendered[0]
+    else:
+        mp4_path = rendered[0]
 
     if args.scale > 1:
         final_path = upscale_mp4(mp4_path, args.scale, args.scale_mode)

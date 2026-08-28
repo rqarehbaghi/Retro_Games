@@ -130,8 +130,15 @@ def play_agent_episode(game, state, model_path, max_steps, record_dir, render,
         # the next node after a level clear).
         MAP_WAIT = 12
         MAP_PATTERN = [a_idx, noop_idx, noop_idx, a_idx, noop_idx, noop_idx, right_idx, noop_idx]
-        MAP_GIVE_UP = 400  # decisions before concluding we can't get off this screen
-        TIMER_FROZEN_LIMIT = 50  # in-level the timer ALWAYS ticks; frozen this long = map/menu
+        MAP_GIVE_UP = 800  # decisions before concluding we can't get off this screen
+        # The in-level timer is the map/menu tell, but it is NOT reliable on its
+        # own: at level start the timer hasn't begun counting yet, and a level
+        # tick spans many decisions, so a naive "frozen for N decisions" check
+        # fires DURING normal play and hands a live level to the navigator (which
+        # then blindly mashes A and kills the run). So the check is only armed
+        # after the timer has actually been SEEN ticking in this level -- proof
+        # we're really in a level, which makes a later freeze meaningful.
+        TIMER_FROZEN_LIMIT = 120
 
         obs = env.reset()
         steps = 0
@@ -140,6 +147,7 @@ def play_agent_episode(game, state, model_path, max_steps, record_dir, render,
         prev_lives = None
         prev_time = None
         frozen_count = 0
+        seen_tick = False  # has the timer ticked since we (re)entered a level?
         map_pos = None   # None = policy is playing; an int = navigator decision counter
         map_ticks = 0    # timer ticks seen while navigating (2 = we're back in a level)
         start = time.time()
@@ -174,11 +182,14 @@ def play_agent_episode(game, state, model_path, max_steps, record_dir, render,
                     frozen_count += 1
                 else:
                     frozen_count = 0
-                    if map_pos is not None and map_pos > MAP_WAIT and game_time < prev_time:
-                        map_ticks += 1
-                        if map_ticks >= 2:
-                            print("Timer is ticking again -- back in a level, policy takes over.")
-                            map_pos = None
+                    if game_time < prev_time:
+                        # A countdown tick: we are definitely inside a level.
+                        seen_tick = True
+                        if map_pos is not None and map_pos > MAP_WAIT:
+                            map_ticks += 1
+                            if map_ticks >= 2:
+                                print("Timer is ticking again -- back in a level, policy takes over.")
+                                map_pos, map_ticks, frozen_count = None, 0, 0
             prev_time = game_time
 
             # --- death handling ---
@@ -192,14 +203,19 @@ def play_agent_episode(game, state, model_path, max_steps, record_dir, render,
                         break
                     print("Died -- scripted navigator taking over to re-enter the level.")
                     map_pos, map_ticks, frozen_count = 0, 0, 0
+                    seen_tick = False
                 prev_lives = lives
 
             # --- frozen-timer fallback: catches level-clear -> map and other
             # non-level screens where no life was lost ---
-            if (map_pos is None and on_death == "continue"
+            # Only armed once seen_tick proves we really were in a level -- see
+            # the TIMER_FROZEN_LIMIT comment. Without that guard this fires
+            # during the level-start pause and hijacks a perfectly live level.
+            if (map_pos is None and on_death == "continue" and seen_tick
                     and frozen_count >= TIMER_FROZEN_LIMIT):
                 print("Game timer frozen -- looks like a map/menu screen, scripted navigator taking over.")
                 map_pos, map_ticks, frozen_count = 0, 0, 0
+                seen_tick = False
 
             if map_pos is not None and map_pos > MAP_GIVE_UP:
                 print(f"Navigator couldn't reach a level within {MAP_GIVE_UP} decisions -- ending the recording.")

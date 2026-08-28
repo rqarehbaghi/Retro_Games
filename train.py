@@ -463,6 +463,7 @@ class JumpIncentiveWrapper(Wrapper):
 
 
 def make_env(game, state, death_penalty, jump_bonus, render=False, end_on_life_loss=True,
+             progress_scale=0.1,
              score_bonus=0.01, time_penalty=0.0, life_bonus=25.0, power_bonus=0.0, powerup_address=None,
              progress_address=None, progress_address_high=None):
     def _init():
@@ -479,6 +480,7 @@ def make_env(game, state, death_penalty, jump_bonus, render=False, end_on_life_l
                                    progress_address=progress_address,
                                    progress_address_high=progress_address_high)
         env = RewardShaper(env, death_penalty=death_penalty, end_on_life_loss=end_on_life_loss,
+                           progress_scale=progress_scale,
                            score_scale=score_bonus, time_penalty=time_penalty,
                            life_bonus=life_bonus, power_bonus=power_bonus,
                            powerup_address=powerup_address,
@@ -563,6 +565,7 @@ def main():
     parser.add_argument("--score-bonus", type=float, default=0.01, help="Reward per point the game's own score goes up -- coins, power-ups, stomped enemies, and the level-clear leftover-time bonus. This is what makes the agent value points AND finishing fast (faster clear = more time converted to score). Raise it to prioritize collecting/points, lower toward 0 for a pure speedrun-right agent. Tune to your game's score magnitudes. (default: %(default)s)")
     parser.add_argument("--life-bonus", type=float, default=25.0, help="Reward for each extra life GAINED -- 1-Up mushrooms, the 100-coin threshold, score milestones. An extra life is worth far more strategically than the few points a 1-Up adds to score, so --score-bonus alone undervalues it. Set to 0 to disable. Note regular power-up mushrooms can't be rewarded directly (this integration exposes no power-state variable), only via their score. (default: %(default)s)")
     parser.add_argument("--power-bonus", type=float, default=0.0, help="Reward per power-up TIER gained (small->big->fire->raccoon...), and the same penalty per tier lost when you take a hit. Requires the integration to publish the power state in info as `powerup` -- it is NOT exposed by default. Use find_ram_variable.py to locate the RAM address in your own recording, add it to the integration data.json, then set this (try 10-20). Left at 0 it does nothing. (default: %(default)s)")
+    parser.add_argument("--progress-scale", type=float, default=0.1, help="Reward per unit of NEW ground covered. This is the main learning signal and must be balanced against --death-penalty: if a whole run only earns progress*distance while dying costs far more, the death term swamps everything and the agent gets no gradient toward playing better. Measure your game's distance-per-run with inspect_progress.py and scale so a good run is worth at least as much as a death costs. (default: %(default)s)")
     parser.add_argument("--progress-address", type=lambda v: int(v, 0), default=None, help="RAM index of the real level-position counter, read directly. STRONGLY recommended: SuperMarioBros3-Nes-v0's published `hpos` is Mario's ON-SCREEN x, which flatlines at the scroll threshold (144), so rewarding it pays only for the first ~1.5s of a level. Candidate found with inspect_progress.py: 0x053C. Hex or decimal. (default: %(default)s)")
     parser.add_argument("--progress-address-high", type=lambda v: int(v, 0), default=None, help="High byte of a 16-bit little-endian level position (e.g. 0x053D), combined with --progress-address. A single byte wraps at 255, which a full level exceeds several times. (default: %(default)s)")
     parser.add_argument("--powerup-address", type=lambda v: int(v, 0), default=None, help="RAM index holding the power-up tier, read directly so the integration does not need to publish it (SuperMarioBros3-Nes-v0: 0x00ED, found with find_ram_variable.py -- verify for your own game/version). Accepts hex (0x00ED) or decimal. Needed for --power-bonus to do anything here. (default: %(default)s)")
@@ -619,7 +622,7 @@ def main():
     print(f"Checkpoints folder: {checkpoint_dir}")
     print(f"Steps per iteration: {steps_per_iteration:,} ({args.n_steps} n_steps x {args.num_envs} envs)")
     print(f"This run: iterations {start_iteration + 1}-{end_iteration} ({total_timesteps:,} env steps)")
-    print(f"Reward shaping: death_penalty={args.death_penalty}, jump_bonus={args.jump_bonus}, score_bonus={args.score_bonus}, life_bonus={args.life_bonus}, power_bonus={args.power_bonus}, powerup_address={args.powerup_address}, progress_address={args.progress_address}, time_penalty={args.time_penalty}, end_on_life_loss={args.end_on_life_loss}")
+    print(f"Reward shaping: death_penalty={args.death_penalty}, progress_scale={args.progress_scale}, jump_bonus={args.jump_bonus}, score_bonus={args.score_bonus}, life_bonus={args.life_bonus}, power_bonus={args.power_bonus}, powerup_address={args.powerup_address}, progress_address={args.progress_address}, time_penalty={args.time_penalty}, end_on_life_loss={args.end_on_life_loss}")
     print(
         "Rough guide from earlier: simple games often reach solid play in "
         "hours, medium-complexity platformers in about a day, on a modern "
@@ -637,6 +640,7 @@ def main():
                      score_bonus=args.score_bonus, time_penalty=args.time_penalty,
                      life_bonus=args.life_bonus, power_bonus=args.power_bonus,
                      powerup_address=args.powerup_address,
+                     progress_scale=args.progress_scale,
                      progress_address=args.progress_address,
                      progress_address_high=args.progress_address_high)
         ])
@@ -647,6 +651,7 @@ def main():
                      score_bonus=args.score_bonus, time_penalty=args.time_penalty,
                      life_bonus=args.life_bonus, power_bonus=args.power_bonus,
                      powerup_address=args.powerup_address,
+                     progress_scale=args.progress_scale,
                      progress_address=args.progress_address,
                      progress_address_high=args.progress_address_high)
             for _ in range(args.num_envs)

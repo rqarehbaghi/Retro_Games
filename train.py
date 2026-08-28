@@ -209,7 +209,8 @@ class RewardShaper(Wrapper):
 
     def __init__(self, env, death_penalty=50.0, survival_tick=0.0, progress_scale=0.1,
                  score_scale=0.01, time_penalty=0.0, life_bonus=25.0,
-                 power_bonus=0.0, powerup_address=None, end_on_life_loss=True):
+                 power_bonus=0.0, powerup_address=None, x_jump_limit=64,
+                 backtrack_scale=0.5, end_on_life_loss=True):
         super().__init__(env)
         self.death_penalty = death_penalty
         self.survival_tick = survival_tick
@@ -242,6 +243,12 @@ class RewardShaper(Wrapper):
         # info-keys check in the README) and the episode ends only when the
         # game's own scenario says so.
         self.end_on_life_loss = end_on_life_loss
+        # Furthest point reached this episode, in accumulated x-units, so
+        # progress can only be earned once per stretch of ground.
+        self.travelled = 0.0
+        self.max_travelled = 0.0
+        self.x_jump_limit = x_jump_limit
+        self.backtrack_scale = backtrack_scale
         self.prev_x = None
         self.prev_lives = None
         self.prev_health = None
@@ -260,6 +267,8 @@ class RewardShaper(Wrapper):
     def reset(self, **kwargs):
         obs, info = self.env.reset(**kwargs)
         self.prev_x = read_x(info)
+        self.travelled = 0.0
+        self.max_travelled = 0.0
         self.prev_lives = info.get("lives")
         self.prev_health = info.get("health")
         self.prev_score = info.get("score")
@@ -272,9 +281,32 @@ class RewardShaper(Wrapper):
         reward += self.survival_tick
         reward -= self.time_penalty
 
+        # Progress is paid ONLY for ground never reached before in this episode.
+        #
+        # The previous version paid max(0, x - prev_x) every step, which is
+        # farmable: moving right paid, moving left cost nothing, so oscillating
+        # in place -- step right, step back, step right -- is an unbounded income
+        # stream that requires no actual progress. PPO reliably finds this, and
+        # it looks exactly like "the agent keeps backing up and gets killed".
+        # Rewarding only NEW furthest-progress removes the exploit at the source:
+        # re-covering old ground pays nothing, so the only way to earn is to get
+        # somewhere new.
         current_x = read_x(info)
         if current_x is not None and self.prev_x is not None:
-            reward += max(0, current_x - self.prev_x) * self.progress_scale
+            delta = current_x - self.prev_x
+            # Ignore teleports: screen wraps and level/room transitions show up
+            # as huge jumps that aren't real movement.
+            if abs(delta) < self.x_jump_limit:
+                self.travelled += delta
+                if self.travelled > self.max_travelled:
+                    reward += (self.travelled - self.max_travelled) * self.progress_scale
+                    self.max_travelled = self.travelled
+                elif delta < 0:
+                    # Small cost for actively retreating. Not strictly needed to
+                    # kill the oscillation exploit (new-ground-only already does
+                    # that), but it discourages dawdling backwards and nudges the
+                    # policy toward facing forward.
+                    reward += delta * self.progress_scale * self.backtrack_scale
         if current_x is not None:
             self.prev_x = current_x
 

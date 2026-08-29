@@ -161,8 +161,13 @@ def make_progress_reader(env, addr_lo, addr_hi=None, add_info_x=False):
                 # the byte's wraps at 256 both exceed x_jump_limit, so the
                 # delta filter in RewardShaper discards them as teleports.
                 screen_x = read_x(info)
-                if screen_x is not None:
-                    value += int(screen_x)
+                if screen_x is None:
+                    # Half a sum is not a position: reset() info can lack hpos,
+                    # and returning just the RAM byte then hands the first real
+                    # step a phantom positive delta (paid as fake progress).
+                    # Unknown is unknown.
+                    return None
+                value += int(screen_x)
             return value
         except Exception:
             return None
@@ -489,7 +494,7 @@ class JumpIncentiveWrapper(Wrapper):
 
 
 def make_env(game, state, death_penalty, jump_bonus, render=False, end_on_life_loss=True,
-             progress_scale=0.1, keep_game_reward=False,
+             progress_scale=0.1, keep_game_reward=False, stuck_penalty=0.1,
              score_bonus=0.01, time_penalty=0.0, life_bonus=25.0, power_bonus=0.0, powerup_address=None,
              progress_address=None, progress_address_high=None, progress_add_screen_x=False):
     def _init():
@@ -502,7 +507,7 @@ def make_env(game, state, death_penalty, jump_bonus, render=False, end_on_life_l
         # its survival tick / progress / death shaping is applied once per
         # decision, not once per emulator frame (see RewardShaper docstring).
         env = VariableHoldDiscretizer(env, ACTION_TABLE, use_game_reward=keep_game_reward)
-        env = JumpIncentiveWrapper(env, jump_bonus=jump_bonus,
+        env = JumpIncentiveWrapper(env, jump_bonus=jump_bonus, stuck_penalty=stuck_penalty,
                                    progress_address=progress_address,
                                    progress_address_high=progress_address_high,
                                    progress_add_screen_x=progress_add_screen_x)
@@ -596,7 +601,8 @@ def main():
     parser.add_argument("--lr", type=float, default=2.5e-4, help="PPO learning rate. Lower this (e.g. 3e-5) when resuming from an imitation-pretrained checkpoint, so RL fine-tuning doesn't wash out what it already learned. (default: %(default)s)")
     parser.add_argument("--ent-coef", type=float, default=0.01, help="PPO entropy coefficient -- higher encourages more exploration. Lower this (e.g. 0.001) when fine-tuning a pretrained checkpoint. (default: %(default)s)")
     parser.add_argument("--death-penalty", type=float, default=50.0, help="Reward subtracted on death/episode-end without clearing the stage. (default: %(default)s)")
-    parser.add_argument("--jump-bonus", type=float, default=0.2, help="Reward added for choosing a jump action. Set to 0 to disable jump-incentive shaping entirely. (default: %(default)s)")
+    parser.add_argument("--jump-bonus", type=float, default=0.0, help="Reward added for choosing a jump action. DEFAULT 0 -- and leave it there once a real progress signal is configured: paying for the ACT of jumping is farmable (observed in training: the policy converged to jumping in place at the left screen edge, where jump bonus minus stuck penalty is risk-free income and nothing else pays). Clearing an obstacle already pays through the progress it unlocks. Only raise this as a temporary crutch on a game with NO working progress signal. (default: %(default)s)")
+    parser.add_argument("--stuck-penalty", type=float, default=0.1, help="Per-decision penalty while horizontal position hasn't changed for several decisions -- bleed applied to standing still or running against an obstacle. Must exceed any per-decision bonus (e.g. --jump-bonus) or stalling somewhere and farming that bonus becomes net-positive. (default: %(default)s)")
     parser.add_argument("--score-bonus", type=float, default=0.01, help="Reward per point the game's own score goes up -- coins, power-ups, stomped enemies, and the level-clear leftover-time bonus. This is what makes the agent value points AND finishing fast (faster clear = more time converted to score). Raise it to prioritize collecting/points, lower toward 0 for a pure speedrun-right agent. Tune to your game's score magnitudes. (default: %(default)s)")
     parser.add_argument("--life-bonus", type=float, default=25.0, help="Reward for each extra life GAINED -- 1-Up mushrooms, the 100-coin threshold, score milestones. An extra life is worth far more strategically than the few points a 1-Up adds to score, so --score-bonus alone undervalues it. Set to 0 to disable. Note regular power-up mushrooms can't be rewarded directly (this integration exposes no power-state variable), only via their score. (default: %(default)s)")
     parser.add_argument("--power-bonus", type=float, default=0.0, help="Reward per power-up TIER gained (small->big->fire->raccoon...), and the same penalty per tier lost when you take a hit. Requires the integration to publish the power state in info as `powerup` -- it is NOT exposed by default. Use find_ram_variable.py to locate the RAM address in your own recording, add it to the integration data.json, then set this (try 10-20). Left at 0 it does nothing. (default: %(default)s)")
@@ -679,6 +685,7 @@ def main():
                      powerup_address=args.powerup_address,
                      progress_scale=args.progress_scale,
                      keep_game_reward=args.keep_game_reward,
+                     stuck_penalty=args.stuck_penalty,
                      progress_address=args.progress_address,
                      progress_address_high=args.progress_address_high,
                      progress_add_screen_x=args.progress_add_screen_x)
@@ -692,6 +699,7 @@ def main():
                      powerup_address=args.powerup_address,
                      progress_scale=args.progress_scale,
                      keep_game_reward=args.keep_game_reward,
+                     stuck_penalty=args.stuck_penalty,
                      progress_address=args.progress_address,
                      progress_address_high=args.progress_address_high,
                      progress_add_screen_x=args.progress_add_screen_x)

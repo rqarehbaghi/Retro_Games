@@ -32,8 +32,11 @@ import argparse
 from train import ACTION_TABLE, make_env
 
 NOOP = 0
-RUN_RIGHT = 3       # ["RIGHT", "B"]
+RUN_RIGHT = 3        # ["RIGHT", "B"]
 JUMP_RIGHT_LONG = 8  # ["RIGHT", "A"] held 20 frames
+JUMP_LEFT_LONG = 10  # ["LEFT", "A"] held 20 frames -- the observed exploit:
+                     # at the left screen edge this moves nowhere, so it tests
+                     # whether pure jump-spam earns anything
 
 
 def run_policy(env, pick_action, label, max_decisions=600, show_first=40):
@@ -64,7 +67,8 @@ def main():
     p.add_argument("--game", required=True)
     p.add_argument("--state", default=None)
     p.add_argument("--death-penalty", type=float, default=50.0)
-    p.add_argument("--jump-bonus", type=float, default=0.2)
+    p.add_argument("--jump-bonus", type=float, default=0.0)
+    p.add_argument("--stuck-penalty", type=float, default=0.1)
     p.add_argument("--progress-scale", type=float, default=0.1)
     p.add_argument("--score-bonus", type=float, default=0.01)
     p.add_argument("--life-bonus", type=float, default=25.0)
@@ -78,6 +82,7 @@ def main():
 
     env = make_env(
         args.game, args.state, args.death_penalty, args.jump_bonus,
+        stuck_penalty=args.stuck_penalty,
         progress_scale=args.progress_scale, score_bonus=args.score_bonus,
         time_penalty=args.time_penalty, life_bonus=args.life_bonus,
         power_bonus=args.power_bonus, powerup_address=args.powerup_address,
@@ -95,13 +100,22 @@ def main():
     runjump_total, runjump_n = run_policy(
         env, lambda i: JUMP_RIGHT_LONG if i % 6 == 5 else RUN_RIGHT,
         "RUN+JUMP (RIGHT+B, jump every 6th)")
+    jumpleft_total, jumpleft_n = run_policy(
+        env, lambda i: JUMP_LEFT_LONG,
+        "JUMP-LEFT (the observed left-edge jump-spam exploit)")
     env.close()
 
     print("\n================= SUMMARY =================")
-    print(f"  STAND    : {stand_total:+9.2f}  over {stand_n} decisions")
-    print(f"  RUN      : {run_total:+9.2f}  over {run_n} decisions")
-    print(f"  RUN+JUMP : {runjump_total:+9.2f}  over {runjump_n} decisions")
+    print(f"  STAND     : {stand_total:+9.2f}  over {stand_n} decisions")
+    print(f"  RUN       : {run_total:+9.2f}  over {run_n} decisions")
+    print(f"  RUN+JUMP  : {runjump_total:+9.2f}  over {runjump_n} decisions")
+    print(f"  JUMP-LEFT : {jumpleft_total:+9.2f}  over {jumpleft_n} decisions")
     print("===========================================")
+
+    if jumpleft_total > stand_total + 5:
+        print("\nWARNING: JUMP-LEFT out-earns STAND -- some per-action bonus is")
+        print("still farmable at the left edge. Check --jump-bonus is 0 and that")
+        print("no other term pays for motionless actions.")
 
     if run_total > stand_total + 20:
         print("\nVERDICT: progress pays and standing loses -- the reward pipeline is")

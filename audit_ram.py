@@ -124,7 +124,15 @@ class Tracker:
                     note = "   <-- entered normal play"
             self.event(frame, "PLAYSTATE", f"PLAYSTATE {old} -> {new}{note}")
         if changed("score"):
-            self.event(frame, "SCORE", f"SCORE {self.prev['score']} -> {vals['score']}   (+{vals['score'] - self.prev['score']})")
+            delta = vals['score'] - self.prev['score']
+            # The integration publishes score with its trailing zero dropped --
+            # one tenth of the HUD value. Confirmed two ways: a Super Mushroom
+            # (1000 on screen) appears here as +100, and a +100 on screen
+            # appears as +10. Print both so video cross-checks don't look like
+            # missing events.
+            self.event(frame, "SCORE",
+                       f"SCORE {self.prev['score']} -> {vals['score']}   "
+                       f"(+{delta}, on screen +{delta * 10})")
 
         self.prev = dict(vals)
 
@@ -323,20 +331,27 @@ def main():
     p.add_argument("--record-dir", default="./recordings", help="Where --model recordings land")
     p.add_argument("--render-video", action="store_true", help="Also render the recording to MP4 so timestamps can be checked visually")
     # Defaults are this project's VERIFIED SuperMarioBros3-Nes-v0 addresses.
-    p.add_argument("--progress-address", type=lambda v: int(v, 0), default=0x00CF)
+    p.add_argument("--progress-address", type=lambda v: int(v, 0), default=None, help="Camera/position address to audit. There is NO verified value for SMB3: 0x00CF was REJECTED (it returns to 0 whenever the player stops or reverses -- a per-frame delta, not accumulated position). Find a replacement with inspect_progress.py --demo.")
     p.add_argument("--progress-address-high", type=lambda v: int(v, 0), default=None)
     p.add_argument("--powerup-address", type=lambda v: int(v, 0), default=0x00ED)
-    p.add_argument("--playstate-address", type=lambda v: int(v, 0), default=0x07F1)
-    p.add_argument("--playstate-value", type=lambda v: int(v, 0), default=5)
+    p.add_argument("--playstate-address", type=lambda v: int(v, 0), default=None, help="Game-mode address to audit. There is NO verified value for SMB3: 0x07F1 was REJECTED (it cycles 5->0->8 every ~24 frames DURING normal play, so it cannot mark 'in play' and would end every training episode within a second).")
+    p.add_argument("--playstate-value", type=lambda v: int(v, 0), default=None, help="The value --playstate-address holds during normal play.")
     args = p.parse_args()
 
-    print("Auditing these sources (defaults are the project's verified SMB3 values):")
-    print(f"  progress address  : 0x{args.progress_address:04X} ({args.progress_address})"
-          + (f" + high 0x{args.progress_address_high:04X}" if args.progress_address_high is not None else "")
-          + "  [camera scroll]")
+    print("Auditing:")
+    if args.progress_address is not None:
+        print(f"  progress address  : 0x{args.progress_address:04X} ({args.progress_address})"
+              + (f" + high 0x{args.progress_address_high:04X}" if args.progress_address_high is not None else ""))
+    else:
+        print("  progress address  : (none) -- 0x00CF was REJECTED. Find one with")
+        print("                      inspect_progress.py --demo, then pass it here.")
     print(f"  powerup address   : 0x{args.powerup_address:04X} ({args.powerup_address})  [0=small 1=big 2=fire 3=raccoon]")
-    print(f"  playstate address : 0x{args.playstate_address:04X} ({args.playstate_address}), in-play value {args.playstate_value}")
+    if args.playstate_address is not None:
+        print(f"  playstate address : 0x{args.playstate_address:04X} ({args.playstate_address}), in-play value {args.playstate_value}")
+    else:
+        print("  playstate address : (none) -- 0x07F1 was REJECTED: it cycles during play.")
     print(f"  info keys         : lives, score, time, hpos")
+    print(f"  NOTE: `score` is published as one TENTH of the on-screen value.")
     print(f"  video frame rate  : {FPS} fps\n")
 
     tracker = Tracker(args.progress_address, args.powerup_address,

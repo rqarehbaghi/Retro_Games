@@ -28,6 +28,7 @@ Usage:
 """
 import argparse
 import os
+from collections import deque
 
 import numpy as np
 import stable_retro as retro
@@ -124,8 +125,11 @@ def main():
 
     run_right = np.array([b in ("RIGHT", "B") for b in buttons], dtype=bool)
     died = False
+    # Rolling RAM history for the state-byte differ below.
+    ram_hist = deque(maxlen=900)
     for frame in range(args.max_frames):
         _obs, _rew, terminated, truncated, info = env.step(run_right)
+        ram_hist.append(env.get_ram().copy())
         lives = info.get("lives")
         if prev_lives is not None and lives is not None and lives < prev_lives:
             print(f"Died at frame {frame}: lives {prev_lives} -> {lives}")
@@ -137,6 +141,45 @@ def main():
             prev_lives = info.get("lives")
     if not died:
         raise SystemExit("Never died -- raise --max-frames.")
+
+    # ---- STATE-BYTE DIFFER ------------------------------------------------
+    # Goal: find the engine's game-mode byte -- constant at one value during
+    # normal play, constant at a DIFFERENT value during the death sequence.
+    # That byte lets reward shaping know when the game has left normal play,
+    # which is the only clean way to exclude death-transition garbage from
+    # the progress signal (delta-size filters were tried and failed: the
+    # garbage arrives in small steps while real camera catch-up arrives in
+    # big ones).
+    hist = np.array(ram_hist)  # (N, ram_size); ends at the lives-drop frame
+    n = len(hist)
+    # 'play' window: comfortably mid-run, well before the hit that caused the
+    # death (the animation is ~1-2s). 'dying' window: the last frames before
+    # lives decremented -- inside the death sequence by construction.
+    play = hist[max(0, n - 500):max(20, n - 300)]
+    dying = hist[n - 12:]
+    if len(play) >= 20:
+        const_play = play.std(axis=0) == 0
+        const_dying = dying.std(axis=0) == 0
+        differs = play[-1] != dying[-1]
+        cands = np.where(const_play & const_dying & differs)[0]
+        print(f"\nSTATE-BYTE CANDIDATES ({len(cands)} bytes constant in play, constant")
+        print("but different while dying). The engine's mode byte is usually a")
+        print("SMALL value in both columns:\n")
+        print(f"  {'ADDR':>8}  {'DEC':>5}  {'IN PLAY':>8}  {'DYING':>6}")
+        shown = 0
+        for addr in cands:
+            pv, dv = int(play[-1][addr]), int(dying[-1][addr])
+            # Mode bytes are small enums; skip obvious counters/pointers.
+            if pv > 32 and dv > 32:
+                continue
+            print(f"  0x{addr:04X}  {addr:5d}  {pv:8d}  {dv:6d}")
+            shown += 1
+            if shown >= 25:
+                print("  ... (more suppressed)")
+                break
+        print("\nPaste this table to Claude. The chosen byte becomes:")
+        print("    --playstate-address 0xADDR --playstate-value <IN PLAY value>")
+    # -----------------------------------------------------------------------
 
     # Watch the transition so we can see WHEN (and whether) the map appears.
     print(f"\nSettling {args.settle} frames, sampling info every 120:")

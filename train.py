@@ -265,16 +265,12 @@ class RewardShaper(Wrapper):
     them (varies by game -- check yours if this seems to have no effect,
     see the README). Silently does nothing extra if it doesn't."""
 
-    # Upper bound on believable horizontal speed, px per emulator frame.
-    # SMB3's full sprint is ~2.5px/frame; 3.5 leaves headroom without letting
-    # death-transition garbage through on short decisions.
-    MAX_PX_PER_FRAME = 3.5
-
     def __init__(self, env, death_penalty=50.0, survival_tick=0.0, progress_scale=0.1,
                  score_scale=0.01, time_penalty=0.0, life_bonus=25.0,
                  power_bonus=0.0, powerup_address=None, x_jump_limit=64,
                  backtrack_scale=0.5, progress_address=None, progress_address_high=None,
-                 progress_add_screen_x=False, end_on_life_loss=True):
+                 progress_add_screen_x=False, playstate_address=None, playstate_value=None,
+                 end_on_life_loss=True):
         super().__init__(env)
         self.death_penalty = death_penalty
         self.survival_tick = survival_tick
@@ -313,6 +309,20 @@ class RewardShaper(Wrapper):
         self.max_travelled = 0.0
         self.x_jump_limit = x_jump_limit
         self.backtrack_scale = backtrack_scale
+        # Game-state byte gate: most NES engines keep a mode byte that holds
+        # one value during normal play and different values during the death
+        # sequence / transitions (find it with probe_after_death.py). When
+        # configured, any step whose state differs from the in-play value is
+        # treated as 'not playing': the x-tracker is suspended (no progress,
+        # no backtrack, no phantom deltas from transition garbage) and the
+        # episode terminates immediately -- ending it at the moment of the
+        # hit instead of ~28 decisions later when `lives` finally decrements.
+        # Note: a level CLEAR also leaves the play state, so it too ends the
+        # episode here (with the death penalty; the clear's score bonus
+        # more than offsets it, and reaching the clear paid the whole level
+        # in progress).
+        self.playstate_address = playstate_address
+        self.playstate_value = playstate_value
         self._read_x = make_progress_reader(env, progress_address, progress_address_high,
                                             add_info_x=progress_add_screen_x)
         self.prev_x = None
@@ -356,6 +366,24 @@ class RewardShaper(Wrapper):
         reward += self.survival_tick
         reward -= self.time_penalty
 
+        in_play = True
+        if self.playstate_address is not None and self.playstate_value is not None:
+            try:
+                state = int(self.env.unwrapped.get_ram()[self.playstate_address])
+                in_play = (state == self.playstate_value)
+            except Exception:
+                pass
+        if not in_play:
+            # Left normal play (death sequence / transition): suspend the
+            # x-tracker so garbage can't be paid, drop the baseline so
+            # re-entry can't produce a giant delta, and end the episode NOW.
+            self.prev_x = None
+            terminated = True
+            comp["death"] = -self.death_penalty
+            reward -= self.death_penalty
+            info["shaping"] = comp
+            return obs, reward, terminated, truncated, info
+
         # Progress is paid ONLY for ground never reached before in this episode.
         #
         # The previous version paid max(0, x - prev_x) every step, which is
@@ -369,20 +397,17 @@ class RewardShaper(Wrapper):
         current_x = self._read_x(info)
         if current_x is not None and self.prev_x is not None:
             delta = current_x - self.prev_x
-            # Ignore deltas no real movement could produce. A flat cap is not
-            # enough: the death sequence swings hpos/scroll through mid-sized
-            # garbage values (+36, +44...) that slip a 64-unit filter and were
-            # measured being ratcheted into +120 of phantom "progress" per
-            # episode while STANDING STILL -- and stale scroll bytes right
-            # after reset do the same to the first steps. But real movement is
-            # bounded by physics: Mario covers at most ~3px/frame at full
-            # sprint, and the discretizer reports exactly how many emulator
-            # frames this decision spanned. A 4-frame no-op cannot move 36
-            # units; a 20-frame sprint-jump legitimately can. Cap by frames *
-            # MAX_PX_PER_FRAME (x_jump_limit stays as the absolute ceiling).
-            frames = info.get("frames_this_step", 4)
-            limit = min(self.x_jump_limit, frames * self.MAX_PX_PER_FRAME)
-            if abs(delta) < limit:
+            # Ignore teleport-sized jumps (screen wraps, room transitions).
+            # NOTE a per-frame physics cap was tried here and reverted: the
+            # death-transition garbage arrives in SMALL steps (~+8/decision as
+            # the scroll byte starts running during the death sequence) that
+            # pass any cap, while the camera legitimately catches up after
+            # jumps in +26..36 bursts on short decisions that a physics cap
+            # wrongly filters (measured: it cut +113 of real progress from a
+            # RUN+JUMP probe while leaving STAND's phantom +120 untouched).
+            # Transition garbage is instead excluded by the playstate gate
+            # below, which knows WHEN the game is in normal play at all.
+            if abs(delta) < self.x_jump_limit:
                 self.travelled += delta
                 if self.travelled > self.max_travelled:
                     comp["progress"] = (self.travelled - self.max_travelled) * self.progress_scale
@@ -532,7 +557,8 @@ class JumpIncentiveWrapper(Wrapper):
 def make_env(game, state, death_penalty, jump_bonus, render=False, end_on_life_loss=True,
              progress_scale=0.1, keep_game_reward=False, stuck_penalty=0.1,
              score_bonus=0.01, time_penalty=0.0, life_bonus=25.0, power_bonus=0.0, powerup_address=None,
-             progress_address=None, progress_address_high=None, progress_add_screen_x=False):
+             progress_address=None, progress_address_high=None, progress_add_screen_x=False,
+             playstate_address=None, playstate_value=None):
     def _init():
         render_mode = "human" if render else "rgb_array"
         env = retro.make(game=game, state=state or retro.State.DEFAULT, render_mode=render_mode)
@@ -554,7 +580,9 @@ def make_env(game, state, death_penalty, jump_bonus, render=False, end_on_life_l
                            powerup_address=powerup_address,
                            progress_address=progress_address,
                            progress_address_high=progress_address_high,
-                           progress_add_screen_x=progress_add_screen_x)
+                           progress_add_screen_x=progress_add_screen_x,
+                           playstate_address=playstate_address,
+                           playstate_value=playstate_value)
         env = WarpFrame(env)
         return env
     return _init
@@ -726,6 +754,8 @@ def main():
     parser.add_argument("--progress-address-high", type=lambda v: int(v, 0), default=None, help="High byte of a 16-bit little-endian level position (e.g. 0x053D), combined with --progress-address. A single byte wraps at 255, which a full level exceeds several times. (default: %(default)s)")
     parser.add_argument("--powerup-address", type=lambda v: int(v, 0), default=None, help="RAM index holding the power-up tier, read directly so the integration does not need to publish it (SuperMarioBros3-Nes-v0: 0x00ED, found with find_ram_variable.py -- verify for your own game/version). Accepts hex (0x00ED) or decimal. Needed for --power-bonus to do anything here. (default: %(default)s)")
     parser.add_argument("--time-penalty", type=float, default=0.0, help="Small reward subtracted every decision, to discourage dawdling and push toward finishing the level sooner. Start around 0.01-0.05 if the agent loiters; too high and it rushes into danger. (default: %(default)s)")
+    parser.add_argument("--playstate-address", type=lambda v: int(v, 0), default=None, help="RAM index of the game-state/mode byte (find it with probe_after_death.py's state-byte differ). With --playstate-value set, any step where this byte differs from the in-play value is treated as 'not playing': the x-tracker is suspended so death-transition garbage can never be paid as progress, and the episode ends at the moment of the hit instead of when lives finally decrements. Hex or decimal.")
+    parser.add_argument("--playstate-value", type=lambda v: int(v, 0), default=None, help="The value the --playstate-address byte holds during NORMAL play.")
     parser.add_argument("--skip-reward-check", action="store_true", help="Skip the automatic startup reward sanity check (scripted STAND/RUN/JUMP-LEFT probes through the exact training env, refusing to train on a broken landscape). Only skip when deliberately experimenting with a configuration the check would reject.")
     parser.add_argument("--no-end-on-death", dest="end_on_life_loss", action="store_false", help="By default the episode ends the instant a life is lost, so training always restarts from the clean in-level state instead of wandering onto the post-death world map / continue screen. Pass this to disable that and let the game's own scenario decide when an episode ends. (Requires the integration to expose 'lives' in info either way.)")
     parser.set_defaults(end_on_life_loss=True)
@@ -801,6 +831,8 @@ def main():
         progress_address=args.progress_address,
         progress_address_high=args.progress_address_high,
         progress_add_screen_x=args.progress_add_screen_x,
+        playstate_address=args.playstate_address,
+        playstate_value=args.playstate_value,
     )
 
     if not args.skip_reward_check:

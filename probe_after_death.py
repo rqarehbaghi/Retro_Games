@@ -155,7 +155,12 @@ def main():
     # 'play' window: comfortably mid-run, well before the hit that caused the
     # death (the animation is ~1-2s). 'dying' window: the last frames before
     # lives decremented -- inside the death sequence by construction.
-    play = hist[max(0, n - 500):max(20, n - 300)]
+    # 'play' must be MID-run: clamping to the episode's first frames once made
+    # scroll-engine bytes (which change when scrolling starts ~frame 70) look
+    # like death markers. Middle third, ending well before the hit.
+    lo = n // 3
+    hi = min(n - 120, lo + 120)
+    play = hist[lo:hi] if hi - lo >= 20 else hist[max(0, n // 2 - 30):n // 2]
     dying = hist[n - 12:]
     if len(play) >= 20:
         const_play = play.std(axis=0) == 0

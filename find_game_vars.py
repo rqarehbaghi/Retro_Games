@@ -82,34 +82,78 @@ def score_coins(col, n):
 
 
 def score_meter(col, n):
-    """A P-meter: bounded small enum, rises AND falls a lot, idles at 0."""
+    """A P-meter: bounded small enum that rises AND falls, idling at the bottom.
+
+    Deliberately permissive. A stricter version returned nothing on a real demo,
+    which is the wrong failure: a meter that never fills (no sustained sprint in
+    the recording) still shows its signature at low values, and hard filters
+    hide that. Rank instead of reject."""
     d = np.diff(col)
     ups = int(np.count_nonzero(d > 0))
     downs = int(np.count_nonzero(d < 0))
-    if col.max() > 8 or col.max() < 3:
+    if col.max() > 16 or col.max() < 1:
         return None
-    if ups < 5 or downs < 5:
+    if ups < 3 or downs < 3:
         return None
-    # Filling and draining should be roughly balanced over a whole demo.
     balance = min(ups, downs) / max(ups, downs)
-    if balance < 0.4:
-        return None
     bottom_frac = float(np.count_nonzero(col == col.min())) / n
-    if bottom_frac < 0.15:         # a meter spends real time empty
-        return None
-    return ups + downs + balance * 50
+    # Reward balance and bottom-dwelling rather than requiring them.
+    return ups + downs + balance * 60 + bottom_frac * 40
 
 
 def score_timer(col, n):
-    """A countdown: decreases far more than it increases, over a wide range."""
+    """A countdown byte.
+
+    Handles BOTH encodings, because a strict "mostly decreases" test found
+    nothing on a real demo: SMB3 keeps the timer as separate BCD DIGITS, and a
+    single digit wraps 0 -> 9 constantly, so its ups and downs are nearly equal.
+    A whole-value timer still shows the plain decreasing signature."""
     d = np.diff(col)
     ups = int(np.count_nonzero(d > 0))
     downs = int(np.count_nonzero(d < 0))
-    if downs < 10 or downs < ups * 3:
+    if downs < 5:
         return None
-    if col.max() - col.min() < 5:
-        return None
-    return downs * 10 - ups * 5
+    # Plain countdown: decreases dominate.
+    if downs >= ups * 3 and col.max() - col.min() >= 5:
+        return downs * 10 - ups * 5
+    # BCD digit: 0..9, steps of -1 with periodic +9 wraps.
+    if col.max() <= 9 and col.min() >= 0:
+        minus_one = int(np.count_nonzero(d == -1))
+        wraps = int(np.count_nonzero(d == 9))
+        if minus_one >= 5 and minus_one >= wraps:
+            return minus_one * 8 + wraps
+    return None
+
+
+def find_bcd_timer(ram, n, top):
+    """Look for adjacent digit bytes that TOGETHER count down.
+
+    SMB3 shows a 3-digit timer; if it is stored as one digit per byte, no single
+    address looks like a countdown but the combination does."""
+    results = []
+    size = ram.shape[1]
+    for addr in range(size - 2):
+        trio = ram[:, addr:addr + 3]
+        if trio.max() > 9 or trio.min() < 0:
+            continue
+        value = trio[:, 0] * 100 + trio[:, 1] * 10 + trio[:, 2]
+        d = np.diff(value)
+        downs = int(np.count_nonzero(d < 0))
+        ups = int(np.count_nonzero(d > 0))
+        if downs < 10 or downs < ups * 3:
+            continue
+        if value.max() - value.min() < 20:
+            continue
+        results.append((downs * 10 - ups * 5, addr, int(value.min()), int(value.max()), ups, downs))
+    results.sort(reverse=True)
+    if results:
+        print("\n3-digit BCD timer candidates (addr = the HUNDREDS digit;")
+        print("value = ram[addr]*100 + ram[addr+1]*10 + ram[addr+2]):\n")
+        print(f"  {'ADDR':>8}  {'DEC':>6}  {'RANGE':>12}  {'UPS':>5}  {'DOWNS':>5}")
+        for _s, addr, lo, hi, ups, downs in results[:top]:
+            print(f"  0x{addr:04X}  {addr:6d}  {lo:5d}..{hi:<5d}  {ups:5d}  {downs:5d}")
+    else:
+        print("\n(no 3-digit BCD timer found either)")
 
 
 SCORERS = {"coins": score_coins, "meter": score_meter, "timer": score_timer}
@@ -131,17 +175,40 @@ def main():
     p.add_argument("--demo", required=True, help="A .bk2 recording that exercises the variable")
     p.add_argument("--find", choices=sorted(SCORERS), help="Which signature to search for")
     p.add_argument("--watch", default=None, help="Comma-separated addresses to print over time instead of searching")
+    p.add_argument("--compare", default=None, help="Two addresses (e.g. 0x25A2,0x2167) to diff frame by frame. Use when a search returns several candidates that look equally good: identical everywhere means one is a copy of the other (either works); any divergence tells you which is the real variable and which is a display mirror.")
     p.add_argument("--every", type=int, default=60, help="Sample interval for --watch (default: %(default)s)")
     p.add_argument("--top", type=int, default=15)
     args = p.parse_args()
 
-    if not args.find and not args.watch:
-        raise SystemExit("Pass --find {coins,meter,timer} or --watch 0xADDR")
+    if not args.find and not args.watch and not args.compare:
+        raise SystemExit("Pass --find {coins,meter,timer}, --watch 0xADDR, or --compare 0xA,0xB")
 
     print(f"Replaying {args.demo} ...")
     ram, infos = replay(args.demo)
     n = ram.shape[0]
     print(f"{n} frames, RAM size {ram.shape[1]} bytes.\n")
+
+    if args.compare:
+        a, b = [int(x, 0) for x in args.compare.split(",")]
+        ca, cb = ram[:, a], ram[:, b]
+        diff_idx = np.where(ca != cb)[0]
+        print(f"Comparing 0x{a:04X} and 0x{b:04X} over {n} frames:\n")
+        if len(diff_idx) == 0:
+            print("  IDENTICAL at every frame.")
+            print("  One is a copy of the other (typically the live counter and the")
+            print("  value the HUD renders from). Either works -- prefer the LOWER")
+            print("  address, which is more often the primary. The distinction only")
+            print("  matters at edge cases this demo never reached: crossing 100")
+            print("  coins (1-Up + reset) and level transitions.")
+        else:
+            print(f"  DIVERGE on {len(diff_idx)} of {n} frames. First few:")
+            print(f"    {'FRAME':>7}  {'VIDEO':>9}  {('0x%04X' % a):>8}  {('0x%04X' % b):>8}")
+            for i in diff_idx[:15]:
+                secs = i / 60.0988
+                print(f"    {i:7d}  {int(secs//60):02d}:{secs%60:06.3f}  {int(ca[i]):8d}  {int(cb[i]):8d}")
+            print("\n  Check these frames on the video: whichever matches the on-screen")
+            print("  value is the real variable; the other lags or is a scratch copy.")
+        return
 
     if args.watch:
         addrs = [int(a, 0) for a in args.watch.split(",")]
@@ -175,9 +242,22 @@ def main():
     print(f"  {'ADDR':>8}  {'DEC':>6}  {'RANGE':>12}  {'UPS':>5}  {'DOWNS':>5}")
     for _s, addr, lo, hi, ups, downs in rows[:args.top]:
         print(f"  0x{addr:04X}  {addr:6d}  {lo:5d}..{hi:<5d}  {ups:5d}  {downs:5d}")
+    if args.find == "timer":
+        # A 3-digit timer stored one digit per byte shows nothing per-address.
+        find_bcd_timer(ram, n, args.top)
+
     if not rows:
-        print("  (none matched -- record a demo that exercises this variable more:")
-        print("   collect plenty of coins, or sprint at full speed and stop repeatedly)")
+        print("  (none matched this signature)")
+        if args.find == "meter":
+            print("\n  A P-meter only shows its signature if the recording actually")
+            print("  fills it. Record a demo with several LONG full-speed sprints")
+            print("  (hold B and run flat out until the meter fills) and stops in")
+            print("  between, then search again.")
+        elif args.find == "timer":
+            print("\n  If the BCD search above also found nothing, the timer may be")
+            print("  packed (two digits per byte) or simply not run in this demo.")
+        else:
+            print("\n  Record a demo that exercises this variable more.")
         return
 
     print(f"\n{HINTS[args.find]}")

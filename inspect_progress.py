@@ -33,15 +33,97 @@ import numpy as np
 import stable_retro as retro
 
 
+def analyse(rams, hpos_series, args):
+    """Rank RAM bytes by how much they behave like accumulated level position.
+
+    Scoring rewards steady climbing and PENALIZES resets to zero, because that
+    is exactly what separated a real position counter from 0x00CF, which looked
+    monotonic while holding RIGHT but drops back to 0 whenever the player stops
+    or reverses -- a per-frame delta, not a position. Also considers adjacent
+    16-bit little-endian pairs, the usual encoding for levels longer than 255.
+    """
+    vals = [v for v in hpos_series if v is not None]
+    if vals:
+        print(f"\nhpos: min={min(vals)} max={max(vals)} first={vals[0]} last={vals[-1]}")
+
+    ram = np.array(rams, dtype=np.int32)
+    n = ram.shape[0]
+    print(f"\nProgress candidates over {n} frames of real play.")
+    print("Scored on: climbs a lot, rarely collapses, and does NOT keep")
+    print("returning to zero.\n")
+    print(f"  {'ADDR':>8}  {'DEC':>6}  {'RANGE':>12}  {'UPS':>5}  {'BIGDROPS':>8}  {'ZERO%':>6}")
+
+    rows = []
+    for addr in range(ram.shape[1]):
+        col = ram[:, addr]
+        d = np.diff(col)
+        ups = int(np.count_nonzero(d > 0))
+        downs = int(np.count_nonzero(d < 0))
+        big_drops = int(np.count_nonzero(d < -8))
+        zero_frac = float(np.count_nonzero(col == 0)) / n
+        if ups < 10 or ups < downs:
+            continue
+        if zero_frac > 0.15:      # positions don't sit at zero
+            continue
+        if big_drops > n * 0.02:  # nor collapse repeatedly
+            continue
+        score = ups - big_drops * 10 - zero_frac * 200
+        rows.append((score, addr, int(col.min()), int(col.max()), ups, big_drops, zero_frac))
+
+    rows.sort(reverse=True)
+    for score, addr, lo, hi, ups, big_drops, zero_frac in rows[:20]:
+        print(f"  0x{addr:04X}  {addr:6d}  {lo:5d}..{hi:<5d}  {ups:5d}  {big_drops:8d}  {zero_frac*100:5.1f}%")
+    if not rows:
+        print("  (nothing qualified -- every byte either sat at zero or collapsed")
+        print("   repeatedly. Try a longer demo with sustained forward progress.)")
+
+    print("\nVerify the top pick before training on it:")
+    print(f"    python inspect_progress.py --game {args.game} --demo {args.demo} --watch 0xADDR")
+    print("It must rise as you advance and NOT reset when you stop or back up.")
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--game", required=True)
     p.add_argument("--state", default=None)
     p.add_argument("--frames", type=int, default=900, help="Frames to run right (default: %(default)s)")
     p.add_argument("--every", type=int, default=30, help="Sample interval (default: %(default)s)")
+    p.add_argument("--demo", default=None, help="Scan a .bk2 HUMAN RECORDING instead of a scripted run. Strongly preferred: holding RIGHT exercises a narrow slice of states, and an address that looks like level position under that test can turn out to be a per-frame delta that resets to zero whenever the player stops or backs up (exactly what happened with 0x00CF). Real play covers stopping, reversing, jumping and dying.")
     p.add_argument("--watch", default=None, help="Comma-separated RAM addresses to print alongside hpos, e.g. 0x053C,0x053D. Use this to CONFIRM a candidate really is level progress: it should climb steadily while hpos flatlines.")
     args = p.parse_args()
     watch = [int(a, 0) for a in args.watch.split(",")] if args.watch else []
+
+    if args.demo:
+        movie = retro.Movie(args.demo)
+        movie.step()
+        env = retro.make(game=movie.get_game(), state=None,
+                         use_restricted_actions=retro.Actions.ALL,
+                         players=movie.players, render_mode="rgb_array")
+        env.initial_state = movie.get_state()
+        env.reset()
+        print(f"Scanning human recording {args.demo}\n")
+        rams, hpos_series = [], []
+        header = f"  {'FRAME':>6}  {'hpos':>6}  {'time':>5}  {'score':>6}"
+        for a in watch:
+            header += f"  {('0x%04X' % a):>8}"
+        print(header)
+        frame = 0
+        while movie.step():
+            keys = [movie.get_key(i, 0) for i in range(env.num_buttons)]
+            _obs, _rew, terminated, truncated, info = env.step(keys)
+            rams.append(env.get_ram().copy())
+            hpos_series.append(info.get("hpos"))
+            if frame % args.every == 0:
+                line = f"  {frame:6d}  {str(info.get('hpos')):>6}  {str(info.get('time')):>5}  {str(info.get('score')):>6}"
+                for a in watch:
+                    line += f"  {int(rams[-1][a]):>8}"
+                print(line)
+            frame += 1
+            if terminated or truncated:
+                break
+        env.close()
+        analyse(rams, hpos_series, args)
+        return
 
     env = retro.make(game=args.game, state=args.state or retro.State.DEFAULT, render_mode="rgb_array")
     buttons = env.unwrapped.buttons

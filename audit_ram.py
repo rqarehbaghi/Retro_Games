@@ -61,6 +61,12 @@ class Tracker:
         self.playstate_value = playstate_value
         self.prev = {}
         self.events = []
+        # Per-kind event counts. A byte that changes constantly is not a state
+        # variable, and printing every transition buries the events that matter
+        # (power-ups, hits, deaths) in noise -- so each kind is capped and the
+        # rest are counted for the verdict.
+        self.event_counts = {}
+        self.event_cap = 8
         self.series = {k: [] for k in
                        ("lives", "score", "time", "hpos", "scroll", "progress",
                         "powerup", "playstate")}
@@ -98,14 +104,14 @@ class Tracker:
 
         if changed("lives"):
             direction = "LOST A LIFE" if vals["lives"] < self.prev["lives"] else "GAINED A LIFE (1-Up)"
-            self.event(frame, f"LIVES {self.prev['lives']} -> {vals['lives']}   <-- {direction}")
+            self.event(frame, "LIVES", f"LIVES {self.prev['lives']} -> {vals['lives']}   <-- {direction}")
             if vals["lives"] < self.prev["lives"] and self.first_life_loss is None:
                 self.first_life_loss = frame
         if changed("powerup"):
             old, new = self.prev["powerup"], vals["powerup"]
             names = {0: "small", 1: "big", 2: "fire", 3: "raccoon"}
             direction = "POWERED UP" if new > old else "TOOK A HIT / shrank"
-            self.event(frame, f"POWERUP {old} ({names.get(old, '?')}) -> {new} ({names.get(new, '?')})   <-- {direction}")
+            self.event(frame, "POWERUP", f"POWERUP {old} ({names.get(old, '?')}) -> {new} ({names.get(new, '?')})   <-- {direction}")
         if changed("playstate"):
             old, new = self.prev["playstate"], vals["playstate"]
             note = ""
@@ -116,16 +122,22 @@ class Tracker:
                         self.first_playstate_exit = frame
                 elif new == self.playstate_value:
                     note = "   <-- entered normal play"
-            self.event(frame, f"PLAYSTATE {old} -> {new}{note}")
+            self.event(frame, "PLAYSTATE", f"PLAYSTATE {old} -> {new}{note}")
         if changed("score"):
-            self.event(frame, f"SCORE {self.prev['score']} -> {vals['score']}   (+{vals['score'] - self.prev['score']})")
+            self.event(frame, "SCORE", f"SCORE {self.prev['score']} -> {vals['score']}   (+{vals['score'] - self.prev['score']})")
 
         self.prev = dict(vals)
 
-    def event(self, frame, text):
+    def event(self, frame, kind, text):
+        n = self.event_counts.get(kind, 0) + 1
+        self.event_counts[kind] = n
         line = f">>> frame {frame:6d}  [{stamp(frame)}]  {text}"
         self.events.append(line)
-        print(line)
+        if n < self.event_cap:
+            print(line)
+        elif n == self.event_cap:
+            print(f">>> ... further {kind} changes suppressed (a value changing "
+                  f"this often is not a state variable -- see verdicts)")
 
 
 def header():
@@ -240,7 +252,17 @@ def verdicts(tracker):
 
     lo, hi, distinct = span("scroll")
     print(f"\nprogress address (scroll)   range {lo}..{hi}, {distinct} distinct")
-    if distinct > 5:
+    zeros = s["scroll"].count(0) if s["scroll"] else 0
+    zero_frac = zeros / max(1, len(s["scroll"]))
+    drops = sum(1 for a, b in zip(s["scroll"], s["scroll"][1:]) if b < a - 8)
+    if zero_frac > 0.15 and drops > 5:
+        print(f"  *** REJECTED: sits at 0 for {zero_frac*100:.0f}% of frames with "
+              f"{drops} large drops.")
+        print("  An accumulated level position never repeatedly resets to zero --")
+        print("  this reads like a per-frame delta / velocity, not a position. It")
+        print("  looked monotonic earlier only because that check held RIGHT the")
+        print("  whole time; real play (stopping, backing up) exposes it.")
+    elif distinct > 5:
         print("  OK -- moves through many values during play (camera scrolling).")
     else:
         print("  SUSPECT -- barely moved. If the run had real forward travel this")
@@ -260,6 +282,13 @@ def verdicts(tracker):
 
     vals = sorted(set(s["playstate"])) if s["playstate"] else []
     print(f"\nplaystate address           values seen: {vals}")
+    ps_changes = tracker.event_counts.get("PLAYSTATE", 0)
+    nframes = max(1, len(s["playstate"]))
+    if ps_changes > 10 and ps_changes / nframes > 0.005:
+        print(f"  *** REJECTED: changed {ps_changes} times in {nframes} frames -- this")
+        print("  byte CYCLES during normal gameplay (animation / PPU phase), so it")
+        print("  cannot mark 'in play'. Gating training on it terminates every")
+        print("  episode within about a second. Do NOT pass --playstate-address.")
     if tracker.playstate_value is not None:
         frac = s["playstate"].count(tracker.playstate_value) / max(1, len(s["playstate"]))
         print(f"  in-play value {tracker.playstate_value} held {frac*100:.1f}% of frames")

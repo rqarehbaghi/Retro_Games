@@ -213,7 +213,10 @@ def main():
         return env
 
     dummy_env = VecFrameStack(DummyVecEnv([make_dummy_env]), n_stack=4)
-    model = PPO("CnnPolicy", dummy_env, verbose=0)
+    # verbose=1 so the saved checkpoint carries it: PPO.load() restores this
+    # attribute, and a verbose=0 checkpoint silences SB3's rollout table for
+    # the entire fine-tuning run that resumes from it.
+    model = PPO("CnnPolicy", dummy_env, verbose=1)
     policy = model.policy
     optimizer = torch.optim.Adam(policy.parameters(), lr=args.lr)
 

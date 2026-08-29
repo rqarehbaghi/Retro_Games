@@ -911,8 +911,20 @@ def main():
                 "n_steps": args.n_steps,
                 "learning_rate": args.lr,
                 "ent_coef": args.ent_coef,
+                # PPO.load restores `verbose` too, and pretrain_imitation.py
+                # builds its model with verbose=0 -- so resuming from a BC
+                # checkpoint silenced SB3's logger completely: no rollout
+                # table, no ep_rew_mean/ep_len_mean, exactly when they're
+                # needed to see whether the warm start took. Force it on.
+                "verbose": 1,
             },
         )
+        # ep_info_buffer is restored as well, so a resume would spend its first
+        # ~100 episodes averaging in the PREVIOUS run's stats -- misleading
+        # precisely when comparing a warm start against where the last run
+        # plateaued. Start the episode statistics fresh for this run.
+        model.ep_info_buffer = None
+        model.ep_success_buffer = None
     else:
         model = PPO("CnnPolicy", env, n_steps=args.n_steps, learning_rate=args.lr, ent_coef=args.ent_coef, verbose=1)
 

@@ -56,8 +56,18 @@ def main():
 
     rams = []
     hpos_series = []
+    prev_lives = None
     for frame in range(args.frames):
         _obs, _rew, terminated, truncated, info = env.step(run_right)
+        # Stop at the FIRST death. Post-death frames are the map screen, and
+        # map animation counters climb there -- including them once produced a
+        # false progress candidate (0x053C, a map counter frozen during actual
+        # play) because two-thirds of the scan window was map, not level.
+        lives = info.get("lives")
+        if prev_lives is not None and lives is not None and lives < prev_lives:
+            print(f"  (died at frame {frame} -- scan stops here; map frames would poison the candidates)")
+            break
+        prev_lives = lives
         rams.append(env.get_ram().copy())
         hpos_series.append(info.get("hpos"))
         if frame % args.every == 0:
@@ -101,11 +111,13 @@ def main():
 
     env.close()
     print(
-        "\nWhat to look for: a HIGH byte that steps up a few times and never"
-        "\ndown (that's your screen/page counter -- the best progress signal),"
-        "\nor a pair of adjacent addresses forming a 16-bit position."
-        "\nPaste this table to Claude and the reward can be pointed at it via"
-        "\ntrain.py's X_POS_KEYS / a direct RAM read."
+        "\nWhat to look for (the scan now covers IN-LEVEL frames only): a HIGH"
+        "\nbyte that steps up a few times and never down (a screen/page counter"
+        "\n-- the best progress signal), or a pair of adjacent addresses forming"
+        "\na 16-bit position."
+        "\nALWAYS verify a candidate with --watch before training on it: it"
+        "\nmust climb steadily the whole run while you hold RIGHT, not just in"
+        "\none phase. Paste the table to Claude to pick together."
     )
 
 

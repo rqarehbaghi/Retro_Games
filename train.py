@@ -168,8 +168,17 @@ class VariableHoldDiscretizer(Wrapper):
     all -- a fixed-length repeat can never do that regardless of how long
     training runs."""
 
-    def __init__(self, env, action_table):
+    def __init__(self, env, action_table, use_game_reward=False):
         super().__init__(env)
+        # The integration's own scenario reward is OPAQUE and, for
+        # SuperMarioBros3-Nes-v0, actively harmful: measured with
+        # debug_rewards.py, it pays an hpos-shaped progress term that caps out
+        # ~1.2s into the level (hpos pins at the 144 scroll threshold) and then
+        # lands a hidden ~-124 at death -- swamping every penalty we tuned and
+        # flattening the reward landscape until standing, running, and jumping
+        # all score about the same. Default is to ZERO it and take full
+        # ownership of the reward; pass use_game_reward=True to keep it.
+        self.use_game_reward = use_game_reward
         buttons = env.unwrapped.buttons
         self._raw_actions = []
         self._hold_frames = []
@@ -190,7 +199,8 @@ class VariableHoldDiscretizer(Wrapper):
         obs = terminated = truncated = info = None
         for _ in range(hold):
             obs, reward, terminated, truncated, info = self.env.step(raw)
-            total_reward += reward
+            if self.use_game_reward:
+                total_reward += reward
             frames_used += 1
             if terminated or truncated:
                 break
@@ -465,7 +475,7 @@ class JumpIncentiveWrapper(Wrapper):
 
 
 def make_env(game, state, death_penalty, jump_bonus, render=False, end_on_life_loss=True,
-             progress_scale=0.1,
+             progress_scale=0.1, keep_game_reward=False,
              score_bonus=0.01, time_penalty=0.0, life_bonus=25.0, power_bonus=0.0, powerup_address=None,
              progress_address=None, progress_address_high=None):
     def _init():
@@ -477,7 +487,7 @@ def make_env(game, state, death_penalty, jump_bonus, render=False, end_on_life_l
         # and receives the discrete action). RewardShaper then sits on top so
         # its survival tick / progress / death shaping is applied once per
         # decision, not once per emulator frame (see RewardShaper docstring).
-        env = VariableHoldDiscretizer(env, ACTION_TABLE)
+        env = VariableHoldDiscretizer(env, ACTION_TABLE, use_game_reward=keep_game_reward)
         env = JumpIncentiveWrapper(env, jump_bonus=jump_bonus,
                                    progress_address=progress_address,
                                    progress_address_high=progress_address_high)
@@ -575,7 +585,8 @@ def main():
     parser.add_argument("--life-bonus", type=float, default=25.0, help="Reward for each extra life GAINED -- 1-Up mushrooms, the 100-coin threshold, score milestones. An extra life is worth far more strategically than the few points a 1-Up adds to score, so --score-bonus alone undervalues it. Set to 0 to disable. Note regular power-up mushrooms can't be rewarded directly (this integration exposes no power-state variable), only via their score. (default: %(default)s)")
     parser.add_argument("--power-bonus", type=float, default=0.0, help="Reward per power-up TIER gained (small->big->fire->raccoon...), and the same penalty per tier lost when you take a hit. Requires the integration to publish the power state in info as `powerup` -- it is NOT exposed by default. Use find_ram_variable.py to locate the RAM address in your own recording, add it to the integration data.json, then set this (try 10-20). Left at 0 it does nothing. (default: %(default)s)")
     parser.add_argument("--progress-scale", type=float, default=0.1, help="Reward per unit of NEW ground covered. This is the main learning signal and must be balanced against --death-penalty: if a whole run only earns progress*distance while dying costs far more, the death term swamps everything and the agent gets no gradient toward playing better. Measure your game's distance-per-run with inspect_progress.py and scale so a good run is worth at least as much as a death costs. (default: %(default)s)")
-    parser.add_argument("--progress-address", type=lambda v: int(v, 0), default=None, help="RAM index of the real level-position counter, read directly. STRONGLY recommended: SuperMarioBros3-Nes-v0's published `hpos` is Mario's ON-SCREEN x, which flatlines at the scroll threshold (144), so rewarding it pays only for the first ~1.5s of a level. Candidate found with inspect_progress.py: 0x053C. Hex or decimal. (default: %(default)s)")
+    parser.add_argument("--keep-game-reward", action="store_true", help="Keep the integration's own scenario reward on top of the shaping. OFF by default: for SuperMarioBros3-Nes-v0 that reward was measured (debug_rewards.py) to pay an hpos-based progress term that caps out ~1.2s into the level and then a hidden ~-124 at death, swamping the tuned shaping and flattening the reward landscape.")
+    parser.add_argument("--progress-address", type=lambda v: int(v, 0), default=None, help="RAM index of the real level-position counter, read directly. STRONGLY recommended: SuperMarioBros3-Nes-v0's published `hpos` is Mario's ON-SCREEN x, which flatlines at the scroll threshold (144), so rewarding it pays only for the first ~1.5s of a level. Find candidates with inspect_progress.py and VERIFY with its --watch flag before trusting one -- an early candidate (0x053C) turned out to be a map-screen counter that never moves during play, because the scan window included post-death map frames. Hex or decimal. (default: %(default)s)")
     parser.add_argument("--progress-address-high", type=lambda v: int(v, 0), default=None, help="High byte of a 16-bit little-endian level position (e.g. 0x053D), combined with --progress-address. A single byte wraps at 255, which a full level exceeds several times. (default: %(default)s)")
     parser.add_argument("--powerup-address", type=lambda v: int(v, 0), default=None, help="RAM index holding the power-up tier, read directly so the integration does not need to publish it (SuperMarioBros3-Nes-v0: 0x00ED, found with find_ram_variable.py -- verify for your own game/version). Accepts hex (0x00ED) or decimal. Needed for --power-bonus to do anything here. (default: %(default)s)")
     parser.add_argument("--time-penalty", type=float, default=0.0, help="Small reward subtracted every decision, to discourage dawdling and push toward finishing the level sooner. Start around 0.01-0.05 if the agent loiters; too high and it rushes into danger. (default: %(default)s)")
@@ -631,7 +642,7 @@ def main():
     print(f"Checkpoints folder: {checkpoint_dir}")
     print(f"Steps per iteration: {steps_per_iteration:,} ({args.n_steps} n_steps x {args.num_envs} envs)")
     print(f"This run: iterations {start_iteration + 1}-{end_iteration} ({total_timesteps:,} env steps)")
-    print(f"Reward shaping: death_penalty={args.death_penalty}, progress_scale={args.progress_scale}, jump_bonus={args.jump_bonus}, score_bonus={args.score_bonus}, life_bonus={args.life_bonus}, power_bonus={args.power_bonus}, powerup_address={args.powerup_address}, progress_address={args.progress_address}, time_penalty={args.time_penalty}, end_on_life_loss={args.end_on_life_loss}")
+    print(f"Reward shaping: keep_game_reward={args.keep_game_reward}, death_penalty={args.death_penalty}, progress_scale={args.progress_scale}, jump_bonus={args.jump_bonus}, score_bonus={args.score_bonus}, life_bonus={args.life_bonus}, power_bonus={args.power_bonus}, powerup_address={args.powerup_address}, progress_address={args.progress_address}, time_penalty={args.time_penalty}, end_on_life_loss={args.end_on_life_loss}")
     print(
         "Rough guide from earlier: simple games often reach solid play in "
         "hours, medium-complexity platformers in about a day, on a modern "
@@ -650,6 +661,7 @@ def main():
                      life_bonus=args.life_bonus, power_bonus=args.power_bonus,
                      powerup_address=args.powerup_address,
                      progress_scale=args.progress_scale,
+                     keep_game_reward=args.keep_game_reward,
                      progress_address=args.progress_address,
                      progress_address_high=args.progress_address_high)
         ])
@@ -661,6 +673,7 @@ def main():
                      life_bonus=args.life_bonus, power_bonus=args.power_bonus,
                      powerup_address=args.powerup_address,
                      progress_scale=args.progress_scale,
+                     keep_game_reward=args.keep_game_reward,
                      progress_address=args.progress_address,
                      progress_address_high=args.progress_address_high)
             for _ in range(args.num_envs)

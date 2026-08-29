@@ -72,6 +72,7 @@ def main():
     p.add_argument("--powerup-address", type=lambda v: int(v, 0), default=None)
     p.add_argument("--progress-address", type=lambda v: int(v, 0), default=None)
     p.add_argument("--progress-address-high", type=lambda v: int(v, 0), default=None)
+    p.add_argument("--progress-add-screen-x", action="store_true")
     p.add_argument("--time-penalty", type=float, default=0.0)
     args = p.parse_args()
 
@@ -82,6 +83,7 @@ def main():
         power_bonus=args.power_bonus, powerup_address=args.powerup_address,
         progress_address=args.progress_address,
         progress_address_high=args.progress_address_high,
+        progress_add_screen_x=args.progress_add_screen_x,
     )()
 
     print(f"Action indices used: NOOP={NOOP} {ACTION_TABLE[NOOP]}, "

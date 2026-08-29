@@ -61,7 +61,9 @@ from gymnasium import ObservationWrapper, Wrapper
 from gymnasium.spaces import Box, Discrete
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback
-from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecFrameStack, VecMonitor
+from stable_baselines3.common.vec_env import (
+    DummyVecEnv, SubprocVecEnv, VecFrameStack, VecMonitor, VecNormalize,
+)
 
 # Each entry is (button combo, hold_frames): how many raw emulator frames
 # the buttons stay pressed once this action is chosen. This is what makes
@@ -518,18 +520,25 @@ class IterationCheckpointCallback(BaseCallback):
     iterations (previous one deleted each time) as a crash/resume safety
     net independent of the milestone list."""
 
-    def __init__(self, milestones, out_dir, autosave_every=25, start_iteration=0, verbose=0):
+    def __init__(self, milestones, out_dir, autosave_every=25, start_iteration=0, verbose=0,
+                 vecnorm=None):
         super().__init__(verbose)
         self.milestones = set(milestones)
         self.out_dir = out_dir
         self.autosave_every = autosave_every
         self.iteration = start_iteration
         self._last_autosave_path = None
+        # The VecNormalize layer, so its running reward statistics get saved
+        # with every checkpoint -- they're training state: resuming without
+        # them re-estimates from scratch and briefly mis-scales rewards.
+        self.vecnorm = vecnorm
         os.makedirs(out_dir, exist_ok=True)
 
     def save_now(self, tag="iter"):
         path = os.path.join(self.out_dir, f"{tag}_{self.iteration}.zip")
         self.model.save(path)
+        if self.vecnorm is not None:
+            self.vecnorm.save(os.path.join(self.out_dir, "vecnorm_stats.pkl"))
         return path
 
     def _on_rollout_start(self):
@@ -660,7 +669,30 @@ def main():
     # rollout/ep_rew_mean and ep_len_mean simply never appear in the console
     # table, leaving no way to tell whether training is working. VecMonitor
     # records per-episode shaped reward and length at the vec-env level.
+    # (It sits BELOW VecNormalize, so the logged ep_rew_mean stays in raw,
+    # interpretable shaped-reward units, not normalized ones.)
     env = VecMonitor(env)
+
+    # Reward normalization -- the stabilizer this pipeline was missing.
+    # With a real progress signal (e.g. --progress-scale 1.0 against a level
+    # position counter) episode returns reach magnitude ~100+. Feeding raw
+    # returns that large into PPO makes the value-function loss dominate the
+    # shared CNN trunk; training then looks healthy early (the agent learns to
+    # run) and later COLLAPSES into a degenerate policy (e.g. standing still
+    # until an enemy arrives) as the value blowup wrecks the features both
+    # heads share. VecNormalize rescales rewards to O(1) by a running estimate
+    # of return variance, which is the standard fix. Observations are left
+    # alone (uint8 images; the policy normalizes those itself). The running
+    # statistics are part of the training state, so they are saved next to
+    # every checkpoint and restored on --resume-from.
+    vecnorm_stats = os.path.join(checkpoint_dir, "vecnorm_stats.pkl")
+    if args.resume_from and os.path.exists(vecnorm_stats):
+        env = VecNormalize.load(vecnorm_stats, env)
+        env.training = True
+        print(f"Restored reward-normalization statistics from {vecnorm_stats}")
+    else:
+        env = VecNormalize(env, norm_obs=False, norm_reward=True, clip_reward=10.0)
+    vecnorm = env
     env = VecFrameStack(env, n_stack=4)
 
     if args.resume_from:
@@ -697,6 +729,7 @@ def main():
     callback = IterationCheckpointCallback(
         args.checkpoint_iterations, checkpoint_dir,
         autosave_every=args.autosave_every, start_iteration=start_iteration, verbose=1,
+        vecnorm=vecnorm,
     )
 
     try:

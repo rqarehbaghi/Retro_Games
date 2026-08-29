@@ -43,13 +43,29 @@ def run_policy(env, pick_action, label, max_decisions=600, show_first=40):
     obs, info = env.reset()
     total = 0.0
     rewards = []
+    comp_totals = {}
+    x_first = x_last = None
     for i in range(max_decisions):
         obs, r, terminated, truncated, info = env.step(pick_action(i))
         total += r
         rewards.append(r)
+        # Component ledgers published by RewardShaper / JumpIncentiveWrapper --
+        # this is what attributes every point of the total to a specific term.
+        for src in ("shaping", "jump_shaping"):
+            for key, val in info.get(src, {}).items():
+                if key == "x":
+                    if val is not None:
+                        if x_first is None:
+                            x_first = val
+                        x_last = val
+                elif val:
+                    comp_totals[key] = comp_totals.get(key, 0.0) + val
         if terminated or truncated:
             break
     print(f"\n--- {label}: {len(rewards)} decisions, TOTAL shaped reward = {total:+.2f} ---")
+    comps = "  ".join(f"{k}={v:+.2f}" for k, v in sorted(comp_totals.items()))
+    print(f"components: {comps if comps else '(none fired)'}")
+    print(f"x (progress reader) went {x_first} -> {x_last}")
     print(f"first {min(show_first, len(rewards))} per-decision rewards:")
     line = "  "
     for i, r in enumerate(rewards[:show_first]):

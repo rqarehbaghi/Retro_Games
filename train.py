@@ -339,6 +339,15 @@ class RewardShaper(Wrapper):
     def step(self, action):
         obs, reward, terminated, truncated, info = self.env.step(action)
 
+        # Per-term ledger, published in info["shaping"] each step. Costs almost
+        # nothing and lets debug_rewards.py attribute every point of an
+        # episode's total to a specific term -- the difference between knowing
+        # WHICH term is broken and guessing (an idle policy was once observed
+        # earning +0.97/decision and the total alone couldn't say from where).
+        comp = {"tick": self.survival_tick - self.time_penalty, "progress": 0.0,
+                "backtrack": 0.0, "score": 0.0, "power": 0.0, "life": 0.0,
+                "death": 0.0}
+
         reward += self.survival_tick
         reward -= self.time_penalty
 
@@ -360,23 +369,27 @@ class RewardShaper(Wrapper):
             if abs(delta) < self.x_jump_limit:
                 self.travelled += delta
                 if self.travelled > self.max_travelled:
-                    reward += (self.travelled - self.max_travelled) * self.progress_scale
+                    comp["progress"] = (self.travelled - self.max_travelled) * self.progress_scale
+                    reward += comp["progress"]
                     self.max_travelled = self.travelled
                 elif delta < 0:
                     # Small cost for actively retreating. Not strictly needed to
                     # kill the oscillation exploit (new-ground-only already does
                     # that), but it discourages dawdling backwards and nudges the
                     # policy toward facing forward.
-                    reward += delta * self.progress_scale * self.backtrack_scale
+                    comp["backtrack"] = delta * self.progress_scale * self.backtrack_scale
+                    reward += comp["backtrack"]
         if current_x is not None:
             self.prev_x = current_x
+        comp["x"] = current_x
 
         # Points: coins, power-ups, stomped enemies, and the level-clear time
         # bonus all raise score. Clamp to >=0 so a score reset on death/new
         # level isn't read as a negative reward.
         current_score = info.get("score")
         if current_score is not None and self.prev_score is not None:
-            reward += max(0, current_score - self.prev_score) * self.score_scale
+            comp["score"] = max(0, current_score - self.prev_score) * self.score_scale
+            reward += comp["score"]
         if current_score is not None:
             self.prev_score = current_score
 
@@ -396,10 +409,8 @@ class RewardShaper(Wrapper):
         current_power = self._read_power(info)
         if current_power is not None and self.prev_power is not None and self.power_bonus:
             delta = int(current_power) - int(self.prev_power)
-            if delta > 0:
-                reward += delta * self.power_bonus
-            elif delta < 0:
-                reward += delta * self.power_bonus  # delta negative -> penalty
+            comp["power"] = delta * self.power_bonus  # negative delta -> penalty
+            reward += comp["power"]
         if current_power is not None:
             self.prev_power = current_power
 
@@ -417,7 +428,8 @@ class RewardShaper(Wrapper):
         # score/time -- so those are rewarded solely through their score.)
         if (current_lives is not None and self.prev_lives is not None
                 and current_lives > self.prev_lives):
-            reward += (current_lives - self.prev_lives) * self.life_bonus
+            comp["life"] = (current_lives - self.prev_lives) * self.life_bonus
+            reward += comp["life"]
         if current_lives is not None:
             self.prev_lives = current_lives
 
@@ -434,12 +446,15 @@ class RewardShaper(Wrapper):
         # life-loss death (it just terminated the episode above), so we don't
         # add a second, separate life-loss penalty and double-count.
         if (terminated or truncated) and not info.get("is_stage_clear", False):
+            comp["death"] = -self.death_penalty
             reward -= self.death_penalty
         elif lost_life:
             # Life lost but end_on_life_loss is off and the game didn't end the
             # episode: still penalize the death, play just continues.
+            comp["death"] = -self.death_penalty
             reward -= self.death_penalty
 
+        info["shaping"] = comp
         return obs, reward, terminated, truncated, info
 
 
@@ -477,7 +492,9 @@ class JumpIncentiveWrapper(Wrapper):
     def step(self, action):
         obs, reward, terminated, truncated, info = self.env.step(action)
 
+        comp = {"jump": 0.0, "stuck": 0.0}
         if action in self.jump_action_indices:
+            comp["jump"] = self.jump_bonus
             reward += self.jump_bonus
 
         current_x = self._read_x(info)
@@ -485,12 +502,14 @@ class JumpIncentiveWrapper(Wrapper):
             if abs(current_x - self.prev_x) < 0.5:
                 self.stalled_frames += 1
                 if self.stalled_frames > self.stuck_frames:
+                    comp["stuck"] = -self.stuck_penalty
                     reward -= self.stuck_penalty
             else:
                 self.stalled_frames = 0
         if current_x is not None:
             self.prev_x = current_x
 
+        info["jump_shaping"] = comp
         return obs, reward, terminated, truncated, info
 
 
@@ -570,6 +589,15 @@ def reward_sanity_check(env_fn):
     env.close()
 
     ok = True
+    if results["STAND"] > 10:
+        print(
+            "\nFATAL: STAND earns a clearly positive total -- something pays for\n"
+            "doing nothing (observed once: ~+1/decision of phantom income while\n"
+            "idle). An agent with a profitable do-nothing niche will find it.\n"
+            "Run debug_rewards.py with these flags: its per-component breakdown\n"
+            "names the term. Override with --skip-reward-check."
+        )
+        ok = False
     if results["RUN"] <= results["STAND"] + 20:
         print(
             "\nFATAL: RUN does not decisively out-earn STAND in the actual training\n"

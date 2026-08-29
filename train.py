@@ -457,11 +457,28 @@ class RewardShaper(Wrapper):
         # integration's data.json as `powerup`. Rewarded on INCREASE and
         # penalized on decrease (taking a hit and shrinking is a real loss),
         # scaled by how many tiers changed.
+        # Read lives before the power block: a power drop must be distinguished
+        # from a death, where the death penalty already covers it.
+        current_lives_now = info.get("lives")
         current_power = self._read_power(info)
         if current_power is not None and self.prev_power is not None and self.power_bonus:
             delta = int(current_power) - int(self.prev_power)
-            comp["power"] = delta * self.power_bonus  # negative delta -> penalty
-            reward += comp["power"]
+            if delta > 0:
+                comp["power"] = delta * self.power_bonus
+                reward += comp["power"]
+            elif delta < 0:
+                # A power DROP is only a hit if play is continuing. The byte is
+                # also cleared when the level ends and the game returns to the
+                # world map (observed at frame 4756 of a human demo: 1 -> 0 on
+                # level exit, not a hit), and on death -- where the death
+                # penalty already applies and this would double-count. Charge
+                # for it only when neither is happening.
+                dying = terminated or truncated or (
+                    current_lives_now is not None and self.prev_lives is not None
+                    and current_lives_now < self.prev_lives)
+                if not dying:
+                    comp["power"] = delta * self.power_bonus
+                    reward += comp["power"]
         if current_power is not None:
             self.prev_power = current_power
 

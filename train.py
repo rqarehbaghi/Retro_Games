@@ -265,6 +265,11 @@ class RewardShaper(Wrapper):
     them (varies by game -- check yours if this seems to have no effect,
     see the README). Silently does nothing extra if it doesn't."""
 
+    # Upper bound on believable horizontal speed, px per emulator frame.
+    # SMB3's full sprint is ~2.5px/frame; 3.5 leaves headroom without letting
+    # death-transition garbage through on short decisions.
+    MAX_PX_PER_FRAME = 3.5
+
     def __init__(self, env, death_penalty=50.0, survival_tick=0.0, progress_scale=0.1,
                  score_scale=0.01, time_penalty=0.0, life_bonus=25.0,
                  power_bonus=0.0, powerup_address=None, x_jump_limit=64,
@@ -364,9 +369,20 @@ class RewardShaper(Wrapper):
         current_x = self._read_x(info)
         if current_x is not None and self.prev_x is not None:
             delta = current_x - self.prev_x
-            # Ignore teleports: screen wraps and level/room transitions show up
-            # as huge jumps that aren't real movement.
-            if abs(delta) < self.x_jump_limit:
+            # Ignore deltas no real movement could produce. A flat cap is not
+            # enough: the death sequence swings hpos/scroll through mid-sized
+            # garbage values (+36, +44...) that slip a 64-unit filter and were
+            # measured being ratcheted into +120 of phantom "progress" per
+            # episode while STANDING STILL -- and stale scroll bytes right
+            # after reset do the same to the first steps. But real movement is
+            # bounded by physics: Mario covers at most ~3px/frame at full
+            # sprint, and the discretizer reports exactly how many emulator
+            # frames this decision spanned. A 4-frame no-op cannot move 36
+            # units; a 20-frame sprint-jump legitimately can. Cap by frames *
+            # MAX_PX_PER_FRAME (x_jump_limit stays as the absolute ceiling).
+            frames = info.get("frames_this_step", 4)
+            limit = min(self.x_jump_limit, frames * self.MAX_PX_PER_FRAME)
+            if abs(delta) < limit:
                 self.travelled += delta
                 if self.travelled > self.max_travelled:
                     comp["progress"] = (self.travelled - self.max_travelled) * self.progress_scale

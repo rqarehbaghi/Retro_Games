@@ -598,6 +598,95 @@ def make_env(game, state, death_penalty, jump_bonus, render=False, end_on_life_l
     return _init
 
 
+# Addresses proven WRONG for a game, kept so a stale command line can't
+# silently poison a run. Each was believed correct at some point and cost real
+# training time; the audit that disproved it is named in the reason.
+KNOWN_BAD_ADDRESSES = {
+    ("SuperMarioBros3-Nes-v0", "progress", 0x00CF):
+        "returns to 0 whenever the player stops or reverses -- it is a per-frame "
+        "delta/velocity, not accumulated position (audit_ram.py on a human demo: "
+        "progress jumped 24 -> 261 -> 284 -> 394 -> 239). It only looked monotonic "
+        "under a scripted RIGHT-hold.",
+    ("SuperMarioBros3-Nes-v0", "progress", 0x053C):
+        "a world-map counter, frozen during actual play -- it was picked from a "
+        "RAM scan whose window was two-thirds post-death map frames.",
+    ("SuperMarioBros3-Nes-v0", "playstate", 0x07F1):
+        "cycles 5 -> 0 -> 8 every ~24 frames DURING normal play (animation/PPU "
+        "phase), so it cannot mark 'in play'; gating on it ends every episode "
+        "within about a second.",
+    ("SuperMarioBros3-Nes-v0", "playstate", 0x0749):
+        "flips only ~19 frames before lives decrements -- the END of the death "
+        "sequence, so the whole garbage window is still paid as progress.",
+}
+
+
+def reject_known_bad(game, kind, address):
+    """Refuse an address already disproven for this game."""
+    if address is None:
+        return
+    reason = KNOWN_BAD_ADDRESSES.get((game, kind, address))
+    if reason:
+        print(
+            f"\nFATAL: --{kind}-address 0x{address:04X} is a KNOWN-BAD address for "
+            f"{game}.\n  {reason}\n"
+            f"  Training with it wastes the run. Find a working address with "
+            f"inspect_progress.py --demo\n  (progress) or probe_after_death.py "
+            f"(playstate), and verify with audit_ram.py."
+        )
+        sys.exit(1)
+
+
+def describe_value_sources(game, progress_address=None, progress_address_high=None,
+                           powerup_address=None, playstate_address=None,
+                           playstate_value=None, progress_add_screen_x=False):
+    """Print exactly where every shaped value is read from.
+
+    info-key addresses come from the integration's own data.json, so this shows
+    the real RAM address behind `lives`/`score`/`time`/`hpos` rather than just
+    the key name."""
+    print("\nVALUE SOURCES")
+    integration_addrs = {}
+    try:
+        import json
+        rom = retro.data.get_romfile_path(game, retro.data.Integrations.STABLE)
+        with open(os.path.join(os.path.dirname(rom), "data.json")) as fh:
+            for name, spec in (json.load(fh).get("info") or {}).items():
+                integration_addrs[name] = spec
+    except Exception:
+        pass
+
+    def info_src(key):
+        spec = integration_addrs.get(key) or {}
+        addr = spec.get("address")
+        if addr is None:
+            return f"info['{key}'] (address not readable from data.json)"
+        return f"RAM 0x{addr:04X} ({addr}) via info['{key}'], type {spec.get('type', '?')}"
+
+    print(f"  lives     <- {info_src('lives')}")
+    print(f"  score     <- {info_src('score')}   [NOTE: one TENTH of the on-screen value]")
+    print(f"  time      <- {info_src('time')}")
+    print(f"  hpos      <- {info_src('hpos')}   [on-screen x; caps at the scroll threshold]")
+
+    if progress_address is not None:
+        src = f"RAM 0x{progress_address:04X} ({progress_address})"
+        if progress_address_high is not None:
+            src += f" + 0x{progress_address_high:04X} << 8"
+        if progress_add_screen_x:
+            src += " + hpos"
+        print(f"  PROGRESS  <- {src}")
+    else:
+        print("  PROGRESS  <- info x/hpos fallback  *** NO progress address set ***")
+        print("               For SMB3 that is on-screen x, which caps at the scroll")
+        print("               threshold, so progress stops paying after ~1.5s and")
+        print("               training WILL plateau. Find one: inspect_progress.py --demo")
+
+    print(f"  powerup   <- " + (f"RAM 0x{powerup_address:04X} ({powerup_address})  [0=small 1=big 2=fire 3=raccoon]"
+                                if powerup_address is not None else "(not set -- power shaping inactive)"))
+    print(f"  playstate <- " + (f"RAM 0x{playstate_address:04X} ({playstate_address}), in-play value {playstate_value}"
+                                if playstate_address is not None else "(not set -- no death-sequence gating)"))
+    print()
+
+
 def action_index(combo, hold=None):
     """Index of an ACTION_TABLE entry by combo (and optionally hold length)."""
     for i, (c, h) in enumerate(ACTION_TABLE):
@@ -825,6 +914,20 @@ def main():
         "hours, medium-complexity platformers in about a day, on a modern "
         "multi-core machine with several parallel envs. This is a guide, "
         "not a promise -- actual time depends heavily on the game."
+    )
+
+    # Refuse addresses already disproven for this game -- a stale command line
+    # from shell history must not silently poison another run.
+    reject_known_bad(args.game, "progress", args.progress_address)
+    reject_known_bad(args.game, "playstate", args.playstate_address)
+    describe_value_sources(
+        args.game,
+        progress_address=args.progress_address,
+        progress_address_high=args.progress_address_high,
+        powerup_address=args.powerup_address,
+        playstate_address=args.playstate_address,
+        playstate_value=args.playstate_value,
+        progress_add_screen_x=args.progress_add_screen_x,
     )
 
     # One kwargs dict shared by the sanity-check probe env and every training

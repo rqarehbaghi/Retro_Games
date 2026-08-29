@@ -16,11 +16,16 @@ left. Render the same recording to MP4, scrub to a printed timestamp, and
 confirm with your own eyes that the numbers describe what is on screen.
 
 VALUES AUDITED
-    info keys : lives, score, time, hpos     (published by the integration)
-    RAM       : --progress-address  (camera scroll; SMB3 verified 0x00CF)
-                --powerup-address   (power tier;   SMB3 verified 0x00ED)
-                --playstate-address (game mode;    SMB3 verified 0x07F1, 5=play)
-    derived   : progress = camera scroll + hpos  (the training progress signal)
+    info keys : lives, score, time, hpos  -- the run prints the RAM address
+                behind each, read from the integration's own data.json.
+                NOTE `score` is published as one TENTH of the on-screen value.
+    RAM       : --powerup-address   (SMB3: 0x00ED, CONFIRMED against video --
+                                     tier flips exactly when a mushroom is taken)
+                --progress-address  (SMB3: none yet. 0x00CF and 0x053C are both
+                                     REJECTED; train.py refuses them.)
+                --playstate-address (SMB3: none yet. 0x07F1 and 0x0749 are both
+                                     REJECTED; train.py refuses them.)
+    Columns for unset addresses are omitted rather than printed as dashes.
 
 Usage:
     # Best: replay a human demo -- it contains real power-ups, hits and deaths
@@ -148,20 +153,32 @@ class Tracker:
                   f"this often is not a state variable -- see verdicts)")
 
 
-def header():
-    return (f"  {'FRAME':>6}  {'VIDEO':>10} | {'lives':>5} {'score':>7} {'time':>5} | "
-            f"{'hpos':>5} {'scroll':>6} {'PROGRESS':>8} | {'power':>5} {'state':>5} {'play?':>5}")
+def header(show_progress, show_playstate):
+    """Only configured columns are shown -- unset addresses would print a wall
+    of dashes and bury the values that matter."""
+    h = f"  {'FRAME':>6}  {'VIDEO':>10} | {'lives':>5} {'score':>7} {'time':>5}  {'hpos':>5}"
+    if show_progress:
+        h += f" | {'scroll':>6} {'PROGRESS':>8}"
+    h += f" | {'power':>5}"
+    if show_playstate:
+        h += f" {'state':>5} {'play?':>5}"
+    return h
 
 
-def row(frame, v, playstate_value):
+def row(frame, v, playstate_value, show_progress, show_playstate):
     def f(x, w):
         return f"{x if x is not None else '-':>{w}}"
-    in_play = "-"
-    if v["playstate"] is not None and playstate_value is not None:
-        in_play = "YES" if v["playstate"] == playstate_value else "no"
-    return (f"  {frame:6d}  {stamp(frame):>10} | {f(v['lives'],5)} {f(v['score'],7)} {f(v['time'],5)} | "
-            f"{f(v['hpos'],5)} {f(v['scroll'],6)} {f(v['progress'],8)} | "
-            f"{f(v['powerup'],5)} {f(v['playstate'],5)} {in_play:>5}")
+    line = (f"  {frame:6d}  {stamp(frame):>10} | {f(v['lives'],5)} {f(v['score'],7)} "
+            f"{f(v['time'],5)}  {f(v['hpos'],5)}")
+    if show_progress:
+        line += f" | {f(v['scroll'],6)} {f(v['progress'],8)}"
+    line += f" | {f(v['powerup'],5)}"
+    if show_playstate:
+        in_play = "-"
+        if v["playstate"] is not None and playstate_value is not None:
+            in_play = "YES" if v["playstate"] == playstate_value else "no"
+        line += f" {f(v['playstate'],5)} {in_play:>5}"
+    return line
 
 
 def replay_demo(bk2_path, tracker, every):
@@ -176,14 +193,15 @@ def replay_demo(bk2_path, tracker, every):
     env.reset()
     print(f"Replaying {bk2_path} frame by frame (1 step = 1 emulator frame =")
     print(f"1 video frame, so printed timestamps line up with the MP4).\n")
-    print(header())
+    print(header(tracker.progress_addr is not None, tracker.playstate_addr is not None))
     frame = 0
     while movie.step():
         keys = [movie.get_key(i, 0) for i in range(env.num_buttons)]
         _obs, _rew, terminated, truncated, info = env.step(keys)
         vals = tracker.read(env.get_ram(), info)
         if frame % every == 0:
-            print(row(frame, vals, tracker.playstate_value))
+            print(row(frame, vals, tracker.playstate_value,
+                      tracker.progress_addr is not None, tracker.playstate_addr is not None))
         tracker.update(frame, vals)
         frame += 1
         if terminated or truncated:
@@ -207,7 +225,7 @@ def play_model(game, state, model_path, tracker, every, max_frames, record_dir):
     print(f"Playing {model_path}. One decision spans several emulator frames, so")
     print(f"the frame counter accumulates frames_this_step to stay aligned with")
     print(f"the video.\n")
-    print(header())
+    print(header(tracker.progress_addr is not None, tracker.playstate_addr is not None))
     obs = venv.reset()
     frame = 0
     last_print = -every
@@ -217,7 +235,8 @@ def play_model(game, state, model_path, tracker, every, max_frames, record_dir):
         info = infos[0]
         vals = tracker.read(base.get_ram(), info)
         if frame - last_print >= every:
-            print(row(frame, vals, tracker.playstate_value))
+            print(row(frame, vals, tracker.playstate_value,
+                      tracker.progress_addr is not None, tracker.playstate_addr is not None))
             last_print = frame
         tracker.update(frame, vals)
         frame += info.get("frames_this_step", 1)
@@ -338,20 +357,30 @@ def main():
     p.add_argument("--playstate-value", type=lambda v: int(v, 0), default=None, help="The value --playstate-address holds during normal play.")
     args = p.parse_args()
 
-    print("Auditing:")
-    if args.progress_address is not None:
-        print(f"  progress address  : 0x{args.progress_address:04X} ({args.progress_address})"
-              + (f" + high 0x{args.progress_address_high:04X}" if args.progress_address_high is not None else ""))
-    else:
-        print("  progress address  : (none) -- 0x00CF was REJECTED. Find one with")
-        print("                      inspect_progress.py --demo, then pass it here.")
-    print(f"  powerup address   : 0x{args.powerup_address:04X} ({args.powerup_address})  [0=small 1=big 2=fire 3=raccoon]")
-    if args.playstate_address is not None:
-        print(f"  playstate address : 0x{args.playstate_address:04X} ({args.playstate_address}), in-play value {args.playstate_value}")
-    else:
-        print("  playstate address : (none) -- 0x07F1 was REJECTED: it cycles during play.")
-    print(f"  info keys         : lives, score, time, hpos")
-    print(f"  NOTE: `score` is published as one TENTH of the on-screen value.")
+    # Same source table training prints, so the audit and the run can never
+    # disagree about where a value comes from.
+    game = args.game
+    if args.demo:
+        try:
+            game = retro.Movie(args.demo).get_game()
+        except Exception:
+            pass
+    from train import describe_value_sources, reject_known_bad
+    describe_value_sources(
+        game,
+        progress_address=args.progress_address,
+        progress_address_high=args.progress_address_high,
+        powerup_address=args.powerup_address,
+        playstate_address=args.playstate_address,
+        playstate_value=args.playstate_value,
+    )
+    # Auditing a known-bad address is legitimate (that's how they get
+    # disproven), so warn rather than exit -- unlike training, which refuses.
+    for kind, addr in (("progress", args.progress_address),
+                       ("playstate", args.playstate_address)):
+        if (game, kind, addr) in __import__("train").KNOWN_BAD_ADDRESSES:
+            print(f"  !! auditing a KNOWN-BAD {kind} address 0x{addr:04X}; "
+                  f"train.py refuses this one.\n")
     print(f"  video frame rate  : {FPS} fps\n")
 
     tracker = Tracker(args.progress_address, args.powerup_address,

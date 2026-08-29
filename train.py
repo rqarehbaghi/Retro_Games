@@ -53,6 +53,7 @@ Usage:
 import argparse
 import os
 import re
+import sys
 
 import cv2
 import numpy as np
@@ -524,6 +525,74 @@ def make_env(game, state, death_penalty, jump_bonus, render=False, end_on_life_l
     return _init
 
 
+def action_index(combo, hold=None):
+    """Index of an ACTION_TABLE entry by combo (and optionally hold length)."""
+    for i, (c, h) in enumerate(ACTION_TABLE):
+        if set(c) == set(combo) and (hold is None or h == hold):
+            return i
+    return None
+
+
+def reward_sanity_check(env_fn):
+    """Run scripted probes through the EXACT env about to be trained on and
+    refuse to train if the reward landscape is broken.
+
+    This exists because every major failure in this project's history --
+    the dead x-key, the on-screen-x cap, the oscillation farm, the false
+    0x053C address, the hidden scenario -124, the jump-bonus farm -- was
+    invisible until behavior had already converged on it, and the standalone
+    gate (debug_rewards.py) kept getting skipped between config changes.
+    Running it automatically at startup costs ~half a minute and makes
+    training on a silently-broken signal impossible.
+
+    Pass condition: RUN must decisively out-earn STAND (the progress stream
+    is alive and idling loses). JUMP-LEFT approximating STAND guards against
+    per-action bonuses being farmable at the left screen edge."""
+    probes = (
+        ("STAND", lambda i: action_index([])),
+        ("RUN", lambda i: action_index(["RIGHT", "B"])),
+        ("JUMP-LEFT", lambda i: action_index(["LEFT", "A"], hold=20)),
+    )
+    print("Reward sanity check (scripted probes through the exact training env)...")
+    env = env_fn()
+    results = {}
+    for label, pick in probes:
+        env.reset()
+        total, n = 0.0, 0
+        for i in range(400):
+            _obs, r, terminated, truncated, _info = env.step(pick(i))
+            total += r
+            n += 1
+            if terminated or truncated:
+                break
+        results[label] = total
+        print(f"  {label:<10} {total:+9.2f} over {n} decisions")
+    env.close()
+
+    ok = True
+    if results["RUN"] <= results["STAND"] + 20:
+        print(
+            "\nFATAL: RUN does not decisively out-earn STAND in the actual training\n"
+            "env -- the progress signal is dead or drowned, and training now would\n"
+            "converge to idling/degenerate behavior. Check --progress-address /\n"
+            "--progress-add-screen-x (verify with inspect_progress.py --watch) and\n"
+            "the rest of the shaping flags. Diagnose with debug_rewards.py using\n"
+            "the same flags. Override with --skip-reward-check if you are certain."
+        )
+        ok = False
+    if results["JUMP-LEFT"] > results["STAND"] + 5:
+        print(
+            "\nFATAL: JUMP-LEFT out-earns STAND -- some per-action bonus is being\n"
+            "farmed by jumping in place at the left screen edge (this exact\n"
+            "failure was observed in training). Check --jump-bonus is 0 and that\n"
+            "no term pays for motionless actions. Override with --skip-reward-check."
+        )
+        ok = False
+    if ok:
+        print("  -> landscape OK: progress pays, idling and jump-spam lose.\n")
+    return ok
+
+
 def safe_name(game):
     """Turns a game id into something guaranteed safe as a folder name.
     Game ids are normally already filesystem-safe, but this guards
@@ -613,6 +682,7 @@ def main():
     parser.add_argument("--progress-address-high", type=lambda v: int(v, 0), default=None, help="High byte of a 16-bit little-endian level position (e.g. 0x053D), combined with --progress-address. A single byte wraps at 255, which a full level exceeds several times. (default: %(default)s)")
     parser.add_argument("--powerup-address", type=lambda v: int(v, 0), default=None, help="RAM index holding the power-up tier, read directly so the integration does not need to publish it (SuperMarioBros3-Nes-v0: 0x00ED, found with find_ram_variable.py -- verify for your own game/version). Accepts hex (0x00ED) or decimal. Needed for --power-bonus to do anything here. (default: %(default)s)")
     parser.add_argument("--time-penalty", type=float, default=0.0, help="Small reward subtracted every decision, to discourage dawdling and push toward finishing the level sooner. Start around 0.01-0.05 if the agent loiters; too high and it rushes into danger. (default: %(default)s)")
+    parser.add_argument("--skip-reward-check", action="store_true", help="Skip the automatic startup reward sanity check (scripted STAND/RUN/JUMP-LEFT probes through the exact training env, refusing to train on a broken landscape). Only skip when deliberately experimenting with a configuration the check would reject.")
     parser.add_argument("--no-end-on-death", dest="end_on_life_loss", action="store_false", help="By default the episode ends the instant a life is lost, so training always restarts from the clean in-level state instead of wandering onto the post-death world map / continue screen. Pass this to disable that and let the game's own scenario decide when an episode ends. (Requires the integration to expose 'lives' in info either way.)")
     parser.set_defaults(end_on_life_loss=True)
     parser.add_argument("--checkpoint-iterations", type=int, nargs="+", default=None, help="Which cumulative iterations to snapshot as named milestones. Defaults to [1, <the iteration this run ends on>] if omitted.")
@@ -673,36 +743,39 @@ def main():
         "not a promise -- actual time depends heavily on the game."
     )
 
+    # One kwargs dict shared by the sanity-check probe env and every training
+    # env, so the check exercises EXACTLY the configuration training will use
+    # (duplicated kwarg lists have already caused silent drift once).
+    env_kwargs = dict(
+        end_on_life_loss=args.end_on_life_loss,
+        score_bonus=args.score_bonus, time_penalty=args.time_penalty,
+        life_bonus=args.life_bonus, power_bonus=args.power_bonus,
+        powerup_address=args.powerup_address,
+        progress_scale=args.progress_scale,
+        keep_game_reward=args.keep_game_reward,
+        stuck_penalty=args.stuck_penalty,
+        progress_address=args.progress_address,
+        progress_address_high=args.progress_address_high,
+        progress_add_screen_x=args.progress_add_screen_x,
+    )
+
+    if not args.skip_reward_check:
+        if not reward_sanity_check(make_env(args.game, args.state, args.death_penalty,
+                                            args.jump_bonus, **env_kwargs)):
+            sys.exit(1)
+
     # --render runs the single env in-process (DummyVecEnv) so its window lives
     # in the main process and stays responsive. Headless training keeps using
     # SubprocVecEnv for true parallelism across --num-envs processes.
     if args.render:
         env = DummyVecEnv([
             make_env(args.game, args.state, args.death_penalty, args.jump_bonus,
-                     render=True, end_on_life_loss=args.end_on_life_loss,
-                     score_bonus=args.score_bonus, time_penalty=args.time_penalty,
-                     life_bonus=args.life_bonus, power_bonus=args.power_bonus,
-                     powerup_address=args.powerup_address,
-                     progress_scale=args.progress_scale,
-                     keep_game_reward=args.keep_game_reward,
-                     stuck_penalty=args.stuck_penalty,
-                     progress_address=args.progress_address,
-                     progress_address_high=args.progress_address_high,
-                     progress_add_screen_x=args.progress_add_screen_x)
+                     render=True, **env_kwargs)
         ])
     else:
         env = SubprocVecEnv([
             make_env(args.game, args.state, args.death_penalty, args.jump_bonus,
-                     end_on_life_loss=args.end_on_life_loss,
-                     score_bonus=args.score_bonus, time_penalty=args.time_penalty,
-                     life_bonus=args.life_bonus, power_bonus=args.power_bonus,
-                     powerup_address=args.powerup_address,
-                     progress_scale=args.progress_scale,
-                     keep_game_reward=args.keep_game_reward,
-                     stuck_penalty=args.stuck_penalty,
-                     progress_address=args.progress_address,
-                     progress_address_high=args.progress_address_high,
-                     progress_add_screen_x=args.progress_add_screen_x)
+                     **env_kwargs)
             for _ in range(args.num_envs)
         ])
     # Without a Monitor layer SB3 has no episode statistics at all --

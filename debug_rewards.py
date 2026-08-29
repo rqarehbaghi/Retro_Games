@@ -43,12 +43,15 @@ def run_policy(env, pick_action, label, max_decisions=600, show_first=40):
     obs, info = env.reset()
     total = 0.0
     rewards = []
+    detail = []  # (x, progress_component) per decision, for the tail table
     comp_totals = {}
     x_first = x_last = None
     for i in range(max_decisions):
         obs, r, terminated, truncated, info = env.step(pick_action(i))
         total += r
         rewards.append(r)
+        shaping = info.get("shaping", {})
+        detail.append((shaping.get("x"), shaping.get("progress", 0.0)))
         # Component ledgers published by RewardShaper / JumpIncentiveWrapper --
         # this is what attributes every point of the total to a specific term.
         for src in ("shaping", "jump_shaping"):
@@ -75,6 +78,15 @@ def run_policy(env, pick_action, label, max_decisions=600, show_first=40):
             line = "  "
     if line.strip():
         print(line)
+    # Tail table: the death sequence lives at the END of the episode, so this
+    # is where phantom progress shows itself -- x values swinging while paid
+    # progress appears despite the policy not moving.
+    tail = detail[-24:]
+    start_i = len(detail) - len(tail)
+    print(f"last {len(tail)} decisions (i, x, paid progress):")
+    print("  " + "  ".join(
+        f"[{start_i + j}] x={x if x is not None else '-'} p={p:+.1f}"
+        for j, (x, p) in enumerate(tail)))
     return total, len(rewards)
 
 

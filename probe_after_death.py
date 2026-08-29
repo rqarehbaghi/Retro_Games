@@ -165,19 +165,33 @@ def main():
         print(f"\nSTATE-BYTE CANDIDATES ({len(cands)} bytes constant in play, constant")
         print("but different while dying). The engine's mode byte is usually a")
         print("SMALL value in both columns:\n")
-        print(f"  {'ADDR':>8}  {'DEC':>5}  {'IN PLAY':>8}  {'DYING':>6}")
+        print(f"  {'ADDR':>8}  {'DEC':>5}  {'IN PLAY':>8}  {'DYING':>6}  {'FLIPS':>10}")
         shown = 0
+        rows = []
         for addr in cands:
             pv, dv = int(play[-1][addr]), int(dying[-1][addr])
             # Mode bytes are small enums; skip obvious counters/pointers.
             if pv > 32 and dv > 32:
                 continue
-            print(f"  0x{addr:04X}  {addr:5d}  {pv:8d}  {dv:6d}")
-            shown += 1
-            if shown >= 25:
-                print("  ... (more suppressed)")
-                break
-        print("\nPaste this table to Claude. The chosen byte becomes:")
+            # WHEN does it leave the in-play value for good? The gate needs a
+            # byte that flips at the START of the death sequence (the moment
+            # of the hit) -- one that flips just before lives decrements marks
+            # the END and lets the whole garbage window through (0x0749 was
+            # measured doing exactly that: it cut only ~4 decisions).
+            col = hist[:, addr]
+            flip = n  # default: never
+            for i in range(n - 1, -1, -1):
+                if col[i] == pv:
+                    flip = i + 1
+                    break
+            rows.append((n - flip, addr, pv, dv))
+        # Earliest flippers first -- those mark the start of the sequence.
+        rows.sort(reverse=True)
+        for lead, addr, pv, dv in rows[:25]:
+            print(f"  0x{addr:04X}  {addr:5d}  {pv:8d}  {dv:6d}  D-{lead:>4} fr")
+        print("\n'FLIPS D-N fr' = leaves the in-play value N frames before lives")
+        print("decrements. Pick a SMALL-valued byte with the LARGEST lead -- it")
+        print("marks the hit itself. Then:")
         print("    --playstate-address 0xADDR --playstate-value <IN PLAY value>")
     # -----------------------------------------------------------------------
 

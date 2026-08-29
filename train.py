@@ -323,6 +323,7 @@ class RewardShaper(Wrapper):
         # in progress).
         self.playstate_address = playstate_address
         self.playstate_value = playstate_value
+        self._playstate_armed = False
         self._read_x = make_progress_reader(env, progress_address, progress_address_high,
                                             add_info_x=progress_add_screen_x)
         self.prev_x = None
@@ -343,6 +344,7 @@ class RewardShaper(Wrapper):
     def reset(self, **kwargs):
         obs, info = self.env.reset(**kwargs)
         self.prev_x = self._read_x(info)
+        self._playstate_armed = False
         self.travelled = 0.0
         self.max_travelled = 0.0
         self.prev_lives = info.get("lives")
@@ -370,7 +372,15 @@ class RewardShaper(Wrapper):
         if self.playstate_address is not None and self.playstate_value is not None:
             try:
                 state = int(self.env.unwrapped.get_ram()[self.playstate_address])
-                in_play = (state == self.playstate_value)
+                if state == self.playstate_value:
+                    # Seen normal play this episode -- from here on, leaving
+                    # the value means the episode is over.
+                    self._playstate_armed = True
+                elif self._playstate_armed:
+                    in_play = False
+                # Not yet armed and not the play value: level still loading at
+                # episode start -- a mode enum holds other values there, and
+                # terminating on it would kill every episode at birth. Wait.
             except Exception:
                 pass
         if not in_play:

@@ -10,97 +10,148 @@
     "rewards": "Weights applied by RewardShaper. Positive values pay, penalties are named as such and are subtracted.",
     "finding_addresses": "inspect_progress.py --demo (position), find_game_vars.py --find {coins,meter,timer} (counters/meters), find_ram_variable.py (any value that changes at a known moment), probe_after_death.py (game-state bytes). Always confirm with audit_ram.py against video before training."
   },
-
   "games": {
     "SuperMarioBros3-Nes-v0": {
       "notes": "Addresses below were located from human demo recordings and confirmed frame-by-frame against video. See KNOWN_BAD_ADDRESSES in train.py for addresses that were tried and disproven.",
-
       "variables": {
         "lives": {
-          "source": "info", "key": "lives", "verified": true,
+          "source": "info",
+          "key": "lives",
+          "verified": true,
           "evidence": "decrements exactly at each on-screen death"
         },
         "score": {
-          "source": "info", "key": "score", "verified": true,
+          "source": "info",
+          "key": "score",
+          "verified": true,
           "scale_to_display": 10,
           "evidence": "published as one TENTH of the HUD value: a Super Mushroom (1000 on screen) reads +100, and a +100 on screen reads +10"
         },
         "screen_x": {
-          "source": "info", "key": "hpos", "verified": true,
+          "source": "info",
+          "key": "hpos",
+          "verified": true,
           "evidence": "The LOW BYTE of level position, sweeping 0..255 and wrapping. Combined with the page counter 0x0075 it gives true level position -- see the 'progress' entry. Alone it is only useful for the first 256 pixels of a level, because it resets on every wrap."
         },
         "powerup": {
-          "source": "ram", "address": "0x00ED", "verified": true,
-          "values": {"0": "small", "1": "big", "2": "fire", "3": "raccoon"},
+          "source": "ram",
+          "address": "0x00ED",
+          "verified": true,
+          "values": {
+            "0": "small",
+            "1": "big",
+            "2": "fire",
+            "3": "raccoon"
+          },
           "evidence": "tier changes on the exact frame a power-up is taken on video. NOTE it also clears to 0 on level exit and on death, which is why the power-down penalty is skipped when the episode is ending."
         },
         "coins": {
-          "source": "ram", "address": "0x2167", "verified": true,
+          "source": "ram",
+          "address": "0x2167",
+          "verified": true,
           "evidence": "live counter. 0x25A2 mirrors it for the HUD but lags: comparing the two showed 3 divergences with 0x2167 changing first."
         },
         "pmeter": {
-          "source": "ram", "address": "0x03DD", "full_value": 127, "verified": true,
+          "source": "ram",
+          "address": "0x03DD",
+          "full_value": 127,
+          "verified": true,
           "evidence": "speed/P-meter. Value equals the number of bars filled (0..6), then jumps to 127 when the P indicator lights. 127 means FULL, which is the precondition for raccoon flight. Located by correlating with sustained run+direction input."
         },
         "timer": {
-          "source": "ram_bcd3", "address": "0x05EE", "verified": true,
+          "source": "ram_bcd3",
+          "address": "0x05EE",
+          "verified": true,
           "evidence": "three digit bytes at 0x05EE/0x05EF/0x05F0 = *100 + *10 + *1. Range exactly 0..299 with ZERO increases across a whole demo. The integration's own `time` info key reads something unrelated (constant 299, then 43) and must not be used."
         },
         "progress": {
-          "source": "info16", "key": "hpos", "address_high": "0x0075", "verified": true,
+          "source": "info16",
+          "key": "hpos",
+          "address_high": "0x0075",
+          "verified": true,
           "evidence": "LEVEL POSITION = hpos + (ram[0x0075] << 8). hpos is the LOW byte and wraps at 256 (which is why it appears to jump 241 -> 3); 0x0075 is the page counter and ticked up on 13 of 13 forward wraps and down on 2 of 2 backward ones, while changing only 16 times across 4971 frames -- it moves at rollovers and nowhere else. Range 0..32 pages, about 8192 pixels of level. Two earlier readings of hpos were wrong: that it caps at 144 (that was Mario stuck against the first obstacle, not a camera limit) and that its wraps were garbage (on-screen x cannot wrap; only a position can). Tried and REJECTED as progress: 0x00CF (per-frame scroll delta, returns to 0 whenever movement stops), 0x053C (world-map counter, frozen during play)."
         },
         "playstate": {
-          "source": "unknown", "verified": false,
+          "source": "unknown",
+          "verified": false,
           "evidence": "Optional. A byte that is constant during normal play and different during the death sequence, used to end episodes at the moment of the hit and to exclude death-animation garbage from progress. Tried and REJECTED: 0x07F1 (cycles 5->0->8 every ~24 frames DURING play), 0x0749 (flips only ~19 frames before lives decrements, i.e. the END of the death sequence)."
         }
       },
-
       "rewards": {
         "progress_scale": 0.5,
         "backtrack_scale": 0.5,
         "death_penalty": 25.0,
-        "score_bonus": 0.05,
+        "score_bonus": 0.2,
         "life_bonus": 100.0,
-        "power_bonus": 40.0,
-        "coin_bonus": 4.0,
-        "speed_bonus": 40.0,
+        "power_bonus": 150.0,
+        "coin_bonus": 30.0,
+        "speed_bonus": 60.0,
         "jump_bonus": 0.0,
         "stuck_penalty": 0.2,
         "time_penalty": 0.0,
         "survival_tick": 0.0,
         "clear_bonus": 1000.0
       },
-
       "reward_scale_reasoning": {
         "calibrate_on_achievable_not_theoretical": "The scale must make the progress an agent can ACTUALLY reach dominate, not the progress a perfect run would reach. Calibrating progress_scale against a full level (8447 units) gave 0.05, and measurement then showed why that fails: an early agent reaches the first pipe at ~120 units, worth only +6, against a 25-50 death penalty. debug_rewards measured STAND -55.9 vs RUN -46.1 -- a 9.8 margin, which the startup gate correctly rejects (it needs 20+). Death outweighed everything achievable by 8:1 and the difference between running and standing was noise.",
         "current_scale": "progress_scale 0.5: reaching the first pipe (~120 units) pays ~60, a full traverse pays ~4200, and one decision of running (4-20 frames at ~2px/frame) pays 4-20. Against death 25 this gives a STAND-vs-RUN margin around 60-65, comfortably above the gate threshold, and progress dominates every other term as it should.",
         "death_penalty": "25 is deliberately modest. Dying already forfeits all remaining progress -- the value function learns that on its own -- so the explicit penalty only needs to discourage recklessness early. Too large and the agent becomes risk-averse and stops attempting the jumps that clearing obstacles requires.",
-        "event_ratios": "Measured against one running decision (4-20): life 100 = a death undone and then some. power 40 = staying big is worth several seconds of running. speed 40 = filling the P-meter, the precondition for flight, is worth pursuing. coin 4 = a real nudge without dominating. stuck_penalty 0.2 bleeds while standing, on top of the opportunity cost of the progress not being earned.",
+        "the_unit_that_matters": "One SECOND of running = 120px x progress_scale = 60 reward. Every other weight should be set as 'how many seconds of forward motion is this worth', because that is the trade the agent actually faces: any detour costs running time plus death risk.",
+        "event_ratios": "Against that 60/second unit: coin 30 = half a second, power 150 = 2.5 seconds (worth a real detour and some risk), speed 60 = one second for filling the P-meter, life 100 = 1.7 seconds, death 25 = 0.4 seconds. stuck_penalty 0.2 bleeds while standing, on top of the progress not being earned.",
+        "why_the_agent_ignored_collectibles": "It cleared level 1 by running and jumping and collected nothing -- correctly, given the weights at the time. A coin paid 4 against 60/second of running, i.e. 0.07 seconds: detouring for one cost more in lost progress than it paid, before counting the death risk. The agent was not failing to explore, it was optimising exactly what it was told. Collection weights are now set in seconds-of-running so a coin is worth about half a second and a mushroom about 2.5, which makes a short detour rational without making finishing optional (a full traverse plus clear is still ~5200 against ~1350 for collecting everything).",
+        "collection_is_a_dial": "These are a preference, not a correctness fix. Higher collection weights buy a completionist agent that plays slower and dies more; lower ones buy a speedrunner. Nothing here is wrong at either setting -- decide which agent you want and set the seconds-of-running accordingly.",
         "clear_bonus": "1000 = roughly a quarter of a full traverse (~4200), paid for actually finishing. This exists because progress leaves a DEAD SPOT at the goal: it pays for ground gained, so once the agent reaches the end there is nothing more to earn and hitting the goal block pays exactly the same as shoving right against the edge. That is the observed behaviour -- the agent reached the end of 1-1 and pushed right instead of hitting the card. Large enough to be worth reaching for, and paid once per episode so a re-enterable pipe cannot be farmed.",
         "verify_dont_trust": "Re-run debug_rewards.py after ANY change here. These weights are arithmetic against measured distances, and the first attempt at that arithmetic was still wrong -- the gate is what caught it."
       },
-
       "reward_notes": {
         "jump_bonus": "Deliberately 0. Paying for the ACT of jumping is farmable -- a policy converged on jumping in place at the left screen edge, where the bonus minus the stuck penalty was risk-free income. Clearing an obstacle already pays through the progress it unlocks.",
         "speed_bonus": "Paid once when the P-meter REACHES full, not for holding a partial meter (which would pay for merely jogging). Filling it needs a long sustained sprint that random exploration almost never produces.",
         "stuck_penalty": "Must exceed any per-decision bonus, or stalling somewhere and farming that bonus becomes net-positive."
       }
     },
-
     "_template": {
       "notes": "Copy this for a new game. Set every address you can verify; leave the rest as 'unknown' and the matching shaping stays inert rather than reading garbage. Start with: python audit_ram.py --demo <recording> to see what the integration already publishes.",
       "variables": {
-        "lives":    {"source": "info", "key": "lives",  "verified": false},
-        "score":    {"source": "info", "key": "score",  "verified": false},
-        "screen_x": {"source": "info", "key": "x",      "verified": false},
-        "progress": {"source": "unknown", "verified": false,
-                     "evidence": "find with inspect_progress.py --demo; it must climb the whole level and NOT reset when the player stops or backs up"},
-        "powerup":  {"source": "unknown", "verified": false},
-        "coins":    {"source": "unknown", "verified": false},
-        "pmeter":   {"source": "unknown", "verified": false},
-        "timer":    {"source": "unknown", "verified": false},
-        "playstate": {"source": "unknown", "verified": false}
+        "lives": {
+          "source": "info",
+          "key": "lives",
+          "verified": false
+        },
+        "score": {
+          "source": "info",
+          "key": "score",
+          "verified": false
+        },
+        "screen_x": {
+          "source": "info",
+          "key": "x",
+          "verified": false
+        },
+        "progress": {
+          "source": "unknown",
+          "verified": false,
+          "evidence": "find with inspect_progress.py --demo; it must climb the whole level and NOT reset when the player stops or backs up"
+        },
+        "powerup": {
+          "source": "unknown",
+          "verified": false
+        },
+        "coins": {
+          "source": "unknown",
+          "verified": false
+        },
+        "pmeter": {
+          "source": "unknown",
+          "verified": false
+        },
+        "timer": {
+          "source": "unknown",
+          "verified": false
+        },
+        "playstate": {
+          "source": "unknown",
+          "verified": false
+        }
       },
       "rewards": {
         "progress_scale": 1.0,

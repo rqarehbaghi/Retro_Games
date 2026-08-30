@@ -28,9 +28,89 @@ Usage:
     python inspect_progress.py --game SuperMarioBros3-Nes-v0
 """
 import argparse
+import json
+import os
 
 import numpy as np
 import stable_retro as retro
+
+
+def load_known_vars(game, config="games.json"):
+    """Every variable we've located for this game, from games.json, so the dump
+    below shows them side by side instead of one at a time."""
+    path = config if os.path.isabs(config) else os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), config)
+    try:
+        with open(path) as fh:
+            return ((json.load(fh).get("games") or {}).get(game) or {}).get("variables") or {}
+    except Exception:
+        return {}
+
+
+def read_var(ram_row, info, spec):
+    """One variable's value for a frame, per its games.json source type."""
+    src = spec.get("source")
+    if src == "info":
+        return info.get(spec.get("key"))
+    if src in ("ram", "ram16", "ram_bcd3"):
+        a = int(str(spec["address"]), 0)
+        if src == "ram":
+            return int(ram_row[a])
+        if src == "ram16":
+            hi = int(str(spec["address_high"]), 0)
+            return int(ram_row[a]) + (int(ram_row[hi]) << 8)
+        return int(ram_row[a]) * 100 + int(ram_row[a + 1]) * 10 + int(ram_row[a + 2])
+    return None
+
+
+def find_high_byte(ram, hpos, top=10):
+    """Find the page/high byte that pairs with a wrapping low byte.
+
+    A level position wider than 255 is stored as two bytes: the low byte sweeps
+    0..255 and wraps, and a high byte ticks up by one on each wrap. So look for
+    addresses that increment exactly where the low byte rolls over. This is the
+    check that distinguishes "the value is garbage" from "the value is half of a
+    16-bit number" -- they look identical until you line up the wraps.
+    """
+    h = np.asarray([v if v is not None else -1 for v in hpos], dtype=np.int32)
+    d = np.diff(h)
+    wrap_down = np.where(d < -100)[0]   # 241 -> 3 style rollovers
+    wrap_up = np.where(d > 100)[0]      # backtracking across the boundary
+    if len(wrap_down) == 0:
+        print("\n(no wraps in this recording -- can't pair a high byte. Record a")
+        print("demo that travels far enough for the low byte to roll over.)")
+        return
+    print(f"\nLow byte wrapped {len(wrap_down)} time(s) forward, {len(wrap_up)} backward.")
+    print("Looking for a byte that ticks UP on each forward wrap (and down on each")
+    print("backward one) -- that is the high byte of a 16-bit position.\n")
+    rows = []
+    for addr in range(ram.shape[1]):
+        col = ram[:, addr]
+        cd = np.diff(col)
+        hits = int(np.count_nonzero(cd[wrap_down] == 1))
+        back = int(np.count_nonzero(cd[wrap_up] == -1)) if len(wrap_up) else 0
+        if hits == 0:
+            continue
+        # A page counter changes ONLY at wraps; penalise anything busier.
+        total = int(np.count_nonzero(cd != 0))
+        noise = total - hits - back
+        score = hits * 100 + back * 50 - noise
+        rows.append((score, addr, hits, len(wrap_down), back, len(wrap_up), total,
+                     int(col.min()), int(col.max())))
+    rows.sort(reverse=True)
+    print(f"  {'ADDR':>8}  {'DEC':>6}  {'ON WRAP':>10}  {'ON BACK':>9}  "
+          f"{'TOTAL CHG':>9}  {'RANGE':>10}")
+    for _s, addr, hits, nw, back, nu, total, lo, hi in rows[:top]:
+        print(f"  0x{addr:04X}  {addr:6d}  {hits:4d}/{nw:<5d}  {back:4d}/{nu:<4d}  "
+              f"{total:9d}  {lo:4d}..{hi:<4d}")
+    if rows:
+        best = rows[0]
+        print(f"\nBest pairing: 0x{best[1]:04X}. If ON WRAP matches the wrap count and")
+        print("TOTAL CHG is close to it, that byte changes only at rollovers -- the")
+        print("signature of a page counter. Then level position is:")
+        print(f"    position = hpos + (ram[0x{best[1]:04X}] << 8)")
+        print(f"and training uses: --progress-address <hpos addr> "
+              f"--progress-address-high 0x{best[1]:04X}")
 
 
 def analyse(rams, hpos_series, args):
@@ -132,8 +212,26 @@ def main():
         env.initial_state = movie.get_state()
         env.reset()
         print(f"Scanning human recording {args.demo}\n")
+        # Every variable located so far, side by side -- one column each, with
+        # its source in the legend, so a value can be judged in context instead
+        # of in isolation.
+        known = load_known_vars(movie.get_game())
+        cols = [(n, sp) for n, sp in known.items()
+                if sp.get("source") not in (None, "unknown")]
+        print("COLUMNS")
+        for name, sp in cols:
+            src = (f"info['{sp['key']}']" if sp["source"] == "info"
+                   else f"{sp['source']} @ {sp['address']}")
+            flag = "" if sp.get("verified") else "   (UNVERIFIED)"
+            print(f"  {name:<10} {src}{flag}")
+        for a in watch:
+            print(f"  {('0x%04X' % a):<10} extra --watch address")
+        print()
+
         rams, hpos_series = [], []
-        header = f"  {'FRAME':>6}  {'hpos':>6}  {'time':>5}  {'score':>6}"
+        header = f"  {'FRAME':>6}  {'VIDEO':>9}"
+        for name, _sp in cols:
+            header += f"  {name[:9]:>9}"
         for a in watch:
             header += f"  {('0x%04X' % a):>8}"
         print(header)
@@ -141,17 +239,25 @@ def main():
         while movie.step():
             keys = [movie.get_key(i, 0) for i in range(env.num_buttons)]
             _obs, _rew, terminated, truncated, info = env.step(keys)
-            rams.append(env.get_ram().copy())
+            ram_row = env.get_ram().copy()
+            rams.append(ram_row)
             hpos_series.append(info.get("hpos"))
             if frame % args.every == 0:
-                line = f"  {frame:6d}  {str(info.get('hpos')):>6}  {str(info.get('time')):>5}  {str(info.get('score')):>6}"
+                secs = frame / 60.0988
+                line = f"  {frame:6d}  {int(secs//60):02d}:{secs%60:06.3f}"
+                for name, sp in cols:
+                    v = read_var(ram_row, info, sp)
+                    line += f"  {('-' if v is None else v):>9}"
                 for a in watch:
-                    line += f"  {int(rams[-1][a]):>8}"
+                    line += f"  {int(ram_row[a]):>8}"
                 print(line)
             frame += 1
             if terminated or truncated:
                 break
         env.close()
+        # hpos sweeping 0..255 and rolling over is the signature of a 16-bit
+        # position's LOW byte, not of a broken value -- so look for its partner.
+        find_high_byte(np.array(rams, dtype=np.int32), hpos_series)
         analyse(rams, hpos_series, args)
         return
 

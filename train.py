@@ -915,12 +915,19 @@ def reward_sanity_check(env_fn):
             "the same flags. Override with --skip-reward-check if you are certain."
         )
         ok = False
-    if results["JUMP-LEFT"] > results["STAND"] + 5:
+    # Compare PER-DECISION, not totals. These policies run for very different
+    # numbers of decisions, and one that dies sooner accrues less stuck-penalty
+    # bleed -- so on totals alone jump-spam can appear to "beat" standing while
+    # earning nothing at all (measured: JUMP-LEFT -28.4 over 27 decisions vs
+    # STAND -48.6 over 128, yet -1.05/decision against -0.38, i.e. strictly
+    # worse). Rate isolates farming from merely ending the episode early.
+    if rates["JUMP-LEFT"] > rates["STAND"] + 0.05:
         print(
-            "\nFATAL: JUMP-LEFT out-earns STAND -- some per-action bonus is being\n"
-            "farmed by jumping in place at the left screen edge (this exact\n"
-            "failure was observed in training). Check --jump-bonus is 0 and that\n"
-            "no term pays for motionless actions. Override with --skip-reward-check."
+            "\nFATAL: JUMP-LEFT earns more PER DECISION than STAND -- some\n"
+            "per-action bonus is being farmed by jumping in place at the left\n"
+            "screen edge (this exact failure was observed in training). Check\n"
+            "--jump-bonus is 0 and that no term pays for motionless actions.\n"
+            "Override with --skip-reward-check."
         )
         ok = False
     if ok:

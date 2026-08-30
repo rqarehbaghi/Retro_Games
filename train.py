@@ -1019,6 +1019,8 @@ def main():
     parser.add_argument("--num-envs", type=int, default=8, help="Parallel emulator instances -- match roughly to your CPU core count. (default: %(default)s)")
     parser.add_argument("--n-steps", type=int, default=128, help="Env steps collected per env before each PPO update. (default: %(default)s)")
     parser.add_argument("--lr", type=float, default=2.5e-4, help="PPO learning rate. Lower this (e.g. 3e-5) when resuming from an imitation-pretrained checkpoint, so RL fine-tuning doesn't wash out what it already learned. (default: %(default)s)")
+    parser.add_argument("--n-epochs", type=int, default=4, help="Passes over each rollout batch per update. SB3's default is 10, which with n_steps 128 x 8 envs means ~160 gradient steps on 1024 samples -- enough reuse to push approx_kl and clip_fraction far past healthy (0.15 and 0.66 were observed). Atari PPO conventionally uses 4. (default: %(default)s)")
+    parser.add_argument("--target-kl", type=float, default=0.03, help="Stop a rollout's epoch loop early once the policy has moved this far in KL. This is the direct guard against the aggressive updates that precede a training collapse; set to 0 to disable. (default: %(default)s)")
     parser.add_argument("--ent-coef", type=float, default=0.01, help="PPO entropy coefficient -- higher encourages more exploration. Lower this (e.g. 0.001) when fine-tuning a pretrained checkpoint. (default: %(default)s)")
     parser.add_argument("--death-penalty", type=float, default=50.0, help="Reward subtracted on death/episode-end without clearing the stage. (default: %(default)s)")
     parser.add_argument("--jump-bonus", type=float, default=0.0, help="Reward added for choosing a jump action. DEFAULT 0 -- and leave it there once a real progress signal is configured: paying for the ACT of jumping is farmable (observed in training: the policy converged to jumping in place at the left screen edge, where jump bonus minus stuck penalty is risk-free income and nothing else pays). Clearing an obstacle already pays through the progress it unlocks. Only raise this as a temporary crutch on a game with NO working progress signal. (default: %(default)s)")
@@ -1233,6 +1235,8 @@ def main():
                 "n_steps": args.n_steps,
                 "learning_rate": args.lr,
                 "ent_coef": args.ent_coef,
+                "n_epochs": args.n_epochs,
+                "target_kl": (args.target_kl or None),
                 # PPO.load restores `verbose` too, and pretrain_imitation.py
                 # builds its model with verbose=0 -- so resuming from a BC
                 # checkpoint silenced SB3's logger completely: no rollout
@@ -1248,7 +1252,9 @@ def main():
         model.ep_info_buffer = None
         model.ep_success_buffer = None
     else:
-        model = PPO("CnnPolicy", env, n_steps=args.n_steps, learning_rate=args.lr, ent_coef=args.ent_coef, verbose=1)
+        model = PPO("CnnPolicy", env, n_steps=args.n_steps, learning_rate=args.lr,
+                    ent_coef=args.ent_coef, n_epochs=args.n_epochs,
+                    target_kl=(args.target_kl or None), verbose=1)
 
     print(f"Device: {model.policy.device}")
     if str(model.policy.device) == "cpu":

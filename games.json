@@ -57,18 +57,25 @@
       },
 
       "rewards": {
-        "progress_scale": 1.0,
+        "progress_scale": 0.05,
         "backtrack_scale": 0.5,
-        "death_penalty": 25.0,
-        "score_bonus": 0.02,
-        "life_bonus": 25.0,
-        "power_bonus": 15.0,
-        "coin_bonus": 1.0,
-        "speed_bonus": 30.0,
+        "death_penalty": 50.0,
+        "score_bonus": 0.01,
+        "life_bonus": 50.0,
+        "power_bonus": 20.0,
+        "coin_bonus": 2.0,
+        "speed_bonus": 20.0,
         "jump_bonus": 0.0,
-        "stuck_penalty": 0.1,
+        "stuck_penalty": 0.05,
         "time_penalty": 0.0,
         "survival_tick": 0.0
+      },
+
+      "reward_scale_reasoning": {
+        "level_span": "Level position runs 0..~8447 (32 pages x 256px). At progress_scale 0.05 a full traverse is worth about 420, and one decision of running (4-20 frames at ~2px/frame) is worth 0.4-2.0.",
+        "why_not_1.0": "Every weight here was first tuned when progress was the capped screen_x and a whole run earned ~141. Real level position is ~50x larger, so at scale 1.0 a level is worth ~8000 against a 25 death penalty -- death becomes 0.3% of a level and every event reward is worth less than a second of running. Scaling progress down keeps the event rewards meaningful instead of inflating six numbers.",
+        "ratios": "death 50 = roughly 25-125 decisions of running, so dying is costly without being paralyzing. life 50 = a death undone. power 20 = staying big is worth ~10-50 decisions. coin 2 = a small nudge. speed 20 = reaching a full P-meter is worth a few seconds of running, enough to be sought without being farmable (it is paid once per fill).",
+        "verify_dont_trust": "These are a starting point derived from the measured level span, not tuned results. Run debug_rewards.py to see real episode totals per policy and per reward component before committing to a long run."
       },
 
       "reward_notes": {

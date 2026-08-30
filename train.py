@@ -633,6 +633,7 @@ class JumpIncentiveWrapper(Wrapper):
 
 def make_env(game, state, death_penalty, jump_bonus, render=False, end_on_life_loss=True,
              progress_scale=0.1, keep_game_reward=False, stuck_penalty=0.1,
+             backtrack_scale=0.5, survival_tick=0.0,
              score_bonus=0.01, time_penalty=0.0, life_bonus=25.0, power_bonus=0.0, powerup_address=None,
              progress_address=None, progress_address_high=None, progress_use_info_x=False,
              playstate_address=None, playstate_value=None,
@@ -654,6 +655,7 @@ def make_env(game, state, death_penalty, jump_bonus, render=False, end_on_life_l
                                    progress_use_info_x=progress_use_info_x)
         env = RewardShaper(env, death_penalty=death_penalty, end_on_life_loss=end_on_life_loss,
                            progress_scale=progress_scale,
+                           backtrack_scale=backtrack_scale, survival_tick=survival_tick,
                            score_scale=score_bonus, time_penalty=time_penalty,
                            life_bonus=life_bonus, power_bonus=power_bonus,
                            powerup_address=powerup_address,
@@ -1008,6 +1010,8 @@ def main():
     parser.add_argument("--score-bonus", type=float, default=0.01, help="Reward per point the game's own score goes up -- coins, power-ups, stomped enemies, and the level-clear leftover-time bonus. This is what makes the agent value points AND finishing fast (faster clear = more time converted to score). Raise it to prioritize collecting/points, lower toward 0 for a pure speedrun-right agent. Tune to your game's score magnitudes. (default: %(default)s)")
     parser.add_argument("--life-bonus", type=float, default=25.0, help="Reward for each extra life GAINED -- 1-Up mushrooms, the 100-coin threshold, score milestones. An extra life is worth far more strategically than the few points a 1-Up adds to score, so --score-bonus alone undervalues it. Set to 0 to disable. Note regular power-up mushrooms can't be rewarded directly (this integration exposes no power-state variable), only via their score. (default: %(default)s)")
     parser.add_argument("--power-bonus", type=float, default=0.0, help="Reward per power-up TIER gained (small->big->fire->raccoon...), and the same penalty per tier lost when you take a hit. Requires the integration to publish the power state in info as `powerup` -- it is NOT exposed by default. Use find_ram_variable.py to locate the RAM address in your own recording, add it to the integration data.json, then set this (try 10-20). Left at 0 it does nothing. (default: %(default)s)")
+    parser.add_argument("--backtrack-scale", type=float, default=0.5, help="Fraction of --progress-scale charged for moving backwards over ground already covered. 0 disables the backtrack cost. (default: %(default)s)")
+    parser.add_argument("--survival-tick", type=float, default=0.0, help="Flat reward added every decision for still being alive. Default 0: rewarding survival fights a speed objective, and the death penalty already discourages dying. (default: %(default)s)")
     parser.add_argument("--progress-scale", type=float, default=0.1, help="Reward per unit of NEW ground covered. This is the main learning signal and must be balanced against --death-penalty: if a whole run only earns progress*distance while dying costs far more, the death term swamps everything and the agent gets no gradient toward playing better. Measure your game's distance-per-run with inspect_progress.py and scale so a good run is worth at least as much as a death costs. (default: %(default)s)")
     parser.add_argument("--keep-game-reward", action="store_true", help="Keep the integration's own scenario reward on top of the shaping. OFF by default: for SuperMarioBros3-Nes-v0 that reward was measured (debug_rewards.py) to pay an hpos-based progress term that caps out ~1.2s into the level and then a hidden ~-124 at death, swamping the tuned shaping and flattening the reward landscape.")
     parser.add_argument("--progress-address", type=lambda v: int(v, 0), default=None, help="RAM index of the real level-position counter, read directly. STRONGLY recommended: SuperMarioBros3-Nes-v0's published `hpos` is Mario's ON-SCREEN x, which flatlines at the scroll threshold (144), so rewarding it pays only for the first ~1.5s of a level. Find candidates with inspect_progress.py and VERIFY with its --watch flag before trusting one -- an early candidate (0x053C) turned out to be a map-screen counter that never moves during play, because the scan window included post-death map frames. Hex or decimal. (default: %(default)s)")
@@ -1040,8 +1044,18 @@ def main():
     if config_defaults:
         known = {a.dest for a in parser._actions}
         applied = {k: v for k, v in config_defaults.items() if k in known}
+        ignored = sorted(set(config_defaults) - set(applied))
         parser.set_defaults(**applied)
         print(f"Loaded {len(applied)} defaults for {prelim.game} from {prelim.game_config}")
+        if ignored:
+            # A weight in the config with no matching flag would otherwise be
+            # dropped in silence -- the config would claim a setting training
+            # never used. Two were found this way (backtrack_scale,
+            # survival_tick), so say it out loud.
+            print(f"  WARNING: {len(ignored)} config key(s) have no matching flag and were "
+                  f"IGNORED: {', '.join(ignored)}")
+            print(f"  Training is NOT using them. Add a flag in train.py or remove them "
+                  f"from {prelim.game_config}.")
     elif prelim.game_config:
         print(f"No entry for {prelim.game} in {prelim.game_config} -- using built-in defaults. "
               f"Add one (copy the _template entry) to make this game reproducible.")
@@ -1126,6 +1140,7 @@ def main():
         progress_scale=args.progress_scale,
         keep_game_reward=args.keep_game_reward,
         stuck_penalty=args.stuck_penalty,
+        backtrack_scale=args.backtrack_scale, survival_tick=args.survival_tick,
         progress_address=args.progress_address,
         progress_address_high=args.progress_address_high,
         progress_use_info_x=args.progress_use_info_x,

@@ -171,6 +171,105 @@ def make_progress_reader(env, addr_lo=None, addr_hi=None, use_info_x=False):
     return reader
 
 
+class AutoAdvanceLevel(Wrapper):
+    """Carries training through a level clear into the next level.
+
+    Without this, every episode starts at the integration's one default state,
+    so the agent's entire experience is a single level and it flounders the
+    moment it reaches another one. The alternative -- capturing a save state per
+    level by hand -- works but makes the human do setup the run could do itself.
+
+    This wraps the RAW env, below the discretizer. When a level ends it takes
+    over and walks the world map internally, as extra emulator frames inside one
+    step(), the same way the discretizer repeats frames for a held button. PPO
+    therefore never sees the map as decisions: no map frames enter the rollout,
+    no scripted actions are attributed to the policy, and the on-policy
+    assumption is preserved. The agent simply finds itself in the next level.
+
+    Map routes differ per level (1-1 exits right-then-up, 1-2 right-then-down),
+    so a fixed sequence cannot work; it cycles through direction/enter
+    variations until the level timer starts ticking again, which only happens
+    inside a level. Gives up after max_nav_frames and lets the episode end
+    normally rather than hanging.
+    """
+
+    def __init__(self, env, read_progress, read_timer, max_nav_frames=1800):
+        super().__init__(env)
+        self.read_progress = read_progress
+        self.read_timer = read_timer
+        self.max_nav_frames = max_nav_frames
+        self.prev_progress = None
+        self.prev_lives = None
+        self.levels_advanced = 0
+        buttons = env.unwrapped.buttons
+        self._idx = {b: i for i, b in enumerate(buttons) if b}
+        self._n = len(buttons)
+
+    def _press(self, names, frames):
+        arr = np.zeros(self._n, dtype=bool)
+        for nm in names:
+            if nm in self._idx:
+                arr[self._idx[nm]] = True
+        obs = info = None
+        for _ in range(frames):
+            obs, _r, term, trunc, info = self.env.step(arr)
+            if term or trunc:
+                return obs, info, True
+        return obs, info, False
+
+    def _navigate(self):
+        """Walk the map until the timer ticks, i.e. we are in a level again."""
+        # tap a direction, then press A to enter; routes vary so try several.
+        routes = [["RIGHT"], ["RIGHT", "RIGHT"], ["UP"], ["DOWN"],
+                  ["RIGHT", "UP"], ["RIGHT", "DOWN"], ["LEFT"]]
+        obs, info, _ = self._press([], 60)      # let the clear animation finish
+        spent = 60
+        for route in routes:
+            for direction in route:
+                obs, info, done = self._press([direction], 10)
+                obs, info, done = self._press([], 12)
+                spent += 22
+            for _ in range(3):
+                obs, info, done = self._press(["A"], 10)
+                obs, info, done = self._press([], 14)
+                spent += 24
+            before = self.read_timer(info)
+            obs, info, done = self._press([], 90)
+            spent += 90
+            after = self.read_timer(info)
+            if before is not None and after is not None and after < before:
+                self.levels_advanced += 1
+                return obs, info, True   # timer ticking -> in a level
+            if spent >= self.max_nav_frames:
+                break
+        return obs, info, False
+
+    def step(self, action):
+        obs, reward, terminated, truncated, info = self.env.step(action)
+        progress = self.read_progress(info)
+        lives = info.get("lives")
+        if (progress is not None and self.prev_progress is not None
+                and lives is not None and self.prev_lives is not None
+                and progress < self.prev_progress - 200 and lives >= self.prev_lives):
+            # Position collapsed with no life lost: the level ended.
+            nav_obs, nav_info, ok = self._navigate()
+            if ok and nav_obs is not None:
+                obs, info = nav_obs, nav_info
+                info["advanced_level"] = True
+                progress = self.read_progress(info)
+            else:
+                truncated = True   # couldn't reach a level; end cleanly
+        self.prev_progress = progress if progress is not None else self.prev_progress
+        self.prev_lives = lives if lives is not None else self.prev_lives
+        return obs, reward, terminated, truncated, info
+
+    def reset(self, **kwargs):
+        obs, info = self.env.reset(**kwargs)
+        self.prev_progress = self.read_progress(info)
+        self.prev_lives = info.get("lives")
+        return obs, info
+
+
 class VariableHoldDiscretizer(Wrapper):
     """Collapses stable-retro's full MultiBinary button space down to a
     small set of meaningful (combo, hold_frames) actions, and internally
@@ -670,7 +769,8 @@ def make_env(game, state, death_penalty, jump_bonus, render=False, end_on_life_l
              playstate_address=None, playstate_value=None,
              coin_address=None, coin_bonus=0.0,
              speed_address=None, speed_full=127, speed_bonus=0.0,
-             clear_bonus=0.0, end_on_clear=True):
+             clear_bonus=0.0, end_on_clear=True,
+             auto_advance=False, timer_address=None):
     def _init():
         render_mode = "human" if render else "rgb_array"
         if state_file:
@@ -692,6 +792,36 @@ def make_env(game, state, death_penalty, jump_bonus, render=False, end_on_life_l
         # and receives the discrete action). RewardShaper then sits on top so
         # its survival tick / progress / death shaping is applied once per
         # decision, not once per emulator frame (see RewardShaper docstring).
+        if auto_advance:
+            # Below the discretizer, so its map navigation happens as raw
+            # emulator frames inside one step and never becomes a PPO decision.
+            def _prog(info):
+                try:
+                    if progress_use_info_x:
+                        low = read_x(info)
+                        if low is None:
+                            return None
+                        low = int(low)
+                    elif progress_address is not None:
+                        low = int(env.unwrapped.get_ram()[progress_address])
+                    else:
+                        return read_x(info)
+                    if progress_address_high is not None:
+                        low += int(env.unwrapped.get_ram()[progress_address_high]) << 8
+                    return low
+                except Exception:
+                    return None
+
+            def _timer(info):
+                if timer_address is None:
+                    return None
+                try:
+                    ram = env.unwrapped.get_ram()
+                    return (int(ram[timer_address]) * 100 + int(ram[timer_address + 1]) * 10
+                            + int(ram[timer_address + 2]))
+                except Exception:
+                    return None
+            env = AutoAdvanceLevel(env, _prog, _timer)
         env = VariableHoldDiscretizer(env, ACTION_TABLE, use_game_reward=keep_game_reward)
         env = JumpIncentiveWrapper(env, jump_bonus=jump_bonus, stuck_penalty=stuck_penalty,
                                    progress_address=progress_address,
@@ -1081,6 +1211,8 @@ def main():
     parser.add_argument("--progress-address", type=lambda v: int(v, 0), default=None, help="RAM index of the real level-position counter, read directly. STRONGLY recommended: SuperMarioBros3-Nes-v0's published `hpos` is Mario's ON-SCREEN x, which flatlines at the scroll threshold (144), so rewarding it pays only for the first ~1.5s of a level. Find candidates with inspect_progress.py and VERIFY with its --watch flag before trusting one -- an early candidate (0x053C) turned out to be a map-screen counter that never moves during play, because the scan window included post-death map frames. Hex or decimal. (default: %(default)s)")
     parser.add_argument("--progress-use-info-x", action="store_true", help="Take the LOW byte of level position from the integration's own on-screen x (hpos) rather than a RAM address, and combine it with --progress-address-high. This is the SMB3 answer: hpos wraps at 256 and the page byte 0x0075 ticks up on every wrap, so position = hpos + (0x0075 << 8). Replaces the old --progress-add-screen-x, whose additive theory was wrong.")
     parser.add_argument("--progress-address-high", type=lambda v: int(v, 0), default=None, help="High byte of a 16-bit little-endian level position (e.g. 0x053D), combined with --progress-address. A single byte wraps at 255, which a full level exceeds several times. (default: %(default)s)")
+    parser.add_argument("--auto-advance", action="store_true", help="On clearing a level, walk the world map automatically and keep training in the NEXT level, instead of ending the episode. The navigation runs as raw emulator frames inside a single step, so no map frames enter the rollout and no scripted action is attributed to the policy. This is what lets one run cover several levels without capturing a save state per level by hand. Needs --timer-address to tell when a level has loaded. Implies --no-end-on-clear.")
+    parser.add_argument("--timer-address", type=lambda v: int(v, 0), default=None, help="RAM index of the 3-digit BCD level timer (SMB3: 0x05EE). Used by --auto-advance to detect that a level has actually started, since the timer only ticks in a level.")
     parser.add_argument("--clear-bonus", type=float, default=0.0, help="Reward for finishing a level or entering a new area, detected as level position collapsing WITHOUT losing a life (normal travel never jumps backwards, because the page byte absorbs the low byte's wraps). This fills the dead spot at the end of a level: progress pays for ground gained, so at the goal there is nothing left to earn and the agent shoves right against the edge instead of hitting the goal block. Paid once per episode so a re-enterable pipe cannot be farmed. (default: %(default)s)")
     parser.add_argument("--no-end-on-clear", dest="end_on_clear", action="store_false", help="Keep playing after a level clear instead of ending the episode there. Off by default because the agent has never trained on the world map and only flails there.")
     parser.set_defaults(end_on_clear=True)
@@ -1181,6 +1313,13 @@ def main():
 
     # Refuse addresses already disproven for this game -- a stale command line
     # from shell history must not silently poison another run.
+    if args.auto_advance:
+        if args.timer_address is None:
+            print("--auto-advance needs --timer-address (SMB3: 0x05EE) to tell when a "
+                  "level has loaded; without it the navigator cannot know it succeeded.")
+            sys.exit(1)
+        # The episode must not end at the clear if we intend to play on.
+        args.end_on_clear = False
     reject_known_bad(args.game, "progress", args.progress_address)
     reject_known_bad(args.game, "playstate", args.playstate_address)
     describe_value_sources(
@@ -1218,6 +1357,7 @@ def main():
         speed_address=args.speed_address, speed_full=args.speed_full,
         speed_bonus=args.speed_bonus,
         clear_bonus=args.clear_bonus, end_on_clear=args.end_on_clear,
+        auto_advance=args.auto_advance, timer_address=args.timer_address,
     )
 
     if not args.skip_reward_check:

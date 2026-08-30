@@ -27,7 +27,7 @@
         },
         "screen_x": {
           "source": "info", "key": "hpos", "verified": true,
-          "evidence": "Mario's ON-SCREEN x only. Rises 24 -> 144 as he walks to the scroll threshold, then FLATLINES at 144 while the level scrolls underneath him. It is NOT level progress; rewarding it pays for the first ~1.5s of a level and nothing after."
+          "evidence": "The LOW BYTE of level position, sweeping 0..255 and wrapping. Combined with the page counter 0x0075 it gives true level position -- see the 'progress' entry. Alone it is only useful for the first 256 pixels of a level, because it resets on every wrap."
         },
         "powerup": {
           "source": "ram", "address": "0x00ED", "verified": true,
@@ -47,8 +47,8 @@
           "evidence": "three digit bytes at 0x05EE/0x05EF/0x05F0 = *100 + *10 + *1. Range exactly 0..299 with ZERO increases across a whole demo. The integration's own `time` info key reads something unrelated (constant 299, then 43) and must not be used."
         },
         "progress": {
-          "source": "unknown", "verified": false,
-          "evidence": "NOT FOUND YET. This is the level position the main learning signal needs. Without it, progress shaping falls back to screen_x, which caps at the scroll threshold -- so the agent is paid for the first second of a level and nothing afterwards, and training plateaus regardless of how long it runs. Tried and REJECTED: 0x00CF (a per-frame scroll delta that returns to 0 whenever movement stops), 0x053C (a world-map counter, frozen during play). Find one with: inspect_progress.py --demo <recording>"
+          "source": "info16", "key": "hpos", "address_high": "0x0075", "verified": true,
+          "evidence": "LEVEL POSITION = hpos + (ram[0x0075] << 8). hpos is the LOW byte and wraps at 256 (which is why it appears to jump 241 -> 3); 0x0075 is the page counter and ticked up on 13 of 13 forward wraps and down on 2 of 2 backward ones, while changing only 16 times across 4971 frames -- it moves at rollovers and nowhere else. Range 0..32 pages, about 8192 pixels of level. Two earlier readings of hpos were wrong: that it caps at 144 (that was Mario stuck against the first obstacle, not a camera limit) and that its wraps were garbage (on-screen x cannot wrap; only a position can). Tried and REJECTED as progress: 0x00CF (per-frame scroll delta, returns to 0 whenever movement stops), 0x053C (world-map counter, frozen during play)."
         },
         "playstate": {
           "source": "unknown", "verified": false,

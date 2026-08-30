@@ -130,46 +130,42 @@ def read_x(info):
     return None
 
 
-def make_progress_reader(env, addr_lo, addr_hi=None, add_info_x=False):
-    """A function(info) -> horizontal progress.
+def make_progress_reader(env, addr_lo=None, addr_hi=None, use_info_x=False):
+    """A function(info) -> level position.
 
-    Prefers a direct RAM read when addr_lo is given, because the info-published
-    value is often the WRONG quantity: SuperMarioBros3-Nes-v0's `hpos` is
-    Mario's ON-SCREEN x, which climbs to the scroll threshold (144) and then
-    flatlines while the level scrolls -- so rewarding it pays for the first
-    ~1.5s of a level and nothing after, no matter how far the agent actually
-    gets. A true level-position counter keeps rising the whole level.
+        position = low + (high << 8)
 
-    A single byte wraps at 255, which a long level will exceed several times,
-    so pass addr_hi for the high byte of a 16-bit little-endian position and
-    the two are combined. Falls back to info when no address is configured.
+    `low` is either a RAM byte (addr_lo) or the integration's own on-screen x
+    (use_info_x); `high` is an optional page counter (addr_hi).
+
+    For SuperMarioBros3-Nes-v0 the answer turned out to be the integration's
+    `hpos` PLUS a page byte at 0x0075. hpos alone looks broken -- it runs up to
+    241 and then jumps to 3 -- but that is a wrap at 256, and 0x0075 ticked up
+    on 13 of 13 forward wraps and down on 2 of 2 backward ones while changing
+    only 16 times in 4971 frames. Two earlier readings of hpos were wrong: that
+    it "caps at 144" (that was Mario stuck against the first obstacle, not a
+    camera limit) and that the wraps were garbage (screen x cannot wrap; only a
+    position can).
+
+    With no source configured this falls back to raw info x, which is only the
+    low byte and therefore resets every 256 pixels of travel -- workable for a
+    game whose levels fit in one page, misleading for anything longer.
     """
-    if addr_lo is None:
+    if addr_lo is None and not use_info_x:
         return read_x
 
     def reader(info):
         try:
-            ram = env.unwrapped.get_ram()
-            value = int(ram[addr_lo])
-            if addr_hi is not None:
-                value += int(ram[addr_hi]) << 8
-            if add_info_x:
-                # Camera-scroll counters (e.g. SMB3's 0x00CF) are frozen while
-                # Mario walks the FIRST ~120px to the scroll threshold, and the
-                # on-screen x (hpos) freezes right after -- the two move
-                # complementarily. Their SUM tracks true level position across
-                # the whole run. The one-time jump when scrolling engages and
-                # the byte's wraps at 256 both exceed x_jump_limit, so the
-                # delta filter in RewardShaper discards them as teleports.
-                screen_x = read_x(info)
-                if screen_x is None:
-                    # Half a sum is not a position: reset() info can lack hpos,
-                    # and returning just the RAM byte then hands the first real
-                    # step a phantom positive delta (paid as fake progress).
-                    # Unknown is unknown.
+            if use_info_x:
+                low = read_x(info)
+                if low is None:
                     return None
-                value += int(screen_x)
-            return value
+                low = int(low)
+            else:
+                low = int(env.unwrapped.get_ram()[addr_lo])
+            if addr_hi is not None:
+                low += int(env.unwrapped.get_ram()[addr_hi]) << 8
+            return low
         except Exception:
             return None
     return reader
@@ -269,7 +265,7 @@ class RewardShaper(Wrapper):
                  score_scale=0.01, time_penalty=0.0, life_bonus=25.0,
                  power_bonus=0.0, powerup_address=None, x_jump_limit=64,
                  backtrack_scale=0.5, progress_address=None, progress_address_high=None,
-                 progress_add_screen_x=False, playstate_address=None, playstate_value=None,
+                 progress_use_info_x=False, playstate_address=None, playstate_value=None,
                  coin_address=None, coin_bonus=0.0,
                  speed_address=None, speed_full=127, speed_bonus=0.0,
                  end_on_life_loss=True):
@@ -336,7 +332,7 @@ class RewardShaper(Wrapper):
         self.playstate_value = playstate_value
         self._playstate_armed = False
         self._read_x = make_progress_reader(env, progress_address, progress_address_high,
-                                            add_info_x=progress_add_screen_x)
+                                            use_info_x=progress_use_info_x)
         self.prev_x = None
         self.prev_lives = None
         self.prev_health = None
@@ -594,10 +590,10 @@ class JumpIncentiveWrapper(Wrapper):
 
     def __init__(self, discretizer_env, jump_bonus=0.2, stuck_penalty=0.05, stuck_frames=8,
                  progress_address=None, progress_address_high=None,
-                 progress_add_screen_x=False):
+                 progress_use_info_x=False):
         super().__init__(discretizer_env)
         self._read_x = make_progress_reader(discretizer_env, progress_address, progress_address_high,
-                                            add_info_x=progress_add_screen_x)
+                                            use_info_x=progress_use_info_x)
         self.jump_action_indices = discretizer_env.jump_action_indices
         self.jump_bonus = jump_bonus
         self.stuck_penalty = stuck_penalty
@@ -638,7 +634,7 @@ class JumpIncentiveWrapper(Wrapper):
 def make_env(game, state, death_penalty, jump_bonus, render=False, end_on_life_loss=True,
              progress_scale=0.1, keep_game_reward=False, stuck_penalty=0.1,
              score_bonus=0.01, time_penalty=0.0, life_bonus=25.0, power_bonus=0.0, powerup_address=None,
-             progress_address=None, progress_address_high=None, progress_add_screen_x=False,
+             progress_address=None, progress_address_high=None, progress_use_info_x=False,
              playstate_address=None, playstate_value=None,
              coin_address=None, coin_bonus=0.0,
              speed_address=None, speed_full=127, speed_bonus=0.0):
@@ -655,7 +651,7 @@ def make_env(game, state, death_penalty, jump_bonus, render=False, end_on_life_l
         env = JumpIncentiveWrapper(env, jump_bonus=jump_bonus, stuck_penalty=stuck_penalty,
                                    progress_address=progress_address,
                                    progress_address_high=progress_address_high,
-                                   progress_add_screen_x=progress_add_screen_x)
+                                   progress_use_info_x=progress_use_info_x)
         env = RewardShaper(env, death_penalty=death_penalty, end_on_life_loss=end_on_life_loss,
                            progress_scale=progress_scale,
                            score_scale=score_bonus, time_penalty=time_penalty,
@@ -663,7 +659,7 @@ def make_env(game, state, death_penalty, jump_bonus, render=False, end_on_life_l
                            powerup_address=powerup_address,
                            progress_address=progress_address,
                            progress_address_high=progress_address_high,
-                           progress_add_screen_x=progress_add_screen_x,
+                           progress_use_info_x=progress_use_info_x,
                            playstate_address=playstate_address,
                            playstate_value=playstate_value,
                            coin_address=coin_address, coin_bonus=coin_bonus,
@@ -716,8 +712,11 @@ def load_game_config(path, game):
     progress = variables.get("progress") or {}
     if progress.get("address_high") is not None:
         mapped["progress_address_high"] = int(str(progress["address_high"]), 0)
-    if progress.get("add_info_x"):
-        mapped["progress_add_screen_x"] = True
+    if progress.get("source") == "info16":
+        # Low byte from the integration's info key, high byte from RAM.
+        mapped["progress_use_info_x"] = True
+        if progress.get("address_high") is not None:
+            mapped["progress_address_high"] = int(str(progress["address_high"]), 0)
     playstate = variables.get("playstate") or {}
     if playstate.get("in_play_value") is not None:
         mapped["playstate_value"] = int(str(playstate["in_play_value"]), 0)
@@ -737,6 +736,11 @@ VERIFIED_ADDRESSES = {
                             "when a mushroom is taken on the recorded video"),
         "coins":   (0x2167, "live coin counter. 0x25A2 mirrors it for the HUD but "
                             "lags: --compare showed 3 divergences with 0x2167 first"),
+        "progress_page": (0x0075, "HIGH byte of level position; the low byte is the "
+                            "integration's own hpos. Ticked up on 13/13 forward wraps of "
+                            "hpos and down on 2/2 backward ones, changing only 16 times "
+                            "in 4971 frames. Range 0..32 pages == ~8192px. "
+                            "position = hpos + (0x0075 << 8)"),
         "speed":   (0x03DD, "P-meter. Value == number of bars filled (0..6), then "
                             "jumps to 127 when the P indicator lights == full == "
                             "raccoon flight available. Found by correlating with "
@@ -790,7 +794,7 @@ def reject_known_bad(game, kind, address):
 
 def describe_value_sources(game, progress_address=None, progress_address_high=None,
                            powerup_address=None, playstate_address=None,
-                           playstate_value=None, progress_add_screen_x=False,
+                           playstate_value=None, progress_use_info_x=False,
                            coin_address=None, speed_address=None, speed_full=127):
     """Print exactly where every shaped value is read from.
 
@@ -824,7 +828,7 @@ def describe_value_sources(game, progress_address=None, progress_address_high=No
         src = f"RAM 0x{progress_address:04X} ({progress_address})"
         if progress_address_high is not None:
             src += f" + 0x{progress_address_high:04X} << 8"
-        if progress_add_screen_x:
+        if progress_use_info_x:
             src += " + hpos"
         print(f"  PROGRESS  <- {src}")
     else:
@@ -903,7 +907,8 @@ def reward_sanity_check(env_fn):
             "\nFATAL: RUN does not decisively out-earn STAND in the actual training\n"
             "env -- the progress signal is dead or drowned, and training now would\n"
             "converge to idling/degenerate behavior. Check --progress-address /\n"
-            "--progress-add-screen-x (verify with inspect_progress.py --watch) and\n"
+            "--progress-use-info-x / --progress-address-high (verify with\n"
+            "inspect_progress.py --demo) and\n"
             "the rest of the shaping flags. Diagnose with debug_rewards.py using\n"
             "the same flags. Override with --skip-reward-check if you are certain."
         )
@@ -1006,7 +1011,7 @@ def main():
     parser.add_argument("--progress-scale", type=float, default=0.1, help="Reward per unit of NEW ground covered. This is the main learning signal and must be balanced against --death-penalty: if a whole run only earns progress*distance while dying costs far more, the death term swamps everything and the agent gets no gradient toward playing better. Measure your game's distance-per-run with inspect_progress.py and scale so a good run is worth at least as much as a death costs. (default: %(default)s)")
     parser.add_argument("--keep-game-reward", action="store_true", help="Keep the integration's own scenario reward on top of the shaping. OFF by default: for SuperMarioBros3-Nes-v0 that reward was measured (debug_rewards.py) to pay an hpos-based progress term that caps out ~1.2s into the level and then a hidden ~-124 at death, swamping the tuned shaping and flattening the reward landscape.")
     parser.add_argument("--progress-address", type=lambda v: int(v, 0), default=None, help="RAM index of the real level-position counter, read directly. STRONGLY recommended: SuperMarioBros3-Nes-v0's published `hpos` is Mario's ON-SCREEN x, which flatlines at the scroll threshold (144), so rewarding it pays only for the first ~1.5s of a level. Find candidates with inspect_progress.py and VERIFY with its --watch flag before trusting one -- an early candidate (0x053C) turned out to be a map-screen counter that never moves during play, because the scan window included post-death map frames. Hex or decimal. (default: %(default)s)")
-    parser.add_argument("--progress-add-screen-x", action="store_true", help="Add the info-published on-screen x (hpos) to the RAM value from --progress-address. For SMB3: the camera-scroll counter (0x00CF) is frozen during the first ~120px walk to the scroll threshold, and hpos freezes right after -- they move complementarily, so their SUM tracks true level position the whole run. Verified with inspect_progress.py --watch.")
+    parser.add_argument("--progress-use-info-x", action="store_true", help="Take the LOW byte of level position from the integration's own on-screen x (hpos) rather than a RAM address, and combine it with --progress-address-high. This is the SMB3 answer: hpos wraps at 256 and the page byte 0x0075 ticks up on every wrap, so position = hpos + (0x0075 << 8). Replaces the old --progress-add-screen-x, whose additive theory was wrong.")
     parser.add_argument("--progress-address-high", type=lambda v: int(v, 0), default=None, help="High byte of a 16-bit little-endian level position (e.g. 0x053D), combined with --progress-address. A single byte wraps at 255, which a full level exceeds several times. (default: %(default)s)")
     parser.add_argument("--coin-address", type=lambda v: int(v, 0), default=None, help="RAM index of the coin counter, so collecting coins is rewarded directly instead of only through the score it grants. SMB3 verified: 0x2167 (0x25A2 is the HUD mirror and lags a frame). Needs --coin-bonus.")
     parser.add_argument("--coin-bonus", type=float, default=0.0, help="Reward per coin collected. (default: %(default)s)")
@@ -1104,7 +1109,7 @@ def main():
         powerup_address=args.powerup_address,
         playstate_address=args.playstate_address,
         playstate_value=args.playstate_value,
-        progress_add_screen_x=args.progress_add_screen_x,
+        progress_use_info_x=args.progress_use_info_x,
         coin_address=args.coin_address,
         speed_address=args.speed_address,
         speed_full=args.speed_full,
@@ -1123,7 +1128,7 @@ def main():
         stuck_penalty=args.stuck_penalty,
         progress_address=args.progress_address,
         progress_address_high=args.progress_address_high,
-        progress_add_screen_x=args.progress_add_screen_x,
+        progress_use_info_x=args.progress_use_info_x,
         playstate_address=args.playstate_address,
         playstate_value=args.playstate_value,
         coin_address=args.coin_address, coin_bonus=args.coin_bonus,

@@ -52,6 +52,12 @@ def read_var(ram_row, info, spec):
     src = spec.get("source")
     if src == "info":
         return info.get(spec.get("key"))
+    if src == "info16":
+        # Low byte from an info key, high byte from RAM (SMB3 level position).
+        low = info.get(spec.get("key"))
+        if low is None:
+            return None
+        return int(low) + (int(ram_row[int(str(spec["address_high"]), 0)]) << 8)
     if src in ("ram", "ram16", "ram_bcd3"):
         a = int(str(spec["address"]), 0)
         if src == "ram":
@@ -125,36 +131,32 @@ def analyse(rams, hpos_series, args):
     vals = [v for v in hpos_series if v is not None]
     if vals:
         print(f"\nhpos: min={min(vals)} max={max(vals)} first={vals[0]} last={vals[-1]}")
-        print("\nWHAT hpos ACTUALLY IS")
-        print("  It is Mario's position ON THE SCREEN, in pixels from the left edge")
-        print("  of the visible window -- not his position in the level.")
-        print("  Walking right from a standstill, it climbs (24 -> ~144). Once it")
-        print("  reaches the scroll threshold the CAMERA starts moving instead, so")
-        print("  Mario stays put on screen and hpos FREEZES even while he keeps")
-        print("  advancing through the level. Backing up lowers it again.")
+        # Report what hpos DOES here rather than asserting what it is -- an
+        # earlier hardcoded claim ("caps at 144, so it is on-screen x") was
+        # drawn from a run where Mario was stuck against the first obstacle,
+        # and this very output disproved it.
         cap = max(vals)
         at_cap = sum(1 for v in vals if v >= cap - 2)
-        print(f"  In this recording it sat at/near its maximum ({cap}) for "
-              f"{at_cap} of {len(vals)} frames ({at_cap*100.0/len(vals):.0f}%).")
-        print("  Every one of those frames is real movement that hpos cannot see,")
-        print("  which is why it is unusable on its own as a progress signal.")
-        # Show where it froze, so the effect is visible rather than asserted.
-        frozen_runs = []
-        start = None
-        for i, v in enumerate(vals):
-            if v >= cap - 2:
-                if start is None:
-                    start = i
-            elif start is not None:
-                if i - start >= 30:
-                    frozen_runs.append((start, i))
-                start = None
-        if start is not None and len(vals) - start >= 30:
-            frozen_runs.append((start, len(vals)))
-        if frozen_runs:
-            print("  Stretches where it was pinned (frame ranges, and seconds):")
-            for a, b in frozen_runs[:8]:
-                print(f"    frames {a:5d}-{b:5d}   {a/60.0988:6.1f}s - {b/60.0988:6.1f}s")
+        arr = np.asarray(vals, dtype=np.int32)
+        d = np.diff(arr)
+        wraps = int(np.count_nonzero(d < -100))
+        print("\nWHAT hpos DOES IN THIS RECORDING")
+        print(f"  spans {min(vals)}..{cap}; sat at/near its maximum on "
+              f"{at_cap} of {len(vals)} frames ({at_cap*100.0/len(vals):.0f}%)")
+        print(f"  rolled over (dropped by more than 100 in one frame) {wraps} time(s)")
+        if wraps >= 2:
+            print("  => Rollovers mean this is the LOW BYTE of a wider position: an")
+            print("     on-screen coordinate cannot wrap (it clamps at the screen edge")
+            print("     or the camera scrolls instead). Pair it with the page counter")
+            print("     reported below to recover true level position.")
+        elif at_cap > len(vals) * 0.3:
+            print("  => Pinned at its maximum for much of the run. Either it is an")
+            print("     on-screen coordinate capped by the scroll threshold, or the")
+            print("     player was simply blocked -- check the video before deciding;")
+            print("     confusing those two cost this project several training runs.")
+        else:
+            print("  => Moves freely without wrapping: usable as-is if the level fits")
+            print("     within its range.")
 
     ram = np.array(rams, dtype=np.int32)
     n = ram.shape[0]

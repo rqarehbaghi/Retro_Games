@@ -270,6 +270,8 @@ class RewardShaper(Wrapper):
                  power_bonus=0.0, powerup_address=None, x_jump_limit=64,
                  backtrack_scale=0.5, progress_address=None, progress_address_high=None,
                  progress_add_screen_x=False, playstate_address=None, playstate_value=None,
+                 coin_address=None, coin_bonus=0.0,
+                 speed_address=None, speed_full=127, speed_bonus=0.0,
                  end_on_life_loss=True):
         super().__init__(env)
         self.death_penalty = death_penalty
@@ -292,8 +294,17 @@ class RewardShaper(Wrapper):
         # version control. Reading the byte here keeps it in the repo.
         # Locate the address for your game with find_ram_variable.py.
         self.powerup_address = powerup_address
+        # Coin counter and P-meter, both located by find_game_vars.py and
+        # confirmed against video (see VERIFIED_ADDRESSES).
+        self.coin_address = coin_address
+        self.coin_bonus = coin_bonus
+        self.speed_address = speed_address
+        self.speed_full = speed_full
+        self.speed_bonus = speed_bonus
         self.prev_score = None
         self.prev_power = None
+        self.prev_coins = None
+        self.prev_speed = None
         # End the episode the moment a life is lost, so the vec-env auto-reset
         # returns to the clean in-level default state instead of letting the
         # emulator run on into the post-death world map / continue screen --
@@ -330,6 +341,15 @@ class RewardShaper(Wrapper):
         self.prev_lives = None
         self.prev_health = None
 
+    def _read_byte(self, address):
+        """One RAM byte, or None if unreadable/unset."""
+        if address is None:
+            return None
+        try:
+            return int(self.env.unwrapped.get_ram()[address])
+        except Exception:
+            return None
+
     def _read_power(self, info):
         """Power-up tier: from the configured RAM address if one was given,
         else from `info` if the integration happens to publish it. Returns
@@ -351,6 +371,8 @@ class RewardShaper(Wrapper):
         self.prev_health = info.get("health")
         self.prev_score = info.get("score")
         self.prev_power = self._read_power(info)
+        self.prev_coins = self._read_byte(self.coin_address)
+        self.prev_speed = self._read_byte(self.speed_address)
         return obs, info
 
     def step(self, action):
@@ -363,7 +385,7 @@ class RewardShaper(Wrapper):
         # earning +0.97/decision and the total alone couldn't say from where).
         comp = {"tick": self.survival_tick - self.time_penalty, "progress": 0.0,
                 "backtrack": 0.0, "score": 0.0, "power": 0.0, "life": 0.0,
-                "death": 0.0}
+                "coins": 0.0, "speed": 0.0, "death": 0.0}
 
         reward += self.survival_tick
         reward -= self.time_penalty
@@ -457,6 +479,35 @@ class RewardShaper(Wrapper):
         # integration's data.json as `powerup`. Rewarded on INCREASE and
         # penalized on decrease (taking a hit and shrinking is a real loss),
         # scaled by how many tiers changed.
+        # Coins: an explicit counter, so collection is rewarded directly rather
+        # than only through the score it happens to grant. Only small positive
+        # steps count -- the counter resets at 100 (paying a 1-Up, which
+        # life_bonus already covers) and on level change.
+        current_coins = self._read_byte(self.coin_address)
+        if (self.coin_bonus and current_coins is not None
+                and self.prev_coins is not None):
+            delta = current_coins - self.prev_coins
+            if 0 < delta <= 5:
+                comp["coins"] = delta * self.coin_bonus
+                reward += comp["coins"]
+        if current_coins is not None:
+            self.prev_coins = current_coins
+
+        # P-meter reaching FULL. Paid on the transition only, not for holding a
+        # partial meter: a full meter is the precondition for raccoon flight, and
+        # filling it demands a long sustained sprint that random exploration
+        # essentially never produces -- so without this the whole "reach the sky"
+        # branch of the game has no gradient leading to it. Rewarding the raw
+        # value instead would pay for merely jogging, which is farmable.
+        current_speed = self._read_byte(self.speed_address)
+        if (self.speed_bonus and current_speed is not None
+                and self.prev_speed is not None):
+            if current_speed >= self.speed_full and self.prev_speed < self.speed_full:
+                comp["speed"] = self.speed_bonus
+                reward += comp["speed"]
+        if current_speed is not None:
+            self.prev_speed = current_speed
+
         # Read lives before the power block: a power drop must be distinguished
         # from a death, where the death penalty already covers it.
         current_lives_now = info.get("lives")
@@ -585,7 +636,9 @@ def make_env(game, state, death_penalty, jump_bonus, render=False, end_on_life_l
              progress_scale=0.1, keep_game_reward=False, stuck_penalty=0.1,
              score_bonus=0.01, time_penalty=0.0, life_bonus=25.0, power_bonus=0.0, powerup_address=None,
              progress_address=None, progress_address_high=None, progress_add_screen_x=False,
-             playstate_address=None, playstate_value=None):
+             playstate_address=None, playstate_value=None,
+             coin_address=None, coin_bonus=0.0,
+             speed_address=None, speed_full=127, speed_bonus=0.0):
     def _init():
         render_mode = "human" if render else "rgb_array"
         env = retro.make(game=game, state=state or retro.State.DEFAULT, render_mode=render_mode)
@@ -609,10 +662,33 @@ def make_env(game, state, death_penalty, jump_bonus, render=False, end_on_life_l
                            progress_address_high=progress_address_high,
                            progress_add_screen_x=progress_add_screen_x,
                            playstate_address=playstate_address,
-                           playstate_value=playstate_value)
+                           playstate_value=playstate_value,
+                           coin_address=coin_address, coin_bonus=coin_bonus,
+                           speed_address=speed_address, speed_full=speed_full,
+                           speed_bonus=speed_bonus)
         env = WarpFrame(env)
         return env
     return _init
+
+
+# Addresses VERIFIED against video for a game, with how they were confirmed.
+# Recorded here so the knowledge lives in the repo rather than in a chat log.
+VERIFIED_ADDRESSES = {
+    "SuperMarioBros3-Nes-v0": {
+        "powerup": (0x00ED, "0=small 1=big 2=fire 3=raccoon; tier flips exactly "
+                            "when a mushroom is taken on the recorded video"),
+        "coins":   (0x2167, "live coin counter. 0x25A2 mirrors it for the HUD but "
+                            "lags: --compare showed 3 divergences with 0x2167 first"),
+        "speed":   (0x03DD, "P-meter, 0..127. 127 == 0b1111111, one bit per segment "
+                            "(6 arrows + P) == full == raccoon flight is available. "
+                            "Found by correlating with sustained run+direction input"),
+        "timer":   (0x05EE, "3-digit BCD across 0x05EE/0x05EF/0x05F0: value = "
+                            "*100 + *10 + *1. Range exactly 0..299 with ZERO "
+                            "increases over a whole demo. The integration's `time` "
+                            "info key reads something else and is unusable"),
+        # progress + playstate: still unknown, see KNOWN_BAD_ADDRESSES.
+    },
+}
 
 
 # Addresses proven WRONG for a game, kept so a stale command line can't
@@ -655,7 +731,8 @@ def reject_known_bad(game, kind, address):
 
 def describe_value_sources(game, progress_address=None, progress_address_high=None,
                            powerup_address=None, playstate_address=None,
-                           playstate_value=None, progress_add_screen_x=False):
+                           playstate_value=None, progress_add_screen_x=False,
+                           coin_address=None, speed_address=None, speed_full=127):
     """Print exactly where every shaped value is read from.
 
     info-key addresses come from the integration's own data.json, so this shows
@@ -701,6 +778,10 @@ def describe_value_sources(game, progress_address=None, progress_address_high=No
                                 if powerup_address is not None else "(not set -- power shaping inactive)"))
     print(f"  playstate <- " + (f"RAM 0x{playstate_address:04X} ({playstate_address}), in-play value {playstate_value}"
                                 if playstate_address is not None else "(not set -- no death-sequence gating)"))
+    print(f"  coins     <- " + (f"RAM 0x{coin_address:04X} ({coin_address})"
+                                if coin_address is not None else "(not set -- coins rewarded only via score)"))
+    print(f"  P-meter   <- " + (f"RAM 0x{speed_address:04X} ({speed_address}), full at {speed_full}"
+                                if speed_address is not None else "(not set -- no signal toward raccoon flight)"))
     print()
 
 
@@ -868,6 +949,11 @@ def main():
     parser.add_argument("--progress-address", type=lambda v: int(v, 0), default=None, help="RAM index of the real level-position counter, read directly. STRONGLY recommended: SuperMarioBros3-Nes-v0's published `hpos` is Mario's ON-SCREEN x, which flatlines at the scroll threshold (144), so rewarding it pays only for the first ~1.5s of a level. Find candidates with inspect_progress.py and VERIFY with its --watch flag before trusting one -- an early candidate (0x053C) turned out to be a map-screen counter that never moves during play, because the scan window included post-death map frames. Hex or decimal. (default: %(default)s)")
     parser.add_argument("--progress-add-screen-x", action="store_true", help="Add the info-published on-screen x (hpos) to the RAM value from --progress-address. For SMB3: the camera-scroll counter (0x00CF) is frozen during the first ~120px walk to the scroll threshold, and hpos freezes right after -- they move complementarily, so their SUM tracks true level position the whole run. Verified with inspect_progress.py --watch.")
     parser.add_argument("--progress-address-high", type=lambda v: int(v, 0), default=None, help="High byte of a 16-bit little-endian level position (e.g. 0x053D), combined with --progress-address. A single byte wraps at 255, which a full level exceeds several times. (default: %(default)s)")
+    parser.add_argument("--coin-address", type=lambda v: int(v, 0), default=None, help="RAM index of the coin counter, so collecting coins is rewarded directly instead of only through the score it grants. SMB3 verified: 0x2167 (0x25A2 is the HUD mirror and lags a frame). Needs --coin-bonus.")
+    parser.add_argument("--coin-bonus", type=float, default=0.0, help="Reward per coin collected. (default: %(default)s)")
+    parser.add_argument("--speed-address", type=lambda v: int(v, 0), default=None, help="RAM index of the speed/P-meter. SMB3 verified: 0x03DD, 0..127 where 127 (0b1111111, one bit per segment: 6 arrows + P) means FULL -- the precondition for raccoon flight. Needs --speed-bonus.")
+    parser.add_argument("--speed-full", type=lambda v: int(v, 0), default=127, help="Value of --speed-address meaning a full meter. (default: %(default)s)")
+    parser.add_argument("--speed-bonus", type=float, default=0.0, help="Reward when the meter REACHES full (paid on the transition, not for holding it). Filling it needs a long sustained sprint that random exploration almost never produces, so without this there is no gradient toward flight at all. Try 20-40. (default: %(default)s)")
     parser.add_argument("--powerup-address", type=lambda v: int(v, 0), default=None, help="RAM index holding the power-up tier, read directly so the integration does not need to publish it (SuperMarioBros3-Nes-v0: 0x00ED, found with find_ram_variable.py -- verify for your own game/version). Accepts hex (0x00ED) or decimal. Needed for --power-bonus to do anything here. (default: %(default)s)")
     parser.add_argument("--time-penalty", type=float, default=0.0, help="Small reward subtracted every decision, to discourage dawdling and push toward finishing the level sooner. Start around 0.01-0.05 if the agent loiters; too high and it rushes into danger. (default: %(default)s)")
     parser.add_argument("--playstate-address", type=lambda v: int(v, 0), default=None, help="RAM index of the game-state/mode byte (find it with probe_after_death.py's state-byte differ). With --playstate-value set, any step where this byte differs from the in-play value is treated as 'not playing': the x-tracker is suspended so death-transition garbage can never be paid as progress, and the episode ends at the moment of the hit instead of when lives finally decrements. Hex or decimal.")
@@ -945,6 +1031,9 @@ def main():
         playstate_address=args.playstate_address,
         playstate_value=args.playstate_value,
         progress_add_screen_x=args.progress_add_screen_x,
+        coin_address=args.coin_address,
+        speed_address=args.speed_address,
+        speed_full=args.speed_full,
     )
 
     # One kwargs dict shared by the sanity-check probe env and every training
@@ -963,6 +1052,9 @@ def main():
         progress_add_screen_x=args.progress_add_screen_x,
         playstate_address=args.playstate_address,
         playstate_value=args.playstate_value,
+        coin_address=args.coin_address, coin_bonus=args.coin_bonus,
+        speed_address=args.speed_address, speed_full=args.speed_full,
+        speed_bonus=args.speed_bonus,
     )
 
     if not args.skip_reward_check:

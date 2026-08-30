@@ -79,7 +79,7 @@
       },
       "rewards": {
         "progress_scale": 0.5,
-        "backtrack_scale": 0.5,
+        "backtrack_scale": 0.0,
         "death_penalty": 25.0,
         "score_bonus": 0.2,
         "life_bonus": 100.0,
@@ -104,7 +104,8 @@
         "collection_is_a_dial": "These are a preference, not a correctness fix. Higher collection weights buy a completionist agent that plays slower and dies more; lower ones buy a speedrunner. Nothing here is wrong at either setting -- decide which agent you want and set the seconds-of-running accordingly.",
         "clear_bonus": "1000 = roughly a quarter of a full traverse (~4200), paid for actually finishing. This exists because progress leaves a DEAD SPOT at the goal: it pays for ground gained, so once the agent reaches the end there is nothing more to earn and hitting the goal block pays exactly the same as shoving right against the edge. That is the observed behaviour -- the agent reached the end of 1-1 and pushed right instead of hitting the card. Large enough to be worth reaching for, and paid once per episode so a re-enterable pipe cannot be farmed.",
         "verify_dont_trust": "Re-run debug_rewards.py after ANY change here. These weights are arithmetic against measured distances, and the first attempt at that arithmetic was still wrong -- the gate is what caught it.",
-        "auto_advance": "On by default. Without it every episode restarts at World 1-1, so the agent's whole experience is one level and it dies immediately anywhere else -- which is exactly what was observed in level 2. With it, clearing a level leads into the next one and training covers several levels in a single run, with no per-level save states captured by hand. The map walking happens as raw emulator frames inside one step, so PPO never sees the map and no scripted action is credited to the policy."
+        "auto_advance": "On by default. Without it every episode restarts at World 1-1, so the agent's whole experience is one level and it dies immediately anywhere else -- which is exactly what was observed in level 2. With it, clearing a level leads into the next one and training covers several levels in a single run, with no per-level save states captured by hand. The map walking happens as raw emulator frames inside one step, so PPO never sees the map and no scripted action is credited to the policy.",
+        "backtrack_scale": "0. Backtracking is already unprofitable without an explicit penalty: progress pays only for ground never reached before, so retracing earns nothing, and the time spent is time not earning forward progress. That opportunity cost is the honest disincentive. An added penalty double-charges it and blocks play the game requires -- chasing a mushroom that pops out of a block and slides away, or the sections that must be crossed leftward or upward. At the old 0.5, retrieving a mushroom ~100 units back cost 25 in penalty plus ~100 in forgone progress against a 150 payout: nominally worth it, but so thin that any death risk made abandoning the power-up correct. A coin was clearly not worth chasing at all. If the agent ever starts drifting backwards aimlessly, raise this to about 0.05 rather than back to 0.5."
       },
       "reward_notes": {
         "jump_bonus": "Deliberately 0. Paying for the ACT of jumping is farmable -- a policy converged on jumping in place at the left screen edge, where the bonus minus the stuck penalty was risk-free income. Clearing an obstacle already pays through the progress it unlocks.",

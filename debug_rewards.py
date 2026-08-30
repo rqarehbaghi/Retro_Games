@@ -173,12 +173,20 @@ def main():
     print(f"  RUN       : {run_total:+9.2f}  over {run_n} decisions")
     print(f"  RUN+JUMP  : {runjump_total:+9.2f}  over {runjump_n} decisions")
     print(f"  JUMP-LEFT : {jumpleft_total:+9.2f}  over {jumpleft_n} decisions")
+    # Per-decision, not totals: these policies run for very different numbers of
+    # decisions, and one that dies sooner accrues less stuck-penalty bleed -- so
+    # on totals alone jump-spam can look better than standing while earning
+    # nothing at all.
+    st_rate = stand_total / max(1, stand_n)
+    jl_rate = jumpleft_total / max(1, jumpleft_n)
+    print(f"  per decision: STAND {st_rate:+.2f}   RUN {run_total/max(1, run_n):+.2f}"
+          f"   RUN+JUMP {runjump_total/max(1, runjump_n):+.2f}   JUMP-LEFT {jl_rate:+.2f}")
     print("===========================================")
 
-    if jumpleft_total > stand_total + 5:
-        print("\nWARNING: JUMP-LEFT out-earns STAND -- some per-action bonus is")
-        print("still farmable at the left edge. Check --jump-bonus is 0 and that")
-        print("no other term pays for motionless actions.")
+    if jl_rate > st_rate + 0.05:
+        print("\nWARNING: JUMP-LEFT earns more PER DECISION than STAND -- some")
+        print("per-action bonus is still farmable at the left edge. Check")
+        print("--jump-bonus is 0 and that no term pays for motionless actions.")
 
     if run_total > stand_total + 20:
         print("\nVERDICT: progress pays and standing loses -- the reward pipeline is")

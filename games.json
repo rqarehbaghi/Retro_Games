@@ -1,0 +1,111 @@
+{
+  "_schema": {
+    "purpose": "Per-game memory map and reward weights, so training is generic across games instead of hardcoding one game's addresses in the code.",
+    "usage": "train.py --game <id> reads the matching entry here for defaults. Any command-line flag overrides the file, so this holds the known-good baseline and experiments stay on the command line.",
+    "variables": {
+      "source": "'info' = published by the stable-retro integration; 'ram' = one byte read directly; 'ram16' = little-endian pair (address + address_high << 8); 'ram_bcd3' = three digit bytes at address, address+1, address+2 combined as *100 + *10 + *1; 'unknown' = not located yet, shaping that needs it is inert.",
+      "verified": "true only when confirmed against recorded video with audit_ram.py. 'evidence' says how.",
+      "address": "hex string, parsed with int(x, 0)."
+    },
+    "rewards": "Weights applied by RewardShaper. Positive values pay, penalties are named as such and are subtracted.",
+    "finding_addresses": "inspect_progress.py --demo (position), find_game_vars.py --find {coins,meter,timer} (counters/meters), find_ram_variable.py (any value that changes at a known moment), probe_after_death.py (game-state bytes). Always confirm with audit_ram.py against video before training."
+  },
+
+  "games": {
+    "SuperMarioBros3-Nes-v0": {
+      "notes": "Addresses below were located from human demo recordings and confirmed frame-by-frame against video. See KNOWN_BAD_ADDRESSES in train.py for addresses that were tried and disproven.",
+
+      "variables": {
+        "lives": {
+          "source": "info", "key": "lives", "verified": true,
+          "evidence": "decrements exactly at each on-screen death"
+        },
+        "score": {
+          "source": "info", "key": "score", "verified": true,
+          "scale_to_display": 10,
+          "evidence": "published as one TENTH of the HUD value: a Super Mushroom (1000 on screen) reads +100, and a +100 on screen reads +10"
+        },
+        "screen_x": {
+          "source": "info", "key": "hpos", "verified": true,
+          "evidence": "Mario's ON-SCREEN x only. Rises 24 -> 144 as he walks to the scroll threshold, then FLATLINES at 144 while the level scrolls underneath him. It is NOT level progress; rewarding it pays for the first ~1.5s of a level and nothing after."
+        },
+        "powerup": {
+          "source": "ram", "address": "0x00ED", "verified": true,
+          "values": {"0": "small", "1": "big", "2": "fire", "3": "raccoon"},
+          "evidence": "tier changes on the exact frame a power-up is taken on video. NOTE it also clears to 0 on level exit and on death, which is why the power-down penalty is skipped when the episode is ending."
+        },
+        "coins": {
+          "source": "ram", "address": "0x2167", "verified": true,
+          "evidence": "live counter. 0x25A2 mirrors it for the HUD but lags: comparing the two showed 3 divergences with 0x2167 changing first."
+        },
+        "pmeter": {
+          "source": "ram", "address": "0x03DD", "full_value": 127, "verified": true,
+          "evidence": "speed/P-meter. Value equals the number of bars filled (0..6), then jumps to 127 when the P indicator lights. 127 means FULL, which is the precondition for raccoon flight. Located by correlating with sustained run+direction input."
+        },
+        "timer": {
+          "source": "ram_bcd3", "address": "0x05EE", "verified": true,
+          "evidence": "three digit bytes at 0x05EE/0x05EF/0x05F0 = *100 + *10 + *1. Range exactly 0..299 with ZERO increases across a whole demo. The integration's own `time` info key reads something unrelated (constant 299, then 43) and must not be used."
+        },
+        "progress": {
+          "source": "unknown", "verified": false,
+          "evidence": "NOT FOUND YET. This is the level position the main learning signal needs. Without it, progress shaping falls back to screen_x, which caps at the scroll threshold -- so the agent is paid for the first second of a level and nothing afterwards, and training plateaus regardless of how long it runs. Tried and REJECTED: 0x00CF (a per-frame scroll delta that returns to 0 whenever movement stops), 0x053C (a world-map counter, frozen during play). Find one with: inspect_progress.py --demo <recording>"
+        },
+        "playstate": {
+          "source": "unknown", "verified": false,
+          "evidence": "Optional. A byte that is constant during normal play and different during the death sequence, used to end episodes at the moment of the hit and to exclude death-animation garbage from progress. Tried and REJECTED: 0x07F1 (cycles 5->0->8 every ~24 frames DURING play), 0x0749 (flips only ~19 frames before lives decrements, i.e. the END of the death sequence)."
+        }
+      },
+
+      "rewards": {
+        "progress_scale": 1.0,
+        "backtrack_scale": 0.5,
+        "death_penalty": 25.0,
+        "score_bonus": 0.02,
+        "life_bonus": 25.0,
+        "power_bonus": 15.0,
+        "coin_bonus": 1.0,
+        "speed_bonus": 30.0,
+        "jump_bonus": 0.0,
+        "stuck_penalty": 0.1,
+        "time_penalty": 0.0,
+        "survival_tick": 0.0
+      },
+
+      "reward_notes": {
+        "jump_bonus": "Deliberately 0. Paying for the ACT of jumping is farmable -- a policy converged on jumping in place at the left screen edge, where the bonus minus the stuck penalty was risk-free income. Clearing an obstacle already pays through the progress it unlocks.",
+        "speed_bonus": "Paid once when the P-meter REACHES full, not for holding a partial meter (which would pay for merely jogging). Filling it needs a long sustained sprint that random exploration almost never produces.",
+        "stuck_penalty": "Must exceed any per-decision bonus, or stalling somewhere and farming that bonus becomes net-positive."
+      }
+    },
+
+    "_template": {
+      "notes": "Copy this for a new game. Set every address you can verify; leave the rest as 'unknown' and the matching shaping stays inert rather than reading garbage. Start with: python audit_ram.py --demo <recording> to see what the integration already publishes.",
+      "variables": {
+        "lives":    {"source": "info", "key": "lives",  "verified": false},
+        "score":    {"source": "info", "key": "score",  "verified": false},
+        "screen_x": {"source": "info", "key": "x",      "verified": false},
+        "progress": {"source": "unknown", "verified": false,
+                     "evidence": "find with inspect_progress.py --demo; it must climb the whole level and NOT reset when the player stops or backs up"},
+        "powerup":  {"source": "unknown", "verified": false},
+        "coins":    {"source": "unknown", "verified": false},
+        "pmeter":   {"source": "unknown", "verified": false},
+        "timer":    {"source": "unknown", "verified": false},
+        "playstate": {"source": "unknown", "verified": false}
+      },
+      "rewards": {
+        "progress_scale": 1.0,
+        "backtrack_scale": 0.5,
+        "death_penalty": 25.0,
+        "score_bonus": 0.02,
+        "life_bonus": 25.0,
+        "power_bonus": 0.0,
+        "coin_bonus": 0.0,
+        "speed_bonus": 0.0,
+        "jump_bonus": 0.0,
+        "stuck_penalty": 0.1,
+        "time_penalty": 0.0,
+        "survival_tick": 0.0
+      }
+    }
+  }
+}

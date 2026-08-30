@@ -493,7 +493,10 @@ class RewardShaper(Wrapper):
         if current_coins is not None:
             self.prev_coins = current_coins
 
-        # P-meter reaching FULL. Paid on the transition only, not for holding a
+        # P-meter reaching FULL. The value counts bars filled (0..6) and then
+        # jumps to the full marker (127 on SMB3) when the P indicator lights, so
+        # ">= speed_full" is the flight-ready test.
+        # Paid on the transition only, not for holding a
         # partial meter: a full meter is the precondition for raccoon flight, and
         # filling it demands a long sustained sprint that random exploration
         # essentially never produces -- so without this the whole "reach the sky"
@@ -671,6 +674,61 @@ def make_env(game, state, death_penalty, jump_bonus, render=False, end_on_life_l
     return _init
 
 
+DEFAULT_GAME_CONFIG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "games.json")
+
+
+def load_game_config(path, game):
+    """Read one game's memory map and reward weights from games.json.
+
+    Keeps per-game knowledge out of the code so the same pipeline trains any
+    game: fill in a game's addresses there and it works, leave a variable as
+    'unknown' and the shaping that needs it stays inert rather than reading
+    garbage. Returns argparse defaults; command-line flags still override.
+    """
+    if not path or not os.path.exists(path):
+        return {}, {}
+    try:
+        import json
+        with open(path) as fh:
+            entry = (json.load(fh).get("games") or {}).get(game)
+    except Exception as exc:
+        print(f"Could not read {path}: {exc}")
+        return {}, {}
+    if not entry:
+        return {}, {}
+
+    variables = entry.get("variables") or {}
+    defaults = dict(entry.get("rewards") or {})
+
+    def addr(name):
+        spec = variables.get(name) or {}
+        if spec.get("source") in (None, "unknown") or spec.get("address") is None:
+            return None
+        return int(spec["address"], 0) if isinstance(spec["address"], str) else int(spec["address"])
+
+    mapped = {
+        "progress_address": addr("progress"),
+        "powerup_address": addr("powerup"),
+        "playstate_address": addr("playstate"),
+        "coin_address": addr("coins"),
+        "speed_address": addr("pmeter"),
+    }
+    progress = variables.get("progress") or {}
+    if progress.get("address_high") is not None:
+        mapped["progress_address_high"] = int(str(progress["address_high"]), 0)
+    if progress.get("add_info_x"):
+        mapped["progress_add_screen_x"] = True
+    playstate = variables.get("playstate") or {}
+    if playstate.get("in_play_value") is not None:
+        mapped["playstate_value"] = int(str(playstate["in_play_value"]), 0)
+    meter = variables.get("pmeter") or {}
+    if meter.get("full_value") is not None:
+        mapped["speed_full"] = int(str(meter["full_value"]), 0)
+
+    defaults.update({k: v for k, v in mapped.items() if v is not None})
+    return defaults, variables
+
+
 # Addresses VERIFIED against video for a game, with how they were confirmed.
 # Recorded here so the knowledge lives in the repo rather than in a chat log.
 VERIFIED_ADDRESSES = {
@@ -679,9 +737,10 @@ VERIFIED_ADDRESSES = {
                             "when a mushroom is taken on the recorded video"),
         "coins":   (0x2167, "live coin counter. 0x25A2 mirrors it for the HUD but "
                             "lags: --compare showed 3 divergences with 0x2167 first"),
-        "speed":   (0x03DD, "P-meter, 0..127. 127 == 0b1111111, one bit per segment "
-                            "(6 arrows + P) == full == raccoon flight is available. "
-                            "Found by correlating with sustained run+direction input"),
+        "speed":   (0x03DD, "P-meter. Value == number of bars filled (0..6), then "
+                            "jumps to 127 when the P indicator lights == full == "
+                            "raccoon flight available. Found by correlating with "
+                            "sustained run+direction input, confirmed on screen"),
         "timer":   (0x05EE, "3-digit BCD across 0x05EE/0x05EF/0x05F0: value = "
                             "*100 + *10 + *1. Range exactly 0..299 with ZERO "
                             "increases over a whole demo. The integration's `time` "
@@ -967,6 +1026,21 @@ def main():
     parser.add_argument("--render", action="store_true", help="Open a live emulator window for ONE of the parallel envs so you can watch training happen. Needs a display (see README) and slows training down. To watch cleanly WITHOUT the slowdown, train headless and periodically play a checkpoint with: play_and_record.py --model <ckpt> --render")
     parser.add_argument("--resume-from", default=None, help="Path to a checkpoint to continue training from -- a previous PPO run, OR an imitation-pretrained checkpoint from pretrain_imitation.py. The cumulative iteration count is read from its filename.")
     parser.add_argument("--start-iteration", type=int, default=None, help="Override the cumulative iteration count when resuming, if the checkpoint filename doesn't encode it (e.g. you renamed it).")
+    parser.add_argument("--game-config", default=DEFAULT_GAME_CONFIG, help="JSON file of per-game memory maps and reward weights (default: games.json next to this script). Its values become the defaults for this game; any flag you pass still overrides them. Set to '' to ignore the file entirely.")
+
+    # Two-pass parse: read --game/--game-config first, fold that game's entry in
+    # as defaults, then parse for real so explicit flags win over the file.
+    prelim, _ = parser.parse_known_args()
+    config_defaults, config_vars = load_game_config(prelim.game_config, prelim.game)
+    if config_defaults:
+        known = {a.dest for a in parser._actions}
+        applied = {k: v for k, v in config_defaults.items() if k in known}
+        parser.set_defaults(**applied)
+        print(f"Loaded {len(applied)} defaults for {prelim.game} from {prelim.game_config}")
+    elif prelim.game_config:
+        print(f"No entry for {prelim.game} in {prelim.game_config} -- using built-in defaults. "
+              f"Add one (copy the _template entry) to make this game reproducible.")
+
     args = parser.parse_args()
 
     # A live window means one env in THIS process (DummyVecEnv). SubprocVecEnv

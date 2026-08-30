@@ -45,6 +45,36 @@ def analyse(rams, hpos_series, args):
     vals = [v for v in hpos_series if v is not None]
     if vals:
         print(f"\nhpos: min={min(vals)} max={max(vals)} first={vals[0]} last={vals[-1]}")
+        print("\nWHAT hpos ACTUALLY IS")
+        print("  It is Mario's position ON THE SCREEN, in pixels from the left edge")
+        print("  of the visible window -- not his position in the level.")
+        print("  Walking right from a standstill, it climbs (24 -> ~144). Once it")
+        print("  reaches the scroll threshold the CAMERA starts moving instead, so")
+        print("  Mario stays put on screen and hpos FREEZES even while he keeps")
+        print("  advancing through the level. Backing up lowers it again.")
+        cap = max(vals)
+        at_cap = sum(1 for v in vals if v >= cap - 2)
+        print(f"  In this recording it sat at/near its maximum ({cap}) for "
+              f"{at_cap} of {len(vals)} frames ({at_cap*100.0/len(vals):.0f}%).")
+        print("  Every one of those frames is real movement that hpos cannot see,")
+        print("  which is why it is unusable on its own as a progress signal.")
+        # Show where it froze, so the effect is visible rather than asserted.
+        frozen_runs = []
+        start = None
+        for i, v in enumerate(vals):
+            if v >= cap - 2:
+                if start is None:
+                    start = i
+            elif start is not None:
+                if i - start >= 30:
+                    frozen_runs.append((start, i))
+                start = None
+        if start is not None and len(vals) - start >= 30:
+            frozen_runs.append((start, len(vals)))
+        if frozen_runs:
+            print("  Stretches where it was pinned (frame ranges, and seconds):")
+            for a, b in frozen_runs[:8]:
+                print(f"    frames {a:5d}-{b:5d}   {a/60.0988:6.1f}s - {b/60.0988:6.1f}s")
 
     ram = np.array(rams, dtype=np.int32)
     n = ram.shape[0]

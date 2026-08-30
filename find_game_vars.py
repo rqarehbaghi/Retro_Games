@@ -52,18 +52,45 @@ def replay(bk2_path):
     )
     env.initial_state = movie.get_state()
     env.reset()
-    rams, infos = [], []
+    buttons = env.unwrapped.buttons
+    rams, infos, presses = [], [], []
     while movie.step():
         keys = [movie.get_key(i, 0) for i in range(env.num_buttons)]
         _obs, _rew, terminated, truncated, info = env.step(keys)
         rams.append(env.get_ram().copy())
         infos.append(info)
+        presses.append(keys)
         if terminated or truncated:
             break
     env.close()
     if not rams:
         raise SystemExit("No frames replayed -- is that a valid .bk2?")
-    return np.array(rams, dtype=np.int32), infos
+    return (np.array(rams, dtype=np.int32), infos,
+            np.array(presses, dtype=bool), buttons)
+
+
+def sprint_mask(presses, buttons, run_frames=16):
+    """Frames where the player was SUSTAINING a sprint: run button held together
+    with a direction, for at least run_frames consecutively.
+
+    A P-meter is defined by what causes it, so searching for what it correlates
+    with beats searching for its shape -- especially when the display ('6 arrows
+    plus a P') suggests the state may be split across more than one variable."""
+    idx = {b: i for i, b in enumerate(buttons) if b}
+    run = presses[:, idx["B"]] if "B" in idx else np.zeros(len(presses), bool)
+    move = np.zeros(len(presses), bool)
+    for d in ("LEFT", "RIGHT"):
+        if d in idx:
+            move |= presses[:, idx[d]]
+    holding = run & move
+    # Require a sustained hold: the meter fills only after running a while.
+    sustained = np.zeros_like(holding)
+    streak = 0
+    for i, h in enumerate(holding):
+        streak = streak + 1 if h else 0
+        if streak >= run_frames:
+            sustained[i] = True
+    return sustained
 
 
 def score_coins(col, n):
@@ -79,6 +106,26 @@ def score_coins(col, n):
     if downs > 3:                  # a reset at 100 or a new level, not more
         return None
     return ups * 10 - downs * 5
+
+
+def score_meter_correlated(col, sprinting):
+    """Rank a byte by how well it behaves like a meter DRIVEN BY SPRINTING:
+    rising while the sprint is sustained, falling once it stops."""
+    d = np.diff(col)
+    sprint_at = sprinting[1:]
+    ups = d > 0
+    downs = d < 0
+    n_up, n_down = int(ups.sum()), int(downs.sum())
+    if n_up < 3 or n_down < 3:
+        return None
+    if col.max() - col.min() < 2 or col.max() > 255:
+        return None
+    up_while_sprint = float((ups & sprint_at).sum()) / n_up
+    down_while_idle = float((downs & ~sprint_at).sum()) / n_down
+    # Both must be better than chance to be interesting at all.
+    if up_while_sprint < 0.55 or down_while_idle < 0.55:
+        return None
+    return (up_while_sprint + down_while_idle) * 100 + min(n_up, n_down) * 0.1
 
 
 def score_meter(col, n):
@@ -178,13 +225,14 @@ def main():
     p.add_argument("--compare", default=None, help="Two addresses (e.g. 0x25A2,0x2167) to diff frame by frame. Use when a search returns several candidates that look equally good: identical everywhere means one is a copy of the other (either works); any divergence tells you which is the real variable and which is a display mirror.")
     p.add_argument("--every", type=int, default=60, help="Sample interval for --watch (default: %(default)s)")
     p.add_argument("--top", type=int, default=15)
+    p.add_argument("--run-frames", type=int, default=16, help="Consecutive frames of run+direction that count as a sustained sprint for --find meter (default: %(default)s)")
     args = p.parse_args()
 
     if not args.find and not args.watch and not args.compare:
         raise SystemExit("Pass --find {coins,meter,timer}, --watch 0xADDR, or --compare 0xA,0xB")
 
     print(f"Replaying {args.demo} ...")
-    ram, infos = replay(args.demo)
+    ram, infos, presses, buttons = replay(args.demo)
     n = ram.shape[0]
     print(f"{n} frames, RAM size {ram.shape[1]} bytes.\n")
 
@@ -227,8 +275,44 @@ def main():
         print("check a few of these frames against the video.")
         return
 
-    scorer = SCORERS[args.find]
     rows = []
+    if args.find == "meter":
+        # Search by CAUSE rather than shape: a P-meter is whatever fills while
+        # you sprint and drains when you stop. Shape alone was too weak -- the
+        # display ("6 arrows plus a P") hints the state may span more than one
+        # variable, and a demo without long sprints shows no shape at all.
+        sprinting = sprint_mask(presses, buttons, run_frames=args.run_frames)
+        frac = float(sprinting.sum()) / max(1, len(sprinting))
+        print(f"Sustained sprint detected on {sprinting.sum()} of {len(sprinting)} "
+              f"frames ({frac*100:.1f}%).")
+        if sprinting.sum() < 60:
+            print("  That is very little sprinting -- record a demo with several")
+            print("  LONG flat-out runs (hold B plus a direction) for a clean result.\n")
+        else:
+            print()
+        for addr in range(ram.shape[1]):
+            sc = score_meter_correlated(ram[:, addr], sprinting)
+            if sc is not None:
+                col = ram[:, addr]
+                d = np.diff(col)
+                rows.append((sc, addr, int(col.min()), int(col.max()),
+                             int(np.count_nonzero(d > 0)), int(np.count_nonzero(d < 0))))
+        rows.sort(reverse=True)
+        print(f"Candidates for 'meter' ({len(rows)} rise with sprinting and fall without):\n")
+        print(f"  {'ADDR':>8}  {'DEC':>6}  {'RANGE':>12}  {'UPS':>5}  {'DOWNS':>5}")
+        for _sc, addr, lo, hi, ups, downs in rows[:args.top]:
+            print(f"  0x{addr:04X}  {addr:6d}  {lo:5d}..{hi:<5d}  {ups:5d}  {downs:5d}")
+        if rows:
+            print(f"\n{HINTS['meter']}")
+            print(f"\nConfirm against the video:")
+            print(f"    python find_game_vars.py --demo {args.demo} --watch 0x{rows[0][1]:04X}")
+        else:
+            print("  (none matched)")
+            print("\n  Record a demo with several LONG full-speed sprints (hold B and")
+            print("  a direction until the meter fills) separated by full stops.")
+        return
+
+    scorer = SCORERS[args.find]
     for addr in range(ram.shape[1]):
         col = ram[:, addr]
         s = scorer(col, n)

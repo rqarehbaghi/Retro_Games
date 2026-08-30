@@ -116,6 +116,9 @@ def main():
     p.add_argument("--speed-address", type=lambda v: int(v, 0), default=None)
     p.add_argument("--speed-full", type=lambda v: int(v, 0), default=127)
     p.add_argument("--speed-bonus", type=float, default=0.0)
+    p.add_argument("--clear-bonus", type=float, default=0.0)
+    p.add_argument("--no-end-on-clear", dest="end_on_clear", action="store_false")
+    p.set_defaults(end_on_clear=True)
     p.add_argument("--time-penalty", type=float, default=0.0)
     p.add_argument("--playstate-address", type=lambda v: int(v, 0), default=None)
     p.add_argument("--playstate-value", type=lambda v: int(v, 0), default=None)
@@ -152,6 +155,7 @@ def main():
         playstate_address=args.playstate_address,
         playstate_value=args.playstate_value,
         end_on_life_loss=args.end_on_life_loss,
+        clear_bonus=args.clear_bonus, end_on_clear=args.end_on_clear,
     )()
 
     print(f"Action indices used: NOOP={NOOP} {ACTION_TABLE[NOOP]}, "

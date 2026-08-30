@@ -68,7 +68,8 @@
         "jump_bonus": 0.0,
         "stuck_penalty": 0.2,
         "time_penalty": 0.0,
-        "survival_tick": 0.0
+        "survival_tick": 0.0,
+        "clear_bonus": 1000.0
       },
 
       "reward_scale_reasoning": {
@@ -76,6 +77,7 @@
         "current_scale": "progress_scale 0.5: reaching the first pipe (~120 units) pays ~60, a full traverse pays ~4200, and one decision of running (4-20 frames at ~2px/frame) pays 4-20. Against death 25 this gives a STAND-vs-RUN margin around 60-65, comfortably above the gate threshold, and progress dominates every other term as it should.",
         "death_penalty": "25 is deliberately modest. Dying already forfeits all remaining progress -- the value function learns that on its own -- so the explicit penalty only needs to discourage recklessness early. Too large and the agent becomes risk-averse and stops attempting the jumps that clearing obstacles requires.",
         "event_ratios": "Measured against one running decision (4-20): life 100 = a death undone and then some. power 40 = staying big is worth several seconds of running. speed 40 = filling the P-meter, the precondition for flight, is worth pursuing. coin 4 = a real nudge without dominating. stuck_penalty 0.2 bleeds while standing, on top of the opportunity cost of the progress not being earned.",
+        "clear_bonus": "1000 = roughly a quarter of a full traverse (~4200), paid for actually finishing. This exists because progress leaves a DEAD SPOT at the goal: it pays for ground gained, so once the agent reaches the end there is nothing more to earn and hitting the goal block pays exactly the same as shoving right against the edge. That is the observed behaviour -- the agent reached the end of 1-1 and pushed right instead of hitting the card. Large enough to be worth reaching for, and paid once per episode so a re-enterable pipe cannot be farmed.",
         "verify_dont_trust": "Re-run debug_rewards.py after ANY change here. These weights are arithmetic against measured distances, and the first attempt at that arithmetic was still wrong -- the gate is what caught it."
       },
 

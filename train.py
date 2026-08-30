@@ -268,6 +268,7 @@ class RewardShaper(Wrapper):
                  progress_use_info_x=False, playstate_address=None, playstate_value=None,
                  coin_address=None, coin_bonus=0.0,
                  speed_address=None, speed_full=127, speed_bonus=0.0,
+                 clear_bonus=0.0, end_on_clear=True,
                  end_on_life_loss=True):
         super().__init__(env)
         self.death_penalty = death_penalty
@@ -299,6 +300,9 @@ class RewardShaper(Wrapper):
         self.speed_bonus = speed_bonus
         self.prev_score = None
         self.prev_power = None
+        self.clear_bonus = clear_bonus
+        self.end_on_clear = end_on_clear
+        self._cleared = False
         self.prev_coins = None
         self.prev_speed = None
         # End the episode the moment a life is lost, so the vec-env auto-reset
@@ -367,6 +371,7 @@ class RewardShaper(Wrapper):
         self.prev_health = info.get("health")
         self.prev_score = info.get("score")
         self.prev_power = self._read_power(info)
+        self._cleared = False
         self.prev_coins = self._read_byte(self.coin_address)
         self.prev_speed = self._read_byte(self.speed_address)
         return obs, info
@@ -381,7 +386,7 @@ class RewardShaper(Wrapper):
         # earning +0.97/decision and the total alone couldn't say from where).
         comp = {"tick": self.survival_tick - self.time_penalty, "progress": 0.0,
                 "backtrack": 0.0, "score": 0.0, "power": 0.0, "life": 0.0,
-                "coins": 0.0, "speed": 0.0, "death": 0.0}
+                "coins": 0.0, "speed": 0.0, "clear": 0.0, "death": 0.0}
 
         reward += self.survival_tick
         reward -= self.time_penalty
@@ -422,6 +427,12 @@ class RewardShaper(Wrapper):
         # Rewarding only NEW furthest-progress removes the exploit at the source:
         # re-covering old ground pays nothing, so the only way to earn is to get
         # somewhere new.
+        # Lives is needed inside the progress block to tell a level clear from a
+        # death: both reset position, only one costs a life.
+        lives_now = info.get("lives")
+        died_now = (lives_now is not None and self.prev_lives is not None
+                    and lives_now < self.prev_lives)
+
         current_x = self._read_x(info)
         if current_x is not None and self.prev_x is not None:
             delta = current_x - self.prev_x
@@ -448,6 +459,24 @@ class RewardShaper(Wrapper):
                     # policy toward facing forward.
                     comp["backtrack"] = delta * self.progress_scale * self.backtrack_scale
                     reward += comp["backtrack"]
+            elif delta < 0 and not died_now and not self._cleared and self.clear_bonus:
+                # Position collapsed without losing a life: the level or area
+                # ended. Because the page byte absorbs hpos's 256-wraps, normal
+                # travel never produces a large backward jump -- so this is a
+                # transition, not movement.
+                #
+                # This exists because progress alone leaves a dead spot at the
+                # END of a level: there is no more ground to gain, so pushing
+                # right pays nothing and hitting the goal block pays nothing
+                # either. Observed exactly that -- the agent reaching the end
+                # and shoving right against the edge instead of hitting the
+                # card. Paying for the transition puts a gradient on finishing.
+                # Once per episode, so a re-enterable pipe cannot be farmed.
+                comp["clear"] = self.clear_bonus
+                reward += comp["clear"]
+                self._cleared = True
+                if self.end_on_clear:
+                    terminated = True
         if current_x is not None:
             self.prev_x = current_x
         comp["x"] = current_x
@@ -563,7 +592,8 @@ class RewardShaper(Wrapper):
         # One death penalty per non-clear episode end. This now also covers a
         # life-loss death (it just terminated the episode above), so we don't
         # add a second, separate life-loss penalty and double-count.
-        if (terminated or truncated) and not info.get("is_stage_clear", False):
+        if ((terminated or truncated) and not info.get("is_stage_clear", False)
+                and not self._cleared):
             comp["death"] = -self.death_penalty
             reward -= self.death_penalty
         elif lost_life:
@@ -638,7 +668,8 @@ def make_env(game, state, death_penalty, jump_bonus, render=False, end_on_life_l
              progress_address=None, progress_address_high=None, progress_use_info_x=False,
              playstate_address=None, playstate_value=None,
              coin_address=None, coin_bonus=0.0,
-             speed_address=None, speed_full=127, speed_bonus=0.0):
+             speed_address=None, speed_full=127, speed_bonus=0.0,
+             clear_bonus=0.0, end_on_clear=True):
     def _init():
         render_mode = "human" if render else "rgb_array"
         env = retro.make(game=game, state=state or retro.State.DEFAULT, render_mode=render_mode)
@@ -666,7 +697,8 @@ def make_env(game, state, death_penalty, jump_bonus, render=False, end_on_life_l
                            playstate_value=playstate_value,
                            coin_address=coin_address, coin_bonus=coin_bonus,
                            speed_address=speed_address, speed_full=speed_full,
-                           speed_bonus=speed_bonus)
+                           speed_bonus=speed_bonus,
+                           clear_bonus=clear_bonus, end_on_clear=end_on_clear)
         env = WarpFrame(env)
         return env
     return _init
@@ -1035,6 +1067,9 @@ def main():
     parser.add_argument("--progress-address", type=lambda v: int(v, 0), default=None, help="RAM index of the real level-position counter, read directly. STRONGLY recommended: SuperMarioBros3-Nes-v0's published `hpos` is Mario's ON-SCREEN x, which flatlines at the scroll threshold (144), so rewarding it pays only for the first ~1.5s of a level. Find candidates with inspect_progress.py and VERIFY with its --watch flag before trusting one -- an early candidate (0x053C) turned out to be a map-screen counter that never moves during play, because the scan window included post-death map frames. Hex or decimal. (default: %(default)s)")
     parser.add_argument("--progress-use-info-x", action="store_true", help="Take the LOW byte of level position from the integration's own on-screen x (hpos) rather than a RAM address, and combine it with --progress-address-high. This is the SMB3 answer: hpos wraps at 256 and the page byte 0x0075 ticks up on every wrap, so position = hpos + (0x0075 << 8). Replaces the old --progress-add-screen-x, whose additive theory was wrong.")
     parser.add_argument("--progress-address-high", type=lambda v: int(v, 0), default=None, help="High byte of a 16-bit little-endian level position (e.g. 0x053D), combined with --progress-address. A single byte wraps at 255, which a full level exceeds several times. (default: %(default)s)")
+    parser.add_argument("--clear-bonus", type=float, default=0.0, help="Reward for finishing a level or entering a new area, detected as level position collapsing WITHOUT losing a life (normal travel never jumps backwards, because the page byte absorbs the low byte's wraps). This fills the dead spot at the end of a level: progress pays for ground gained, so at the goal there is nothing left to earn and the agent shoves right against the edge instead of hitting the goal block. Paid once per episode so a re-enterable pipe cannot be farmed. (default: %(default)s)")
+    parser.add_argument("--no-end-on-clear", dest="end_on_clear", action="store_false", help="Keep playing after a level clear instead of ending the episode there. Off by default because the agent has never trained on the world map and only flails there.")
+    parser.set_defaults(end_on_clear=True)
     parser.add_argument("--coin-address", type=lambda v: int(v, 0), default=None, help="RAM index of the coin counter, so collecting coins is rewarded directly instead of only through the score it grants. SMB3 verified: 0x2167 (0x25A2 is the HUD mirror and lags a frame). Needs --coin-bonus.")
     parser.add_argument("--coin-bonus", type=float, default=0.0, help="Reward per coin collected. (default: %(default)s)")
     parser.add_argument("--speed-address", type=lambda v: int(v, 0), default=None, help="RAM index of the speed/P-meter. SMB3 verified: 0x03DD, 0..127 where 127 (0b1111111, one bit per segment: 6 arrows + P) means FULL -- the precondition for raccoon flight. Needs --speed-bonus.")
@@ -1167,6 +1202,7 @@ def main():
         coin_address=args.coin_address, coin_bonus=args.coin_bonus,
         speed_address=args.speed_address, speed_full=args.speed_full,
         speed_bonus=args.speed_bonus,
+        clear_bonus=args.clear_bonus, end_on_clear=args.end_on_clear,
     )
 
     if not args.skip_reward_check:

@@ -662,6 +662,7 @@ class JumpIncentiveWrapper(Wrapper):
 
 
 def make_env(game, state, death_penalty, jump_bonus, render=False, end_on_life_loss=True,
+             state_file=None,
              progress_scale=0.1, keep_game_reward=False, stuck_penalty=0.1,
              backtrack_scale=0.5, survival_tick=0.0,
              score_bonus=0.01, time_penalty=0.0, life_bonus=25.0, power_bonus=0.0, powerup_address=None,
@@ -672,7 +673,19 @@ def make_env(game, state, death_penalty, jump_bonus, render=False, end_on_life_l
              clear_bonus=0.0, end_on_clear=True):
     def _init():
         render_mode = "human" if render else "rgb_array"
-        env = retro.make(game=game, state=state or retro.State.DEFAULT, render_mode=render_mode)
+        if state_file:
+            # A raw emulator state captured by save_state.py, which lets
+            # training start anywhere -- level 2, a mid-level checkpoint --
+            # instead of only at the integration's single default state. Without
+            # this every episode begins at the same spot and the agent's entire
+            # experience is one level, which is why it flounders in level 2.
+            import gzip
+            env = retro.make(game=game, state=retro.State.NONE, render_mode=render_mode)
+            with gzip.open(state_file, "rb") as fh:
+                env.initial_state = fh.read()
+            env.reset()
+        else:
+            env = retro.make(game=game, state=state or retro.State.DEFAULT, render_mode=render_mode)
         # Order matters. The discretizer must be innermost so everything
         # above it operates at the level of one agent decision. JumpIncentive
         # must wrap the discretizer directly (it reads .jump_action_indices
@@ -1046,7 +1059,8 @@ class IterationCheckpointCallback(BaseCallback):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--game", required=True, help="stable-retro game id, e.g. SuperMarioBros3-Nes-v0")
-    parser.add_argument("--state", default=None, help="Save state to start from (default state if omitted)")
+    parser.add_argument("--state", default=None, help="Named save state from the integration to start from (default state if omitted)")
+    parser.add_argument("--state-file", default=None, help="Path to a raw emulator state captured by save_state.py, used instead of a named state. This is how you train on a level other than the one the integration starts at -- without it every episode begins at the same place and the agent only ever learns that level.")
     parser.add_argument("--iterations", type=int, default=100, help="How many MORE iterations to run this invocation -- the main training-length knob. (default: %(default)s)")
     parser.add_argument("--num-envs", type=int, default=8, help="Parallel emulator instances -- match roughly to your CPU core count. (default: %(default)s)")
     parser.add_argument("--n-steps", type=int, default=128, help="Env steps collected per env before each PPO update. (default: %(default)s)")
@@ -1186,6 +1200,7 @@ def main():
     # env, so the check exercises EXACTLY the configuration training will use
     # (duplicated kwarg lists have already caused silent drift once).
     env_kwargs = dict(
+        state_file=args.state_file,
         end_on_life_loss=args.end_on_life_loss,
         score_bonus=args.score_bonus, time_penalty=args.time_penalty,
         life_bonus=args.life_bonus, power_bonus=args.power_bonus,

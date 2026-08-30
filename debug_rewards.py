@@ -22,14 +22,18 @@ converges to standing, the reward is fine and the problem is optimization
 (e.g. value-function blowup from unnormalized returns), which is fixed in
 train.py by reward normalization, not by touching the shaping.
 
-Usage (pass the SAME shaping flags you train with):
-    python debug_rewards.py --game SuperMarioBros3-Nes-v0 \\
-        --progress-address 0x053C --powerup-address 0x00ED \\
-        --progress-scale 1.0 --death-penalty 25 --jump-bonus 0.3
+Usage -- addresses and weights come from games.json, the same file training
+reads, so this exercises exactly the configuration that will train:
+
+    python debug_rewards.py --game SuperMarioBros3-Nes-v0
+
+Any flag still overrides the file, for trying a weight before committing to it:
+
+    python debug_rewards.py --game SuperMarioBros3-Nes-v0 --death-penalty 100
 """
 import argparse
 
-from train import ACTION_TABLE, make_env
+from train import ACTION_TABLE, DEFAULT_GAME_CONFIG, load_game_config, make_env
 
 NOOP = 0
 RUN_RIGHT = 3        # ["RIGHT", "B"]
@@ -104,10 +108,31 @@ def main():
     p.add_argument("--powerup-address", type=lambda v: int(v, 0), default=None)
     p.add_argument("--progress-address", type=lambda v: int(v, 0), default=None)
     p.add_argument("--progress-address-high", type=lambda v: int(v, 0), default=None)
-    p.add_argument("--progress-add-screen-x", action="store_true")
+    p.add_argument("--progress-use-info-x", action="store_true")
+    p.add_argument("--backtrack-scale", type=float, default=0.5)
+    p.add_argument("--survival-tick", type=float, default=0.0)
+    p.add_argument("--coin-address", type=lambda v: int(v, 0), default=None)
+    p.add_argument("--coin-bonus", type=float, default=0.0)
+    p.add_argument("--speed-address", type=lambda v: int(v, 0), default=None)
+    p.add_argument("--speed-full", type=lambda v: int(v, 0), default=127)
+    p.add_argument("--speed-bonus", type=float, default=0.0)
     p.add_argument("--time-penalty", type=float, default=0.0)
     p.add_argument("--playstate-address", type=lambda v: int(v, 0), default=None)
     p.add_argument("--playstate-value", type=lambda v: int(v, 0), default=None)
+    p.add_argument("--no-end-on-death", dest="end_on_life_loss", action="store_false", help="Match train.py: don't end the episode at a lost life.")
+    p.set_defaults(end_on_life_loss=True)
+    p.add_argument("--game-config", default=DEFAULT_GAME_CONFIG, help="Same games.json training reads. Its values become the defaults here so this gate exercises EXACTLY the training configuration; flags still override. Set to '' to ignore it.")
+
+    # Load the game's config the same way train.py does, so the two cannot
+    # drift apart -- a gate that tests different weights than the run is worse
+    # than no gate at all.
+    prelim, _ = p.parse_known_args()
+    config_defaults, _vars = load_game_config(prelim.game_config, prelim.game)
+    if config_defaults:
+        known = {a.dest for a in p._actions}
+        applied = {k: v for k, v in config_defaults.items() if k in known}
+        p.set_defaults(**applied)
+        print(f"Loaded {len(applied)} settings for {prelim.game} from {prelim.game_config}")
     args = p.parse_args()
 
     env = make_env(
@@ -118,9 +143,15 @@ def main():
         power_bonus=args.power_bonus, powerup_address=args.powerup_address,
         progress_address=args.progress_address,
         progress_address_high=args.progress_address_high,
-        progress_add_screen_x=args.progress_add_screen_x,
+        progress_use_info_x=args.progress_use_info_x,
+        backtrack_scale=args.backtrack_scale,
+        survival_tick=args.survival_tick,
+        coin_address=args.coin_address, coin_bonus=args.coin_bonus,
+        speed_address=args.speed_address, speed_full=args.speed_full,
+        speed_bonus=args.speed_bonus,
         playstate_address=args.playstate_address,
         playstate_value=args.playstate_value,
+        end_on_life_loss=args.end_on_life_loss,
     )()
 
     print(f"Action indices used: NOOP={NOOP} {ACTION_TABLE[NOOP]}, "

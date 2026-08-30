@@ -111,6 +111,15 @@
         "jump_bonus": "Deliberately 0. Paying for the ACT of jumping is farmable -- a policy converged on jumping in place at the left screen edge, where the bonus minus the stuck penalty was risk-free income. Clearing an obstacle already pays through the progress it unlocks.",
         "speed_bonus": "Paid once when the P-meter REACHES full, not for holding a partial meter (which would pay for merely jogging). Filling it needs a long sustained sprint that random exploration almost never produces.",
         "stuck_penalty": "Must exceed any per-decision bonus, or stalling somewhere and farming that bonus becomes net-positive."
+      },
+      "recipes": {
+        "_note": "Multi-phase runs. games.json holds the baseline; a phase overrides on the command line and the next phase resumes from its checkpoint. Nothing here is automatic -- run the phases in order.",
+        "teach_collection": {
+          "why": "A trained speedrunner ignores coins and power-ups because they were priced far below the running time they cost: a coin at 4 against 60/second of forward motion is 0.07 seconds, so detouring lost more than it paid. It is NOT that the policy fails to sample detours -- at ent_coef 0.02 measured entropy was 2.21 of a 2.565 maximum, i.e. 86% of uniform, so it explores constantly. Magnitude was the problem, so inflate it temporarily, let the behaviour be learned, then restore normal weights and keep the skill.",
+          "phase_1_force": "--coin-bonus 100 --power-bonus 400 --speed-bonus 150 --ent-coef 0.03 for roughly 1500 iterations. A coin becomes worth ~1.7 seconds of running and a power-up ~6.7, so detours are clearly correct. Deliberately kept below the point of dominating the goal: 30 coins at 100 is 3000 against ~5200 for a full traverse plus clear, so finishing still wins and the agent does not learn to farm instead of playing.",
+          "phase_2_restore": "Resume from phase 1's checkpoint with no reward overrides, so games.json values apply again (coin 30, power 150, speed 60). The collection SKILL persists -- the policy has learned where items are and how to reach them -- while the weights go back to sane, and it rebalances how much detouring is worth.",
+          "watch_for": "If phase 1 stops finishing levels, coin totals have overtaken the clear bonus: halve --coin-bonus. If phase 2 immediately reverts to ignoring everything, phase 1 was too short to consolidate; run it longer rather than raising the weights further."
+        }
       }
     },
     "_template": {

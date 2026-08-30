@@ -1134,6 +1134,40 @@ def parse_iteration(path):
     return int(match.group(1)) if match else None
 
 
+class EntropyAnneal(BaseCallback):
+    """Walk ent_coef from a high starting value down to a low final one.
+
+    Exploration and multi-level training pull against each other: a converged
+    policy never detours, so it cannot learn that coins pay -- but cranking
+    entropy up permanently makes it too sloppy to clear a level, and an agent
+    that never clears level 1 never reaches level 2, so automatic level
+    advancement never fires either. Annealing gets both: enough randomness early
+    to sample detours and discover what they pay, then enough determinism later
+    to execute reliably and progress through levels.
+
+    PPO reads self.ent_coef fresh on every update, so setting it per rollout
+    takes effect immediately.
+    """
+
+    def __init__(self, start, end, total_iterations, verbose=0):
+        super().__init__(verbose)
+        self.start = start
+        self.end = end
+        self.total = max(1, total_iterations)
+        self.done = 0
+
+    def _on_rollout_start(self):
+        frac = min(1.0, self.done / self.total)
+        self.model.ent_coef = self.start + (self.end - self.start) * frac
+        self.done += 1
+        if self.verbose and self.done % 250 == 1:
+            print(f"  ent_coef -> {self.model.ent_coef:.4f} "
+                  f"(iteration {self.done} of {self.total})")
+
+    def _on_step(self):
+        return True
+
+
 class IterationCheckpointCallback(BaseCallback):
     """Saves the model at specific PPO training iterations -- the same
     'iterations' counter PPO's own logging reports -- rather than on a
@@ -1197,6 +1231,7 @@ def main():
     parser.add_argument("--lr", type=float, default=2.5e-4, help="PPO learning rate. Lower this (e.g. 3e-5) when resuming from an imitation-pretrained checkpoint, so RL fine-tuning doesn't wash out what it already learned. (default: %(default)s)")
     parser.add_argument("--n-epochs", type=int, default=4, help="Passes over each rollout batch per update. SB3's default is 10, which with n_steps 128 x 8 envs means ~160 gradient steps on 1024 samples -- enough reuse to push approx_kl and clip_fraction far past healthy (0.15 and 0.66 were observed). Atari PPO conventionally uses 4. (default: %(default)s)")
     parser.add_argument("--target-kl", type=float, default=0.03, help="Stop a rollout's epoch loop early once the policy has moved this far in KL. This is the direct guard against the aggressive updates that precede a training collapse; set to 0 to disable. (default: %(default)s)")
+    parser.add_argument("--ent-coef-final", type=float, default=None, help="Anneal --ent-coef linearly to this value across the run. Use when you want exploration AND reliable play: a converged policy never detours so it cannot learn collectibles pay, but permanently high entropy makes it too sloppy to clear a level -- and an agent that never clears level 1 never reaches level 2, so automatic level advancement never fires. Start high, end low. Omit for a constant coefficient.")
     parser.add_argument("--ent-coef", type=float, default=0.01, help="PPO entropy coefficient -- higher encourages more exploration. Lower this (e.g. 0.001) when fine-tuning a pretrained checkpoint. (default: %(default)s)")
     parser.add_argument("--death-penalty", type=float, default=50.0, help="Reward subtracted on death/episode-end without clearing the stage. (default: %(default)s)")
     parser.add_argument("--jump-bonus", type=float, default=0.0, help="Reward added for choosing a jump action. DEFAULT 0 -- and leave it there once a real progress signal is configured: paying for the ACT of jumping is farmable (observed in training: the policy converged to jumping in place at the left screen edge, where jump bonus minus stuck penalty is risk-free income and nothing else pays). Clearing an obstacle already pays through the progress it unlocks. Only raise this as a temporary crutch on a game with NO working progress signal. (default: %(default)s)")
@@ -1461,6 +1496,14 @@ def main():
         autosave_every=args.autosave_every, start_iteration=start_iteration, verbose=1,
         vecnorm=vecnorm,
     )
+    if args.ent_coef_final is not None:
+        from stable_baselines3.common.callbacks import CallbackList
+        print(f"Annealing ent_coef {args.ent_coef} -> {args.ent_coef_final} "
+              f"over {args.iterations} iterations")
+        callback = CallbackList([
+            EntropyAnneal(args.ent_coef, args.ent_coef_final, args.iterations, verbose=1),
+            callback,
+        ])
 
     try:
         model.learn(total_timesteps=total_timesteps, callback=callback, reset_num_timesteps=False)

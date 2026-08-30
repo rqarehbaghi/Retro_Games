@@ -826,18 +826,24 @@ def describe_value_sources(game, progress_address=None, progress_address_high=No
     print(f"  time      <- {info_src('time')}")
     print(f"  hpos      <- {info_src('hpos')}   [on-screen x; caps at the scroll threshold]")
 
-    if progress_address is not None:
-        src = f"RAM 0x{progress_address:04X} ({progress_address})"
+    # Report what the reader will ACTUALLY do. Checking only progress_address
+    # was wrong: a 16-bit position whose low byte comes from the info key
+    # legitimately leaves that field None, and the old text then announced a
+    # broken fallback for a perfectly good configuration.
+    if progress_use_info_x or progress_address is not None:
+        low = "info x/hpos" if progress_use_info_x else f"RAM 0x{progress_address:04X}"
+        src = low
         if progress_address_high is not None:
-            src += f" + 0x{progress_address_high:04X} << 8"
-        if progress_use_info_x:
-            src += " + hpos"
+            src = f"{low} + (RAM 0x{progress_address_high:04X} << 8)   [16-bit level position]"
+        else:
+            src += "   *** LOW BYTE ONLY -- wraps every 256px of travel ***"
         print(f"  PROGRESS  <- {src}")
     else:
-        print("  PROGRESS  <- info x/hpos fallback  *** NO progress address set ***")
-        print("               For SMB3 that is on-screen x, which caps at the scroll")
-        print("               threshold, so progress stops paying after ~1.5s and")
-        print("               training WILL plateau. Find one: inspect_progress.py --demo")
+        print("  PROGRESS  <- info x/hpos fallback  *** NO progress source set ***")
+        print("               Whatever the integration calls x, used raw. If that is")
+        print("               an on-screen coordinate or a low byte, progress stops")
+        print("               paying partway through a level and training plateaus.")
+        print("               Find a source: inspect_progress.py --demo <recording>")
 
     print(f"  powerup   <- " + (f"RAM 0x{powerup_address:04X} ({powerup_address})  [0=small 1=big 2=fire 3=raccoon]"
                                 if powerup_address is not None else "(not set -- power shaping inactive)"))
@@ -881,6 +887,7 @@ def reward_sanity_check(env_fn):
     print("Reward sanity check (scripted probes through the exact training env)...")
     env = env_fn()
     results = {}
+    rates = {}
     for label, pick in probes:
         env.reset()
         total, n = 0.0, 0
@@ -891,7 +898,9 @@ def reward_sanity_check(env_fn):
             if terminated or truncated:
                 break
         results[label] = total
-        print(f"  {label:<10} {total:+9.2f} over {n} decisions")
+        rates[label] = total / max(1, n)
+        print(f"  {label:<10} {total:+9.2f} over {n:4d} decisions  "
+              f"({rates[label]:+.2f}/decision)")
     env.close()
 
     ok = True
@@ -1111,7 +1120,7 @@ def main():
     print(f"Checkpoints folder: {checkpoint_dir}")
     print(f"Steps per iteration: {steps_per_iteration:,} ({args.n_steps} n_steps x {args.num_envs} envs)")
     print(f"This run: iterations {start_iteration + 1}-{end_iteration} ({total_timesteps:,} env steps)")
-    print(f"Reward shaping: keep_game_reward={args.keep_game_reward}, death_penalty={args.death_penalty}, progress_scale={args.progress_scale}, jump_bonus={args.jump_bonus}, score_bonus={args.score_bonus}, life_bonus={args.life_bonus}, power_bonus={args.power_bonus}, powerup_address={args.powerup_address}, progress_address={args.progress_address}, time_penalty={args.time_penalty}, end_on_life_loss={args.end_on_life_loss}")
+    print(f"Reward shaping: keep_game_reward={args.keep_game_reward}, death_penalty={args.death_penalty}, progress_scale={args.progress_scale}, progress_use_info_x={args.progress_use_info_x}, progress_address_high={args.progress_address_high}, jump_bonus={args.jump_bonus}, score_bonus={args.score_bonus}, life_bonus={args.life_bonus}, power_bonus={args.power_bonus}, powerup_address={args.powerup_address}, progress_address={args.progress_address}, time_penalty={args.time_penalty}, end_on_life_loss={args.end_on_life_loss}")
     print(
         "Rough guide from earlier: simple games often reach solid play in "
         "hours, medium-complexity platformers in about a day, on a modern "

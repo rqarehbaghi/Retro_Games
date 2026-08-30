@@ -47,6 +47,25 @@ def load_known_vars(game, config="games.json"):
         return {}
 
 
+def describe_source(spec):
+    """Human-readable origin of a variable, for the column legend. Handles every
+    source type rather than assuming an 'address' key exists -- 'info' and
+    'info16' have none, and assuming it raised a KeyError the moment level
+    position was added as info16."""
+    src = spec.get("source")
+    if src == "info":
+        return f"info['{spec.get('key')}']"
+    if src == "info16":
+        return f"info['{spec.get('key')}'] + ram[{spec.get('address_high')}] << 8"
+    if src == "ram16":
+        return f"ram[{spec.get('address')}] + ram[{spec.get('address_high')}] << 8"
+    if src == "ram_bcd3":
+        return f"BCD3 @ {spec.get('address')} (*100 + *10 + *1)"
+    if src == "ram":
+        return f"ram @ {spec.get('address')}"
+    return str(src)
+
+
 def read_var(ram_row, info, spec):
     """One variable's value for a frame, per its games.json source type."""
     src = spec.get("source")
@@ -222,8 +241,7 @@ def main():
                 if sp.get("source") not in (None, "unknown")]
         print("COLUMNS")
         for name, sp in cols:
-            src = (f"info['{sp['key']}']" if sp["source"] == "info"
-                   else f"{sp['source']} @ {sp['address']}")
+            src = describe_source(sp)
             flag = "" if sp.get("verified") else "   (UNVERIFIED)"
             print(f"  {name:<10} {src}{flag}")
         for a in watch:

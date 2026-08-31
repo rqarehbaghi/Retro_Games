@@ -1166,6 +1166,46 @@ def parse_iteration(path):
     return int(match.group(1)) if match else None
 
 
+class ShapingLogger(BaseCallback):
+    """Surface each reward TERM in the training table, not just the total.
+
+    ep_rew_mean says how much the agent earned, never from what. That left
+    questions like "is it ignoring coins, or collecting a few?" answerable only
+    by squinting at clips -- and those two cases need opposite fixes: a term
+    that reads zero means the behaviour never happens and no weight on it can
+    teach anything, while a small non-zero value means it happens and simply
+    needs time or a bigger weight. RewardShaper and JumpIncentiveWrapper already
+    publish a per-term ledger in info; this just sums it per rollout and logs
+    it, so the table shows shaping/coins, shaping/power, shaping/progress and
+    the rest alongside the usual metrics.
+    """
+
+    def __init__(self, verbose=0):
+        super().__init__(verbose)
+        self.totals = {}
+        self.rollouts = 0
+
+    def _on_step(self):
+        for info in self.locals.get("infos", []) or []:
+            for src in ("shaping", "jump_shaping"):
+                for key, val in (info.get(src) or {}).items():
+                    if key == "x" or not val:
+                        continue
+                    self.totals[key] = self.totals.get(key, 0.0) + float(val)
+        return True
+
+    def _on_rollout_end(self):
+        self.rollouts += 1
+        for key, val in self.totals.items():
+            self.logger.record(f"shaping/{key}", val)
+        # Report zero explicitly for terms that never fired -- an absent row is
+        # easy to miss, and "never fired" is exactly the diagnostic that matters.
+        for key in ("progress", "coins", "power", "speed", "clear", "death"):
+            if key not in self.totals:
+                self.logger.record(f"shaping/{key}", 0.0)
+        self.totals = {}
+
+
 class EntropyAnneal(BaseCallback):
     """Walk ent_coef from a high starting value down to a low final one.
 
@@ -1530,14 +1570,14 @@ def main():
         autosave_every=args.autosave_every, start_iteration=start_iteration, verbose=1,
         vecnorm=vecnorm,
     )
+    from stable_baselines3.common.callbacks import CallbackList
+    extra = [ShapingLogger()]
     if args.ent_coef_final is not None:
-        from stable_baselines3.common.callbacks import CallbackList
         print(f"Annealing ent_coef {args.ent_coef} -> {args.ent_coef_final} "
               f"over {args.iterations} iterations")
-        callback = CallbackList([
-            EntropyAnneal(args.ent_coef, args.ent_coef_final, args.iterations, verbose=1),
-            callback,
-        ])
+        extra.append(EntropyAnneal(args.ent_coef, args.ent_coef_final,
+                                   args.iterations, verbose=1))
+    callback = CallbackList(extra + [callback])
 
     try:
         model.learn(total_timesteps=total_timesteps, callback=callback, reset_num_timesteps=False)

@@ -59,7 +59,7 @@ import cv2
 import numpy as np
 import stable_retro as retro
 from gymnasium import ObservationWrapper, Wrapper
-from gymnasium.spaces import Box, Discrete
+from gymnasium.spaces import Box, Dict as DictSpace, Discrete
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.vec_env import (
@@ -362,6 +362,76 @@ class WarpFrame(ObservationWrapper):
         frame = cv2.cvtColor(obs, cv2.COLOR_RGB2GRAY)
         frame = cv2.resize(frame, (self.size, self.size), interpolation=cv2.INTER_AREA)
         return frame[:, :, None]
+
+
+OFF_SCREEN_Y = 240   # the NES parks unused sprites below the visible area
+
+
+def decode_oam(ram, base=0x0200, count=64):
+    """Active sprites as (x, y, tile). 4 bytes each: Y, tile, attributes, X.
+    Entries parked at Y >= 240 are unused slots, not objects."""
+    out = []
+    for i in range(count):
+        b = base + i * 4
+        if b + 3 >= len(ram):
+            break
+        y = int(ram[b])
+        if y < OFF_SCREEN_Y:
+            out.append((int(ram[b + 3]), y, int(ram[b + 1])))
+    return out
+
+
+class SpriteObservation(ObservationWrapper):
+    """Feed sprite positions to the policy alongside the image.
+
+    An 84x84 grayscale frame is a poor way to perceive enemies: a goomba is a
+    handful of grey pixels, it moves, and touching it is fatal. Terrain has the
+    opposite character -- large, static, high contrast -- which is what a CNN
+    reads well, and the agent already navigates it. So the split worth making is
+    to keep the screen for terrain and hand over exact positions for objects.
+
+    The NES stores 64 sprites in OAM as (Y, tile, attributes, X), shadowed in
+    CPU RAM. Observations become a dict of the usual image plus a fixed-length
+    vector of the nearest sprites, each as (x, y, tile, present) normalised to
+    0..1, padded with zeros so the shape is constant. Positions are absolute
+    screen coordinates rather than relative to Mario, because his screen
+    position is not directly available -- hpos turned out to be the low byte of
+    LEVEL position, not screen x -- and the image already shows where he is.
+
+    Only sprites are covered. Blocks, pipes and ground are background tiles and
+    never appear in OAM.
+    """
+
+    def __init__(self, env, oam_base=0x0200, n_sprites=8):
+        super().__init__(env)
+        self.oam_base = oam_base
+        self.n_sprites = n_sprites
+        screen = env.observation_space
+        self.observation_space = DictSpace({
+            "screen": screen,
+            "objects": Box(low=0.0, high=1.0,
+                           shape=(n_sprites * 4,), dtype=np.float32),
+        })
+
+    def _objects(self):
+        try:
+            sprites = decode_oam(self.env.unwrapped.get_ram(), self.oam_base)
+        except Exception:
+            sprites = []
+        # Nearest to screen centre first: with the camera following Mario he is
+        # near the middle, so this keeps the slots pointed at what matters
+        # instead of at whatever happens to occupy a low OAM index.
+        sprites.sort(key=lambda s: abs(s[0] - 128) + abs(s[1] - 120))
+        vec = np.zeros(self.n_sprites * 4, dtype=np.float32)
+        for i, (x, y, tile) in enumerate(sprites[:self.n_sprites]):
+            vec[i * 4 + 0] = x / 255.0
+            vec[i * 4 + 1] = y / 255.0
+            vec[i * 4 + 2] = tile / 255.0
+            vec[i * 4 + 3] = 1.0          # slot occupied
+        return vec
+
+    def observation(self, obs):
+        return {"screen": obs, "objects": self._objects()}
 
 
 class RewardShaper(Wrapper):
@@ -814,7 +884,8 @@ def make_env(game, state, death_penalty, jump_bonus, render=False, end_on_life_l
              speed_address=None, speed_full=127, speed_bonus=0.0,
              power_loss_scale=0.25,
              clear_bonus=0.0, end_on_clear=True,
-             auto_advance=False, timer_address=None):
+             auto_advance=False, timer_address=None,
+             sprites=False, oam_base=0x0200, n_sprites=8):
     def _init():
         render_mode = "human" if render else "rgb_array"
         if state_file:
@@ -887,6 +958,8 @@ def make_env(game, state, death_penalty, jump_bonus, render=False, end_on_life_l
                            speed_bonus=speed_bonus, power_loss_scale=power_loss_scale,
                            clear_bonus=clear_bonus, end_on_clear=end_on_clear)
         env = WarpFrame(env)
+        if sprites:
+            env = SpriteObservation(env, oam_base=oam_base, n_sprites=n_sprites)
         return env
     return _init
 
@@ -1081,6 +1154,56 @@ def action_index(combo, hold=None):
         if set(c) == set(combo) and (hold is None or h == hold):
             return i
     return None
+
+
+def sprite_sanity_check(game, state, oam_base, frames=600):
+    """Refuse to train on a sprite table that does not decode.
+
+    A wrong address here would not error -- it would feed the policy a vector of
+    noise every step, and the run would just quietly learn less. That exact
+    failure mode (a plausible-looking address that was actually a map counter,
+    an animation phase, a scroll delta) cost several runs in this project, so
+    the address gets checked before any training happens rather than trusted.
+
+    A real sprite table shows a handful of active entries that VARIES as objects
+    come and go. A fixed count, or none at all, means the address is wrong.
+    """
+    print(f"Sprite table check at 0x{oam_base:04X} ...")
+    env = retro.make(game=game, state=state or retro.State.DEFAULT, render_mode="rgb_array")
+    buttons = env.unwrapped.buttons
+    run_right = np.array([b in ("RIGHT", "B") for b in buttons], dtype=bool)
+    env.reset()
+    counts, tiles = [], set()
+    for _ in range(frames):
+        _o, _r, term, trunc, _i = env.step(run_right)
+        found = decode_oam(env.get_ram(), oam_base)
+        counts.append(len(found))
+        for _x, _y, t in found:
+            tiles.add(t)
+        if term or trunc:
+            env.reset()
+    env.close()
+
+    lo, hi = min(counts), max(counts)
+    mean = sum(counts) / len(counts)
+    print(f"  active sprites over {frames} frames: min {lo}, mean {mean:.1f}, max {hi}")
+    print(f"  distinct tile IDs seen: {len(tiles)}")
+    if hi == 0:
+        print(
+            f"\nFATAL: nothing decodes at 0x{oam_base:04X} -- every slot reads as parked\n"
+            "off-screen, so --sprites would feed the policy an all-zero vector.\n"
+            "Try --oam-base 0x0300 or 0x0700, or run inspect_sprites.py to hunt it."
+        )
+        return False
+    if lo == hi or len(tiles) < 3:
+        print(
+            f"\nFATAL: the decode looks static (count {lo}..{hi}, {len(tiles)} tile IDs).\n"
+            "A real sprite table changes as objects enter and leave the screen.\n"
+            "This address is probably not OAM; check it with inspect_sprites.py."
+        )
+        return False
+    print("  -> looks like a real sprite table: count varies, several tile IDs.\n")
+    return True
 
 
 def reward_sanity_check(env_fn):
@@ -1331,6 +1454,9 @@ def main():
     parser.add_argument("--progress-address", type=lambda v: int(v, 0), default=None, help="RAM index of the real level-position counter, read directly. STRONGLY recommended: SuperMarioBros3-Nes-v0's published `hpos` is Mario's ON-SCREEN x, which flatlines at the scroll threshold (144), so rewarding it pays only for the first ~1.5s of a level. Find candidates with inspect_progress.py and VERIFY with its --watch flag before trusting one -- an early candidate (0x053C) turned out to be a map-screen counter that never moves during play, because the scan window included post-death map frames. Hex or decimal. (default: %(default)s)")
     parser.add_argument("--progress-use-info-x", action="store_true", help="Take the LOW byte of level position from the integration's own on-screen x (hpos) rather than a RAM address, and combine it with --progress-address-high. This is the SMB3 answer: hpos wraps at 256 and the page byte 0x0075 ticks up on every wrap, so position = hpos + (0x0075 << 8). Replaces the old --progress-add-screen-x, whose additive theory was wrong.")
     parser.add_argument("--progress-address-high", type=lambda v: int(v, 0), default=None, help="High byte of a 16-bit little-endian level position (e.g. 0x053D), combined with --progress-address. A single byte wraps at 255, which a full level exceeds several times. (default: %(default)s)")
+    parser.add_argument("--sprites", action="store_true", help="Give the policy sprite positions from OAM alongside the image, as a dict observation. Enemies are a handful of grey pixels at 84x84 and lethal on contact, which is the worst case for pixel-only perception; terrain is large and static and the CNN already handles it. Switches the policy to MultiInputPolicy, so checkpoints trained WITHOUT this flag cannot be resumed with it.")
+    parser.add_argument("--oam-base", type=lambda v: int(v, 0), default=0x0200, help="Base address of the sprite table (NES convention: 0x0200). Verified at startup -- training refuses to run if nothing decodes. (default: %(default)s)")
+    parser.add_argument("--n-sprites", type=int, default=8, help="How many nearest sprites to include. (default: %(default)s)")
     parser.add_argument("--auto-advance", action="store_true", help="On clearing a level, walk the world map automatically and keep training in the NEXT level, instead of ending the episode. The navigation runs as raw emulator frames inside a single step, so no map frames enter the rollout and no scripted action is attributed to the policy. This is what lets one run cover several levels without capturing a save state per level by hand. Needs --timer-address to tell when a level has loaded. Implies --no-end-on-clear.")
     parser.add_argument("--timer-address", type=lambda v: int(v, 0), default=None, help="RAM index of the 3-digit BCD level timer (SMB3: 0x05EE). Used by --auto-advance to detect that a level has actually started, since the timer only ticks in a level.")
     parser.add_argument("--power-loss-scale", type=float, default=0.25, help="Fraction of --power-bonus charged when a power-up is LOST, versus paid when one is gained. Deliberately asymmetric: symmetric charging made one hit cost the full bonus, erasing ~100 decisions of progress, and the agent responded by creeping forward instead of advancing. Taking a hit is also partly luck. 1.0 restores symmetry. (default: %(default)s)")
@@ -1480,8 +1606,12 @@ def main():
         power_loss_scale=args.power_loss_scale,
         clear_bonus=args.clear_bonus, end_on_clear=args.end_on_clear,
         auto_advance=args.auto_advance, timer_address=args.timer_address,
+        sprites=args.sprites, oam_base=args.oam_base, n_sprites=args.n_sprites,
     )
 
+    if args.sprites and not args.skip_reward_check:
+        if not sprite_sanity_check(args.game, args.state, args.oam_base):
+            sys.exit(1)
     if not args.skip_reward_check:
         if not reward_sanity_check(make_env(args.game, args.state, args.death_penalty,
                                             args.jump_bonus, **env_kwargs)):
@@ -1566,7 +1696,8 @@ def main():
         model.ep_info_buffer = None
         model.ep_success_buffer = None
     else:
-        model = PPO("CnnPolicy", env, n_steps=args.n_steps, learning_rate=args.lr,
+        policy_cls = "MultiInputPolicy" if args.sprites else "CnnPolicy"
+        model = PPO(policy_cls, env, n_steps=args.n_steps, learning_rate=args.lr,
                     ent_coef=args.ent_coef, n_epochs=args.n_epochs, gamma=args.gamma,
                     target_kl=(args.target_kl or None), verbose=1)
 

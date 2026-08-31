@@ -1231,6 +1231,7 @@ def main():
     parser.add_argument("--lr", type=float, default=2.5e-4, help="PPO learning rate. Lower this (e.g. 3e-5) when resuming from an imitation-pretrained checkpoint, so RL fine-tuning doesn't wash out what it already learned. (default: %(default)s)")
     parser.add_argument("--n-epochs", type=int, default=4, help="Passes over each rollout batch per update. SB3's default is 10, which with n_steps 128 x 8 envs means ~160 gradient steps on 1024 samples -- enough reuse to push approx_kl and clip_fraction far past healthy (0.15 and 0.66 were observed). Atari PPO conventionally uses 4. (default: %(default)s)")
     parser.add_argument("--target-kl", type=float, default=0.03, help="Stop a rollout's epoch loop early once the policy has moved this far in KL. This is the direct guard against the aggressive updates that precede a training collapse; set to 0 to disable. (default: %(default)s)")
+    parser.add_argument("--gamma", type=float, default=0.99, help="Discount factor: how much a reward N decisions away is still worth. The effective horizon is about 1/(1-gamma), so the 0.99 default only looks ~100 decisions ahead -- which makes the agent impatient even with no time penalty at all, because a detour delays future progress and delayed reward is discounted. Raise it (0.995 = ~200, 0.999 = ~1000) when you do not care how long a level takes and want detours, exploration and multi-level episodes valued properly. (default: %(default)s)")
     parser.add_argument("--ent-coef-final", type=float, default=None, help="Anneal --ent-coef linearly to this value across the run. Use when you want exploration AND reliable play: a converged policy never detours so it cannot learn collectibles pay, but permanently high entropy makes it too sloppy to clear a level -- and an agent that never clears level 1 never reaches level 2, so automatic level advancement never fires. Start high, end low. Omit for a constant coefficient.")
     parser.add_argument("--ent-coef", type=float, default=0.01, help="PPO entropy coefficient -- higher encourages more exploration. Lower this (e.g. 0.001) when fine-tuning a pretrained checkpoint. (default: %(default)s)")
     parser.add_argument("--death-penalty", type=float, default=50.0, help="Reward subtracted on death/episode-end without clearing the stage. (default: %(default)s)")
@@ -1462,6 +1463,7 @@ def main():
                 "learning_rate": args.lr,
                 "ent_coef": args.ent_coef,
                 "n_epochs": args.n_epochs,
+                "gamma": args.gamma,
                 "target_kl": (args.target_kl or None),
                 # PPO.load restores `verbose` too, and pretrain_imitation.py
                 # builds its model with verbose=0 -- so resuming from a BC
@@ -1479,7 +1481,7 @@ def main():
         model.ep_success_buffer = None
     else:
         model = PPO("CnnPolicy", env, n_steps=args.n_steps, learning_rate=args.lr,
-                    ent_coef=args.ent_coef, n_epochs=args.n_epochs,
+                    ent_coef=args.ent_coef, n_epochs=args.n_epochs, gamma=args.gamma,
                     target_kl=(args.target_kl or None), verbose=1)
 
     print(f"Device: {model.policy.device}")

@@ -1300,7 +1300,18 @@ def wrap_for_model(base_env, model, oam_base=0x0200):
     env = VariableHoldDiscretizer(base_env, ACTION_TABLE)
     env = WarpFrame(env)
     if isinstance(model.observation_space, spaces.Dict):
-        n_slots = int(model.observation_space["objects"].shape[0]) // 4
+        # The SAVED space is post-VecFrameStack, so objects is
+        # n_sprites * 4 fields * n_stack, not n_sprites * 4. Dividing by 4 alone
+        # reported four times the real slot count, and the oversized wrapper
+        # then produced an observation the model rejected outright.
+        #
+        # Stack depth is read from the screen's channel count: WarpFrame emits a
+        # single channel, so after stacking that dimension IS the depth. Taking
+        # the smallest dimension survives either layout, since SB3 may transpose
+        # to channels-first and height/width are far larger than the depth.
+        screen_shape = model.observation_space["screen"].shape
+        n_stack = min(screen_shape) if len(screen_shape) == 3 else 1
+        n_slots = int(model.observation_space["objects"].shape[0]) // (4 * n_stack)
         env = SpriteObservation(env, oam_base=oam_base, n_sprites=n_slots)
     return env
 

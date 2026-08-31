@@ -114,9 +114,8 @@ def play_agent_episode(game, state, model_path, max_steps, record_dir, render,
 
         wrapped = wrap_for_model(base_env, model, oam_base=oam_base)
         if wants_sprites:
-            n_slots = int(model.observation_space["objects"].shape[0]) // 4
             print(f"Checkpoint expects sprite observations: "
-                  f"{n_slots} slots from OAM 0x{oam_base:04X}")
+                  f"{wrapped.n_sprites} slots from OAM 0x{oam_base:04X}")
         env = VecFrameStack(DummyVecEnv([lambda: wrapped]), n_stack=4)
 
         # ACTION_TABLE indices the map navigator needs. Looked up by combo, not

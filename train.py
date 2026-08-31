@@ -398,6 +398,7 @@ class RewardShaper(Wrapper):
                  progress_use_info_x=False, playstate_address=None, playstate_value=None,
                  coin_address=None, coin_bonus=0.0,
                  speed_address=None, speed_full=127, speed_bonus=0.0,
+                 power_loss_scale=0.25,
                  clear_bonus=0.0, end_on_clear=True,
                  end_on_life_loss=True):
         super().__init__(env)
@@ -430,6 +431,7 @@ class RewardShaper(Wrapper):
         self.speed_bonus = speed_bonus
         self.prev_score = None
         self.prev_power = None
+        self.power_loss_scale = power_loss_scale
         self.clear_bonus = clear_bonus
         self.end_on_clear = end_on_clear
         self._cleared = False
@@ -687,7 +689,16 @@ class RewardShaper(Wrapper):
                     current_lives_now is not None and self.prev_lives is not None
                     and current_lives_now < self.prev_lives)
                 if not dying:
-                    comp["power"] = delta * self.power_bonus
+                    # ASYMMETRIC on purpose. Charging a loss the same as a gain
+                    # pays -400 for one hit, which erases roughly a hundred
+                    # decisions of forward progress -- measured exactly that,
+                    # with shaping/power at -400 while shaping/progress sat
+                    # under 130 for a whole rollout, and the agent responding by
+                    # creeping along instead of advancing. Taking a hit is also
+                    # partly luck, so it should sting without being ruinous:
+                    # seeking power-ups stays strongly rewarded, losing one is a
+                    # setback rather than a catastrophe.
+                    comp["power"] = delta * self.power_bonus * self.power_loss_scale
                     reward += comp["power"]
         if current_power is not None:
             self.prev_power = current_power
@@ -801,6 +812,7 @@ def make_env(game, state, death_penalty, jump_bonus, render=False, end_on_life_l
              playstate_address=None, playstate_value=None,
              coin_address=None, coin_bonus=0.0,
              speed_address=None, speed_full=127, speed_bonus=0.0,
+             power_loss_scale=0.25,
              clear_bonus=0.0, end_on_clear=True,
              auto_advance=False, timer_address=None):
     def _init():
@@ -872,7 +884,7 @@ def make_env(game, state, death_penalty, jump_bonus, render=False, end_on_life_l
                            playstate_value=playstate_value,
                            coin_address=coin_address, coin_bonus=coin_bonus,
                            speed_address=speed_address, speed_full=speed_full,
-                           speed_bonus=speed_bonus,
+                           speed_bonus=speed_bonus, power_loss_scale=power_loss_scale,
                            clear_bonus=clear_bonus, end_on_clear=end_on_clear)
         env = WarpFrame(env)
         return env
@@ -1321,6 +1333,7 @@ def main():
     parser.add_argument("--progress-address-high", type=lambda v: int(v, 0), default=None, help="High byte of a 16-bit little-endian level position (e.g. 0x053D), combined with --progress-address. A single byte wraps at 255, which a full level exceeds several times. (default: %(default)s)")
     parser.add_argument("--auto-advance", action="store_true", help="On clearing a level, walk the world map automatically and keep training in the NEXT level, instead of ending the episode. The navigation runs as raw emulator frames inside a single step, so no map frames enter the rollout and no scripted action is attributed to the policy. This is what lets one run cover several levels without capturing a save state per level by hand. Needs --timer-address to tell when a level has loaded. Implies --no-end-on-clear.")
     parser.add_argument("--timer-address", type=lambda v: int(v, 0), default=None, help="RAM index of the 3-digit BCD level timer (SMB3: 0x05EE). Used by --auto-advance to detect that a level has actually started, since the timer only ticks in a level.")
+    parser.add_argument("--power-loss-scale", type=float, default=0.25, help="Fraction of --power-bonus charged when a power-up is LOST, versus paid when one is gained. Deliberately asymmetric: symmetric charging made one hit cost the full bonus, erasing ~100 decisions of progress, and the agent responded by creeping forward instead of advancing. Taking a hit is also partly luck. 1.0 restores symmetry. (default: %(default)s)")
     parser.add_argument("--clear-bonus", type=float, default=0.0, help="Reward for finishing a level or entering a new area, detected as level position collapsing WITHOUT losing a life (normal travel never jumps backwards, because the page byte absorbs the low byte's wraps). This fills the dead spot at the end of a level: progress pays for ground gained, so at the goal there is nothing left to earn and the agent shoves right against the edge instead of hitting the goal block. Paid once per episode so a re-enterable pipe cannot be farmed. (default: %(default)s)")
     parser.add_argument("--no-end-on-clear", dest="end_on_clear", action="store_false", help="Keep playing after a level clear instead of ending the episode there. Off by default because the agent has never trained on the world map and only flails there.")
     parser.set_defaults(end_on_clear=True)
@@ -1464,6 +1477,7 @@ def main():
         coin_address=args.coin_address, coin_bonus=args.coin_bonus,
         speed_address=args.speed_address, speed_full=args.speed_full,
         speed_bonus=args.speed_bonus,
+        power_loss_scale=args.power_loss_scale,
         clear_bonus=args.clear_bonus, end_on_clear=args.end_on_clear,
         auto_advance=args.auto_advance, timer_address=args.timer_address,
     )

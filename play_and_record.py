@@ -50,7 +50,8 @@ def build_policy(model_path, action_space):
 
 
 def play_agent_episode(game, state, model_path, max_steps, record_dir, render,
-                       on_death="continue", stochastic=False, max_attempts=5):
+                       on_death="continue", stochastic=False, max_attempts=5,
+                       oam_base=0x0200):
     """Plays one session and records it.
 
     on_death="continue" (default): the game plays itself through deaths. The
@@ -97,15 +98,26 @@ def play_agent_episode(game, state, model_path, max_steps, record_dir, render,
         # action space, so they make no difference to how a trained
         # model plays and would only distort the reward number printed
         # at the end.
+        from gymnasium import spaces
         from stable_baselines3 import PPO
         from stable_baselines3.common.vec_env import DummyVecEnv, VecFrameStack
-        from train import ACTION_TABLE, VariableHoldDiscretizer, WarpFrame
+        from train import ACTION_TABLE, wrap_for_model
 
-        wrapped = VariableHoldDiscretizer(base_env, ACTION_TABLE)
-        wrapped = WarpFrame(wrapped)
-        env = VecFrameStack(DummyVecEnv([lambda: wrapped]), n_stack=4)
-
+        # Load FIRST and mirror whatever observation the checkpoint expects.
+        # A model trained with --sprites uses MultiInputPolicy and wants a dict
+        # of screen plus sprite positions; handing it a bare array fails deep
+        # inside SB3 with an opaque indexing error. Reading the requirement off
+        # the model rather than a flag means playback cannot drift out of step
+        # with training the way it just did.
         model = PPO.load(model_path)
+        wants_sprites = isinstance(model.observation_space, spaces.Dict)
+
+        wrapped = wrap_for_model(base_env, model, oam_base=oam_base)
+        if wants_sprites:
+            n_slots = int(model.observation_space["objects"].shape[0]) // 4
+            print(f"Checkpoint expects sprite observations: "
+                  f"{n_slots} slots from OAM 0x{oam_base:04X}")
+        env = VecFrameStack(DummyVecEnv([lambda: wrapped]), n_stack=4)
 
         # ACTION_TABLE indices the map navigator needs. Looked up by combo, not
         # hardcoded, so table edits don't silently break this.
@@ -445,6 +457,7 @@ def main():
     parser.add_argument("--render", action="store_true", help="Also show a live window while an agent plays (slower). Ignored with --human, which always shows a window. Needs a display.")
     parser.add_argument("--on-death", choices=["continue", "restart", "stop"], default="continue", help="'continue' (default): play continuously through deaths -- a scripted navigator walks the world map (tap RIGHT, tap UP, press A: the sequence measured to work by probe_after_death.py) and hands control back to the policy the moment a level loads. 'restart': skip the map and reset to the level start on each death, up to --max-attempts, joining every attempt into one video. 'stop': end at the first death for a single clean clip of what the policy alone does. Ignored with --human.")
     parser.add_argument("--max-attempts", type=int, default=5, help="With --on-death restart, how many level attempts to record before stopping. Each attempt becomes one clip and they are joined into a single video. (default: %(default)s)")
+    parser.add_argument("--oam-base", type=lambda v: int(v, 0), default=0x0200, help="Sprite-table base, used only when the checkpoint was trained with --sprites. Must match what training used. (default: %(default)s)")
     parser.add_argument("--stochastic", action="store_true", help="Sample actions from the policy's distribution instead of always taking its single best guess. On a half-trained model the deterministic argmax can lock into repeating one action (e.g. walking into a pipe until the timer kills it); sampling matches how PPO acted during training and usually produces a much more representative clip.")
     parser.add_argument("--scale", type=int, default=4, help="Upscale factor for the final video, e.g. 4 turns ~256x224 into ~1024x896. Set to 1 to skip upscaling and keep the native-resolution file. (default: %(default)s)")
     parser.add_argument("--scale-mode", choices=["sharp", "smooth"], default="sharp", help="'sharp' = crisp nearest-neighbor (retro pixel look). 'smooth' = anti-aliased lanczos (softer, less blocky). (default: %(default)s)")
@@ -467,6 +480,7 @@ def main():
             on_death=args.on_death,
             stochastic=args.stochastic,
             max_attempts=args.max_attempts,
+            oam_base=args.oam_base,
         )
 
     # --on-death restart resets the env per attempt, and stable-retro starts a

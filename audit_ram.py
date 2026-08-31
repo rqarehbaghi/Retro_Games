@@ -214,13 +214,15 @@ def play_model(game, state, model_path, tracker, every, max_frames, record_dir):
     from stable_baselines3 import PPO
     from stable_baselines3.common.vec_env import DummyVecEnv, VecFrameStack
 
-    from train import ACTION_TABLE, VariableHoldDiscretizer, WarpFrame
+    from train import wrap_for_model
 
     base = retro.make(game=game, state=state or retro.State.DEFAULT,
                       record=record_dir, render_mode="rgb_array")
-    wrapped = WarpFrame(VariableHoldDiscretizer(base, ACTION_TABLE))
-    venv = VecFrameStack(DummyVecEnv([lambda: wrapped]), n_stack=4)
+    # Load first: the checkpoint records which observation it needs, and a
+    # sprite-trained model requires a dict the plain stack does not produce.
     model = PPO.load(model_path)
+    wrapped = wrap_for_model(base, model)
+    venv = VecFrameStack(DummyVecEnv([lambda: wrapped]), n_stack=4)
 
     print(f"Playing {model_path}. One decision spans several emulator frames, so")
     print(f"the frame counter accumulates frames_this_step to stay aligned with")

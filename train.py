@@ -1286,6 +1286,25 @@ def reward_sanity_check(env_fn):
     return ok
 
 
+def wrap_for_model(base_env, model, oam_base=0x0200):
+    """Build the wrapper stack a saved checkpoint expects.
+
+    A checkpoint records the observation space it was trained on, so read the
+    requirement off the model instead of re-deriving it per tool. Every script
+    that loads a model was building this stack itself, and when --sprites added
+    a dict observation they all silently went stale -- playback failed inside
+    SB3 with an opaque indexing error rather than saying the shapes disagreed.
+    One helper means adding an observation later updates every consumer at once.
+    """
+    from gymnasium import spaces
+    env = VariableHoldDiscretizer(base_env, ACTION_TABLE)
+    env = WarpFrame(env)
+    if isinstance(model.observation_space, spaces.Dict):
+        n_slots = int(model.observation_space["objects"].shape[0]) // 4
+        env = SpriteObservation(env, oam_base=oam_base, n_sprites=n_slots)
+    return env
+
+
 def safe_name(game):
     """Turns a game id into something guaranteed safe as a folder name.
     Game ids are normally already filesystem-safe, but this guards

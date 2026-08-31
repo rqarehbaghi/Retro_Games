@@ -50,12 +50,13 @@ def main():
         from stable_baselines3 import PPO
         from stable_baselines3.common.vec_env import DummyVecEnv, VecFrameStack
 
-        from train import ACTION_TABLE, VariableHoldDiscretizer, WarpFrame
+        from train import wrap_for_model
 
         base = retro.make(game=args.game, state=args.state or retro.State.DEFAULT, render_mode=render_mode)
-        wrapped = WarpFrame(VariableHoldDiscretizer(base, ACTION_TABLE))
-        venv = VecFrameStack(DummyVecEnv([lambda: wrapped]), n_stack=4)
+        # Load first so the wrapper stack matches the checkpoint's observation.
         model = PPO.load(args.model)
+        wrapped = wrap_for_model(base, model)
+        venv = VecFrameStack(DummyVecEnv([lambda: wrapped]), n_stack=4)
 
         obs = venv.reset()
         prev = None

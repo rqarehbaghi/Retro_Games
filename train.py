@@ -193,6 +193,16 @@ class AutoAdvanceLevel(Wrapper):
     normally rather than hanging.
     """
 
+    # A real level or area change drops position by thousands. One PAGE is 256,
+    # and hpos and the page byte are separate RAM bytes that need not update on
+    # the same frame -- during a crossing there is a one-frame window where they
+    # disagree and position appears to jump by +/-256. A 200 threshold treated
+    # that blip as a level ending, so mid-level page crossings triggered map
+    # navigation that then failed and killed the episode. Sit well above one
+    # page, and confirm the drop persists rather than acting on a single frame.
+    TRANSITION_DROP = 600
+    CONFIRM_FRAMES = 8
+
     def __init__(self, env, read_progress, read_timer, max_nav_frames=1800):
         super().__init__(env)
         self.read_progress = read_progress
@@ -201,6 +211,7 @@ class AutoAdvanceLevel(Wrapper):
         self.prev_progress = None
         self.prev_lives = None
         self.levels_advanced = 0
+        self._pending = None      # (progress_before, frames_left) awaiting confirmation
         buttons = env.unwrapped.buttons
         self._idx = {b: i for i, b in enumerate(buttons) if b}
         self._n = len(buttons)
@@ -248,17 +259,30 @@ class AutoAdvanceLevel(Wrapper):
         obs, reward, terminated, truncated, info = self.env.step(action)
         progress = self.read_progress(info)
         lives = info.get("lives")
-        if (progress is not None and self.prev_progress is not None
-                and lives is not None and self.prev_lives is not None
-                and progress < self.prev_progress - 200 and lives >= self.prev_lives):
-            # Position collapsed with no life lost: the level ended.
-            nav_obs, nav_info, ok = self._navigate()
-            if ok and nav_obs is not None:
-                obs, info = nav_obs, nav_info
-                info["advanced_level"] = True
-                progress = self.read_progress(info)
+
+        if self._pending is not None and progress is not None:
+            before, left = self._pending
+            left -= 1
+            if progress >= before - self.TRANSITION_DROP:
+                self._pending = None      # recovered: it was a byte desync
+            elif left <= 0:
+                self._pending = None      # still far below: a real transition
+                nav_obs, nav_info, ok = self._navigate()
+                if ok and nav_obs is not None:
+                    obs, info = nav_obs, nav_info
+                    info["advanced_level"] = True
+                    progress = self.read_progress(info)
+                else:
+                    truncated = True      # couldn't reach a level; end cleanly
             else:
-                truncated = True   # couldn't reach a level; end cleanly
+                self._pending = (before, left)
+        elif (progress is not None and self.prev_progress is not None
+                and lives is not None and self.prev_lives is not None
+                and progress < self.prev_progress - self.TRANSITION_DROP
+                and lives >= self.prev_lives):
+            # Looks like the level ended -- but confirm across a few frames
+            # before acting, so a one-frame hpos/page desync cannot trigger it.
+            self._pending = (self.prev_progress, self.CONFIRM_FRAMES)
         self.prev_progress = progress if progress is not None else self.prev_progress
         self.prev_lives = lives if lives is not None else self.prev_lives
         return obs, reward, terminated, truncated, info
@@ -267,6 +291,7 @@ class AutoAdvanceLevel(Wrapper):
         obs, info = self.env.reset(**kwargs)
         self.prev_progress = self.read_progress(info)
         self.prev_lives = info.get("lives")
+        self._pending = None
         return obs, info
 
 
@@ -359,6 +384,12 @@ class RewardShaper(Wrapper):
     Reads x/lives/health from `info` if the game's integration exposes
     them (varies by game -- check yours if this seems to have no effect,
     see the README). Silently does nothing extra if it doesn't."""
+
+    # Must exceed one PAGE (256). hpos and the page byte are separate RAM bytes
+    # and need not update on the same frame, so a page crossing can momentarily
+    # read as a +/-256 jump. Anything at or below that would let an ordinary
+    # crossing mid-level be paid as a level clear.
+    TRANSITION_DROP = 600
 
     def __init__(self, env, death_penalty=50.0, survival_tick=0.0, progress_scale=0.1,
                  score_scale=0.01, time_penalty=0.0, life_bonus=25.0,
@@ -558,7 +589,8 @@ class RewardShaper(Wrapper):
                     # policy toward facing forward.
                     comp["backtrack"] = delta * self.progress_scale * self.backtrack_scale
                     reward += comp["backtrack"]
-            elif delta < 0 and not died_now and not self._cleared and self.clear_bonus:
+            elif (delta < -self.TRANSITION_DROP and not died_now
+                  and not self._cleared and self.clear_bonus):
                 # Position collapsed without losing a life: the level or area
                 # ended. Because the page byte absorbs hpos's 256-wraps, normal
                 # travel never produces a large backward jump -- so this is a

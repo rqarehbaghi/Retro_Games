@@ -1740,7 +1740,11 @@ def main():
             "CUDA-enabled build to use your GPU."
         )
 
-    callback = IterationCheckpointCallback(
+    # Keep a direct handle on the checkpointer. It is also wrapped in the
+    # CallbackList below, and binding both to one name meant the manual
+    # save_now() calls landed on the LIST, which has no such method --
+    # crashing the final save and, worse, the Ctrl+C save path.
+    checkpointer = IterationCheckpointCallback(
         args.checkpoint_iterations, checkpoint_dir,
         autosave_every=args.autosave_every, start_iteration=start_iteration, verbose=1,
         vecnorm=vecnorm,
@@ -1752,18 +1756,18 @@ def main():
               f"over {args.iterations} iterations")
         extra.append(EntropyAnneal(args.ent_coef, args.ent_coef_final,
                                    args.iterations, verbose=1))
-    callback = CallbackList(extra + [callback])
+    callback = CallbackList(extra + [checkpointer])
 
     try:
         model.learn(total_timesteps=total_timesteps, callback=callback, reset_num_timesteps=False)
     except KeyboardInterrupt:
         print("\nInterrupted -- saving progress before exiting...")
-        path = callback.save_now(tag="latest_iter")
+        path = checkpointer.save_now(tag="latest_iter")
         print(f"Saved: {path}")
         print(f"Resume later with: --resume-from {path}")
         return
 
-    final_path = callback.save_now(tag="final_iter")
+    final_path = checkpointer.save_now(tag="final_iter")
     print(f"\nTraining complete. Final model: {final_path}")
     print(f"Checkpoints saved in: {checkpoint_dir}")
 

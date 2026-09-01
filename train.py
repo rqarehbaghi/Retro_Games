@@ -381,6 +381,101 @@ def decode_oam(ram, base=0x0200, count=64):
     return out
 
 
+# ---------------------------------------------------------------- ? blocks --
+# Background tiles are invisible to OAM, so the sprite path above can never see
+# a ? block -- which is exactly what the agent needs to find coins and power-ups.
+# They are, however, trivial to find in the RGB frame: a fixed 16x16 tile drawn
+# from a fixed palette, unchanged by scrolling.
+#
+# LIVE vs SPENT is the part that matters. A hit block becomes a solid orange
+# block of the SAME colour family, so an orange-only test keeps reporting a
+# target that no longer exists and the agent goes on butting at it. Measured
+# over a full World 1-1 recording, the interior pink highlight separates them
+# with no overlap at all: live blocks read 0.09-0.25 (the range is the block's
+# pulse animation) and spent blocks read exactly 0.00. Hence the 0.02 cut.
+QBLOCK_HUD_FRAC = 0.17     # bottom slice of the frame is the HUD, not the level
+QBLOCK_PINK_MIN = 0.02
+DEFAULT_N_BLOCKS = 6       # most seen on screen at once in 1-1 was 6
+DEFAULT_N_SPRITES = 8
+
+
+def detect_qblocks(frame, hud_frac=QBLOCK_HUD_FRAC, min_size=10):
+    """Question blocks in an RGB frame, as (x, y, live).
+
+    `live` is False for a spent block -- still solid ground worth knowing about,
+    but no longer worth hitting.
+
+    NOTE the frame must be RGB, which is what gymnasium/stable-retro return.
+    Passing OpenCV's BGR silently inverts the colour tests and finds nothing.
+    """
+    h = frame.shape[0]
+    r = frame[:, :, 0].astype(np.int16)
+    g = frame[:, :, 1].astype(np.int16)
+    b = frame[:, :, 2].astype(np.int16)
+    orange = (r > 200) & (g > 100) & (g < 200) & (b < 110)
+    orange[int(h * (1.0 - hud_frac)):, :] = False
+    n, _lab, stats, _c = cv2.connectedComponentsWithStats(orange.astype(np.uint8), 8)
+    out = []
+    for i in range(1, n):
+        x, y, cw, ch, _a = stats[i]
+        # Drops both the thin decorative posts (2px wide) and blocks only
+        # half-scrolled onto the screen, which cannot be acted on yet anyway.
+        if cw < min_size or ch < min_size:
+            continue
+        x0, y0 = max(0, int(x) - 1), max(0, int(y) - 1)
+        tile = frame[y0:y0 + 16, x0:x0 + 16]
+        if tile.shape[:2] != (16, 16):
+            continue
+        inner = tile[4:12, 3:13]
+        pink = ((inner[:, :, 0] > 215) & (inner[:, :, 1] > 160)
+                & (inner[:, :, 2] > 140)).mean()
+        out.append((x0, y0, bool(pink > QBLOCK_PINK_MIN)))
+    return out
+
+
+class TileDetector(Wrapper):
+    """Finds ? blocks in the colour frame and caches them for the observation.
+
+    Has to sit BEFORE WarpFrame in the stack: WarpFrame converts to grayscale,
+    and every test in detect_qblocks is a colour test. It deliberately does not
+    touch the observation -- SpriteObservation, which runs after WarpFrame and
+    so cannot do this itself, reads the cached result through `tile_source`.
+    """
+
+    def __init__(self, env, n_blocks=DEFAULT_N_BLOCKS, hud_frac=QBLOCK_HUD_FRAC):
+        super().__init__(env)
+        self.n_blocks = n_blocks
+        self.hud_frac = hud_frac
+        self.last = []
+
+    def _detect(self, obs):
+        try:
+            return detect_qblocks(obs, self.hud_frac)
+        except Exception:
+            return []
+
+    def reset(self, **kwargs):
+        obs, info = self.env.reset(**kwargs)
+        self.last = self._detect(obs)
+        return obs, info
+
+    def step(self, action):
+        obs, reward, terminated, truncated, info = self.env.step(action)
+        self.last = self._detect(obs)
+        return obs, reward, terminated, truncated, info
+
+    def vector(self):
+        """Blocks as (x, y, live, present), nearest to screen centre first."""
+        blocks = sorted(self.last, key=lambda t: abs(t[0] - 128))
+        vec = np.zeros(self.n_blocks * 4, dtype=np.float32)
+        for i, (x, y, live) in enumerate(blocks[:self.n_blocks]):
+            vec[i * 4 + 0] = x / 255.0
+            vec[i * 4 + 1] = y / 255.0
+            vec[i * 4 + 2] = 1.0 if live else 0.0
+            vec[i * 4 + 3] = 1.0
+        return vec
+
+
 class SpriteObservation(ObservationWrapper):
     """Feed sprite positions to the policy alongside the image.
 
@@ -398,19 +493,22 @@ class SpriteObservation(ObservationWrapper):
     position is not directly available -- hpos turned out to be the low byte of
     LEVEL position, not screen x -- and the image already shows where he is.
 
-    Only sprites are covered. Blocks, pipes and ground are background tiles and
-    never appear in OAM.
+    OAM covers only sprites. Blocks, pipes and ground are background tiles and
+    never appear there -- pass a TileDetector as `tile_source` to append ? block
+    positions, which is what the agent needs to go looking for coins.
     """
 
-    def __init__(self, env, oam_base=0x0200, n_sprites=8):
+    def __init__(self, env, oam_base=0x0200, n_sprites=8, tile_source=None):
         super().__init__(env)
         self.oam_base = oam_base
         self.n_sprites = n_sprites
+        self.tile_source = tile_source
+        self.n_blocks = tile_source.n_blocks if tile_source is not None else 0
         screen = env.observation_space
         self.observation_space = DictSpace({
             "screen": screen,
             "objects": Box(low=0.0, high=1.0,
-                           shape=(n_sprites * 4,), dtype=np.float32),
+                           shape=((n_sprites + self.n_blocks) * 4,), dtype=np.float32),
         })
 
     def _objects(self):
@@ -428,6 +526,8 @@ class SpriteObservation(ObservationWrapper):
             vec[i * 4 + 1] = y / 255.0
             vec[i * 4 + 2] = tile / 255.0
             vec[i * 4 + 3] = 1.0          # slot occupied
+        if self.tile_source is not None:
+            vec = np.concatenate([vec, self.tile_source.vector()])
         return vec
 
     def observation(self, obs):
@@ -885,7 +985,8 @@ def make_env(game, state, death_penalty, jump_bonus, render=False, end_on_life_l
              power_loss_scale=0.25,
              clear_bonus=0.0, end_on_clear=True,
              auto_advance=False, timer_address=None,
-             sprites=False, oam_base=0x0200, n_sprites=8):
+             sprites=False, oam_base=0x0200, n_sprites=8,
+             n_blocks=DEFAULT_N_BLOCKS):
     def _init():
         render_mode = "human" if render else "rgb_array"
         if state_file:
@@ -957,9 +1058,16 @@ def make_env(game, state, death_penalty, jump_bonus, render=False, end_on_life_l
                            speed_address=speed_address, speed_full=speed_full,
                            speed_bonus=speed_bonus, power_loss_scale=power_loss_scale,
                            clear_bonus=clear_bonus, end_on_clear=end_on_clear)
+        tiles = None
+        if sprites and n_blocks:
+            # Before WarpFrame: the ? block tests are all colour tests, and
+            # WarpFrame throws colour away.
+            tiles = TileDetector(env, n_blocks=n_blocks)
+            env = tiles
         env = WarpFrame(env)
         if sprites:
-            env = SpriteObservation(env, oam_base=oam_base, n_sprites=n_sprites)
+            env = SpriteObservation(env, oam_base=oam_base, n_sprites=n_sprites,
+                                    tile_source=tiles)
         return env
     return _init
 
@@ -1206,6 +1314,49 @@ def sprite_sanity_check(game, state, oam_base, frames=600):
     return True
 
 
+def block_sanity_check(game, state, frames=600):
+    """Confirm the ? block detector fires on THIS build's actual frames.
+
+    The colour thresholds were measured on an mp4 recording, which is lossy --
+    the emulator's own output is the clean NES palette and the numbers are close
+    but not identical. If a future game, palette or recording pipeline shifts
+    them, the detector silently returns nothing and --sprites quietly feeds the
+    policy six zeroed block slots, which looks exactly like 'the agent still
+    ignores coins'. Fail loudly at startup instead.
+    """
+    print("? block detector check ...")
+    env = retro.make(game=game, state=state or retro.State.DEFAULT, render_mode="rgb_array")
+    buttons = env.unwrapped.buttons
+    run_right = np.array([b in ("RIGHT", "B") for b in buttons], dtype=bool)
+    obs, _info = env.reset()
+    live_frames = live_max = spent_seen = 0
+    for _ in range(frames):
+        obs, _r, term, trunc, _i = env.step(run_right)
+        found = detect_qblocks(obs)
+        live = sum(1 for _x, _y, L in found if L)
+        spent_seen += sum(1 for _x, _y, L in found if not L)
+        live_max = max(live_max, live)
+        if live:
+            live_frames += 1
+        if term or trunc:
+            obs, _info = env.reset()
+    env.close()
+
+    pct = 100.0 * live_frames / frames
+    print(f"  live ? blocks seen on {live_frames}/{frames} frames ({pct:.0f}%), "
+          f"max {live_max} at once; spent-block detections {spent_seen}")
+    if live_frames == 0:
+        print(
+            "\nFATAL: no ? blocks detected in any frame, so the block slots would\n"
+            "be all zeros. The colour thresholds (QBLOCK_* in train.py) were\n"
+            "measured on World 1-1; a different palette needs different ones.\n"
+            "Run inspect_blocks.py to see what the detector is actually finding."
+        )
+        return False
+    print("  -> detector is live.\n")
+    return True
+
+
 def reward_sanity_check(env_fn):
     """Run scripted probes through the EXACT env about to be trained on and
     refuse to train if the reward landscape is broken.
@@ -1298,22 +1449,40 @@ def wrap_for_model(base_env, model, oam_base=0x0200):
     """
     from gymnasium import spaces
     env = VariableHoldDiscretizer(base_env, ACTION_TABLE)
+    if not isinstance(model.observation_space, spaces.Dict):
+        return WarpFrame(env)
+
+    # The SAVED space is post-VecFrameStack, so objects is
+    # n_slots * 4 fields * n_stack, not n_slots * 4. Dividing by 4 alone
+    # reported four times the real slot count, and the oversized wrapper
+    # then produced an observation the model rejected outright.
+    #
+    # Stack depth is read from the screen's channel count: WarpFrame emits a
+    # single channel, so after stacking that dimension IS the depth. Taking
+    # the smallest dimension survives either layout, since SB3 may transpose
+    # to channels-first and height/width are far larger than the depth.
+    screen_shape = model.observation_space["screen"].shape
+    n_stack = min(screen_shape) if len(screen_shape) == 3 else 1
+    n_slots = int(model.observation_space["objects"].shape[0]) // (4 * n_stack)
+
+    # The vector is sprite slots followed by block slots, and the total alone
+    # cannot say where the split falls. Assume the defaults and verify against
+    # the checkpoint rather than guessing silently.
+    n_blocks = DEFAULT_N_BLOCKS if n_slots > DEFAULT_N_SPRITES else 0
+    n_sprites = n_slots - n_blocks
+    if n_sprites <= 0:
+        raise ValueError(
+            f"Checkpoint wants {n_slots} object slots, which does not split into "
+            f"sprites + {DEFAULT_N_BLOCKS} blocks. It was trained with non-default "
+            f"--n-sprites/--n-blocks; rebuild the stack with those same values.")
+
+    tiles = None
+    if n_blocks:
+        tiles = TileDetector(env, n_blocks=n_blocks)   # before WarpFrame: colour
+        env = tiles
     env = WarpFrame(env)
-    if isinstance(model.observation_space, spaces.Dict):
-        # The SAVED space is post-VecFrameStack, so objects is
-        # n_sprites * 4 fields * n_stack, not n_sprites * 4. Dividing by 4 alone
-        # reported four times the real slot count, and the oversized wrapper
-        # then produced an observation the model rejected outright.
-        #
-        # Stack depth is read from the screen's channel count: WarpFrame emits a
-        # single channel, so after stacking that dimension IS the depth. Taking
-        # the smallest dimension survives either layout, since SB3 may transpose
-        # to channels-first and height/width are far larger than the depth.
-        screen_shape = model.observation_space["screen"].shape
-        n_stack = min(screen_shape) if len(screen_shape) == 3 else 1
-        n_slots = int(model.observation_space["objects"].shape[0]) // (4 * n_stack)
-        env = SpriteObservation(env, oam_base=oam_base, n_sprites=n_slots)
-    return env
+    return SpriteObservation(env, oam_base=oam_base, n_sprites=n_sprites,
+                             tile_source=tiles)
 
 
 def safe_name(game):
@@ -1486,7 +1655,8 @@ def main():
     parser.add_argument("--progress-address-high", type=lambda v: int(v, 0), default=None, help="High byte of a 16-bit little-endian level position (e.g. 0x053D), combined with --progress-address. A single byte wraps at 255, which a full level exceeds several times. (default: %(default)s)")
     parser.add_argument("--sprites", action="store_true", help="Give the policy sprite positions from OAM alongside the image, as a dict observation. Enemies are a handful of grey pixels at 84x84 and lethal on contact, which is the worst case for pixel-only perception; terrain is large and static and the CNN already handles it. Switches the policy to MultiInputPolicy, so checkpoints trained WITHOUT this flag cannot be resumed with it.")
     parser.add_argument("--oam-base", type=lambda v: int(v, 0), default=0x0200, help="Base address of the sprite table (NES convention: 0x0200). Verified at startup -- training refuses to run if nothing decodes. (default: %(default)s)")
-    parser.add_argument("--n-sprites", type=int, default=8, help="How many nearest sprites to include. (default: %(default)s)")
+    parser.add_argument("--n-sprites", type=int, default=DEFAULT_N_SPRITES, help="How many nearest sprites to include. (default: %(default)s)")
+    parser.add_argument("--n-blocks", type=int, default=DEFAULT_N_BLOCKS, help="How many ? blocks to include alongside the sprites, when --sprites is on. Blocks are BACKGROUND tiles and never appear in OAM, so they are found in the colour frame instead; each slot is (x, y, live, present) where live distinguishes an unhit block from a spent one, so the agent stops targeting blocks it has already used. Set 0 to feed sprites only. (default: %(default)s)")
     parser.add_argument("--auto-advance", action="store_true", help="On clearing a level, walk the world map automatically and keep training in the NEXT level, instead of ending the episode. The navigation runs as raw emulator frames inside a single step, so no map frames enter the rollout and no scripted action is attributed to the policy. This is what lets one run cover several levels without capturing a save state per level by hand. Needs --timer-address to tell when a level has loaded. Implies --no-end-on-clear.")
     parser.add_argument("--timer-address", type=lambda v: int(v, 0), default=None, help="RAM index of the 3-digit BCD level timer (SMB3: 0x05EE). Used by --auto-advance to detect that a level has actually started, since the timer only ticks in a level.")
     parser.add_argument("--power-loss-scale", type=float, default=0.25, help="Fraction of --power-bonus charged when a power-up is LOST, versus paid when one is gained. Deliberately asymmetric: symmetric charging made one hit cost the full bonus, erasing ~100 decisions of progress, and the agent responded by creeping forward instead of advancing. Taking a hit is also partly luck. 1.0 restores symmetry. (default: %(default)s)")
@@ -1637,10 +1807,13 @@ def main():
         clear_bonus=args.clear_bonus, end_on_clear=args.end_on_clear,
         auto_advance=args.auto_advance, timer_address=args.timer_address,
         sprites=args.sprites, oam_base=args.oam_base, n_sprites=args.n_sprites,
+        n_blocks=args.n_blocks,
     )
 
     if args.sprites and not args.skip_reward_check:
         if not sprite_sanity_check(args.game, args.state, args.oam_base):
+            sys.exit(1)
+        if args.n_blocks and not block_sanity_check(args.game, args.state):
             sys.exit(1)
     if not args.skip_reward_check:
         if not reward_sanity_check(make_env(args.game, args.state, args.death_penalty,

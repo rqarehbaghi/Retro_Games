@@ -7,10 +7,19 @@ One command: play, then get finished videos staged for review and upload.
 Play until you close the window, and this produces, in a dated folder:
 
     <slug>_16x9.mp4    1920x1080 landscape master (YouTube)
-    <slug>_9x16.mp4    1080x1920 vertical short (Shorts / Reels / TikTok)
+    <slug>_9x16.mp4    1080x1920 short, cut to highlights (Shorts / Reels / TikTok)
     metadata.json      title, description and per-platform hashtags
     narration.txt      a timestamped script of what actually happened
     events.csv         the raw event timeline the script was built from
+
+THE SHORT IS CUT, NOT TRUNCATED. --short-seconds (default 15) is a budget, not
+a stop point: the run is cut down to the moments that earned their place and
+those are joined in order. Selection comes from the RAM event log -- the exact
+frame a power-up was taken or a life was lost -- so it is ground truth rather
+than inference. That is also why no AI highlight detector is involved: those
+score interest from pixels, audio energy or a transcript, and gameplay with no
+commentary gives them almost nothing, while this already knows exactly what
+happened and when. The 16x9 master is always the full run.
 
 WHY VERTICAL USES A BLURRED FILL: an NES frame is 256x224, about 8:7. Fitted
 into 1080x1920 it scales to 1080x945 and fills the full width, so it covers
@@ -63,13 +72,13 @@ def esc(text):
     return out.replace("'", "’")
 
 
-def fill_filter(width, height, title, watermark, blur=20):
+def fill_filter(width, height, title, watermark, blur=20, src_label="[0:v]"):
     """Blurred-fill letterbox: a zoomed, blurred copy of the frame behind the
     sharp nearest-neighbour gameplay, so the canvas is full at any aspect."""
     title_size = max(28, width // 22)
     mark_size = max(20, width // 38)
     parts = [
-        "[0:v]split=2[bg][fg]",
+        src_label + "split=2[bg][fg]",
         f"[bg]scale={width}:{height}:force_original_aspect_ratio=increase,"
         f"crop={width}:{height},gblur=sigma={blur}[bgb]",
         f"[fg]scale={width}:{height}:force_original_aspect_ratio=decrease:"
@@ -95,12 +104,21 @@ def fill_filter(width, height, title, watermark, blur=20):
     return ";".join(parts)
 
 
-def encode(src_mp4, out_path, width, height, title, watermark, crf=18):
+def encode(src_mp4, out_path, width, height, title, watermark, crf=18,
+           segments=None, with_audio=True):
+    """`segments` cuts the source down to those (start, duration) windows and
+    joins them, in the same pass that scales and captions -- so a highlight
+    reel costs one encode, not a cut pass plus a join pass."""
+    cut, vlabel, alabel = cut_filter(segments, with_audio)
+    graph = fill_filter(width, height, title, watermark, src_label=vlabel)
+    if cut:
+        graph = cut + ";" + graph
+    audio_map = ["-map", alabel] if alabel else []
     subprocess.run(
         [
             "ffmpeg", "-nostdin", "-y", "-i", src_mp4,
-            "-filter_complex", fill_filter(width, height, title, watermark),
-            "-map", "[vout]", "-map", "0:a?",
+            "-filter_complex", graph,
+            "-map", "[vout]", *audio_map,
             "-r", "60", "-c:v", "libx264", "-preset", "slow", "-crf", str(crf),
             "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k",
             "-movflags", "+faststart",
@@ -109,6 +127,107 @@ def encode(src_mp4, out_path, width, height, title, watermark, crf=18):
         check=True,
     )
     return out_path
+
+
+# Weighted so the cut lands on what is worth watching. A clear or a 1-Up is the
+# payoff, a power-up is the setup, a hit is at least dramatic; coins are common
+# enough that they should only break ties.
+EVENT_WEIGHTS = {"clear": 5.0, "1up": 5.0, "powerup": 4.0, "death": 3.0,
+                 "powerdown": 2.0, "coin": 1.0, "score": 0.25}
+
+
+def best_window(events, total_s, want_s):
+    """Fallback for when there is nothing to cut on: the densest contiguous
+    stretch of the timeline, or the opening if the timeline is empty."""
+    if not events:
+        return 0.0
+    best_start, best_score = 0.0, -1.0
+    for frame, _kind, _detail in events:
+        start = max(0.0, min(frame / FPS - want_s / 2.0, total_s - want_s))
+        score = sum(EVENT_WEIGHTS.get(k, 0.5) for f, k, _d in events
+                    if start <= f / FPS <= start + want_s)
+        if score > best_score:
+            best_start, best_score = start, score
+    return best_start
+
+
+def highlight_segments(events, total_s, budget_s, seg_s=4.0, lead=1.5):
+    """The moments worth keeping, as chronological (start, duration) pairs.
+
+    NOT the first N seconds -- a level opens with walking right, so a naive
+    truncation keeps the least watchable part. NOT an AI highlight detector
+    either: those infer interest from pixels, audio energy or a transcript,
+    and gameplay with no commentary gives them almost nothing to work with.
+    This cuts on the RAM event log instead, which is ground truth -- the exact
+    frame a mushroom was taken or a life was lost -- so the selection is
+    exact rather than guessed.
+
+    Segments are taken highest-weight first until the budget is spent, merged
+    where they overlap, then put back in chronological order so the cut still
+    reads as a run rather than a shuffle."""
+    if total_s <= budget_s:
+        return []                       # already short enough, keep it whole
+    if not events:
+        return [(best_window(events, total_s, budget_s), budget_s)]
+
+    chosen, used = [], 0.0
+    for frame, kind, _detail in sorted(
+            events, key=lambda e: -EVENT_WEIGHTS.get(e[1], 0.5)):
+        start = max(0.0, min(frame / FPS - lead, total_s - seg_s))
+        end = min(total_s, start + seg_s)
+        for i, (existing_start, existing_end) in enumerate(chosen):
+            if start <= existing_end and end >= existing_start:
+                wider = (min(existing_start, start), max(existing_end, end))
+                grow = (wider[1] - wider[0]) - (existing_end - existing_start)
+                if used + grow <= budget_s:
+                    chosen[i] = wider
+                    used += grow
+                break
+        else:
+            if used + (end - start) <= budget_s:
+                chosen.append((start, end))
+                used += end - start
+    if not chosen:
+        return [(best_window(events, total_s, budget_s), budget_s)]
+    chosen.sort()
+    return [(start, end - start) for start, end in chosen]
+
+
+def cut_filter(segments, with_audio=True):
+    """trim/concat prefix that stitches the chosen segments into one stream,
+    so the whole thing stays a single ffmpeg pass instead of encoding clips to
+    disk and re-encoding the join."""
+    if not segments:
+        return "", "[0:v]", "0:a?"
+    chains, vlabels, alabels = [], [], []
+    for i, (start, duration) in enumerate(segments):
+        chains.append("[0:v]trim=start=%.3f:duration=%.3f,setpts=PTS-STARTPTS[cv%d]"
+                      % (start, duration, i))
+        vlabels.append("[cv%d]" % i)
+        if with_audio:
+            chains.append("[0:a]atrim=start=%.3f:duration=%.3f,asetpts=PTS-STARTPTS[ca%d]"
+                          % (start, duration, i))
+            alabels.append("[ca%d]" % i)
+    n = len(segments)
+    chains.append("".join(vlabels) + "concat=n=%d:v=1:a=0[vcut]" % n)
+    if with_audio:
+        chains.append("".join(alabels) + "concat=n=%d:v=0:a=1[acut]" % n)
+    return ";".join(chains), "[vcut]", ("[acut]" if with_audio else None)
+
+
+def has_audio_stream(path):
+    """Assumes audio when it cannot tell. A cut built with no audio chain drops
+    the soundtrack silently, and on a gameplay clip that loses the music with
+    nothing in the output to say so; guessing wrong the other way fails loudly
+    at encode time instead, which is the better error to have."""
+    try:
+        out = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "a",
+                              "-show_entries", "stream=index", "-of", "csv=p=0", path],
+                             capture_output=True, text=True, check=True)
+        return bool(out.stdout.strip())
+    except Exception:
+        print("  (could not probe for audio -- assuming the source has some)")
+        return True
 
 
 # ----------------------------------------------------------------- events --
@@ -355,6 +474,9 @@ def main():
     parser.add_argument("--out-dir", default="./studio_out", help="Parent for the dated review folder (default: %(default)s)")
     parser.add_argument("--from-mp4", default=None, help="Skip playing and re-cut an existing mp4 -- for redoing overlays without replaying.")
     parser.add_argument("--no-events", action="store_true", help="Skip the replay scan that builds the event timeline (faster, but narration.txt becomes generic)")
+    parser.add_argument("--short-seconds", type=float, default=15.0, help="Total length budget for the 9x16 short. The 16x9 master is always the full run. 0 keeps the short full length too. (default: %(default)s)")
+    parser.add_argument("--clip-seconds", type=float, default=4.0, help="Seconds kept around each highlight. Smaller means more separate moments in the same budget, larger means fewer but with more room to breathe. (default: %(default)s)")
+    parser.add_argument("--clip-lead", type=float, default=1.5, help="Seconds of run-up kept before each event, so the moment has context instead of starting on the payoff. (default: %(default)s)")
     parser.add_argument("--paste-block", metavar="DIR", default=None, help="Print the copy-paste block for an already staged folder (or a metadata.json) and exit. A normal run also writes it to paste.txt.")
     parser.add_argument("--print-upload-plan", action="store_true", help="Explain what can and cannot be automated per platform, then exit")
     args = parser.parse_args()
@@ -413,13 +535,8 @@ def main():
     folder = os.path.join(args.out_dir, f"{datetime.now():%Y%m%d-%H%M%S}_{slug}")
     os.makedirs(folder, exist_ok=True)
 
-    print("\nEncoding 1920x1080 landscape master ...")
-    wide = encode(native, os.path.join(folder, f"{slug}_16x9.mp4"),
-                  1920, 1080, title, args.watermark)
-    print("Encoding 1080x1920 vertical short ...")
-    tall = encode(native, os.path.join(folder, f"{slug}_9x16.mp4"),
-                  1080, 1920, title, args.watermark)
-
+    # Events first: the short is cut from them, so this has to run before the
+    # encodes rather than after.
     events = []
     if bk2_path and not args.no_events:
         print("Scanning the replay for events ...")
@@ -439,6 +556,29 @@ def main():
     except Exception:
         pass
 
+    segments = []
+    if args.short_seconds and duration:
+        segments = highlight_segments(events, duration, args.short_seconds,
+                                      seg_s=args.clip_seconds, lead=args.clip_lead)
+    with_audio = has_audio_stream(native)
+
+    print("\nEncoding 1920x1080 landscape master ...")
+    wide = encode(native, os.path.join(folder, f"{slug}_16x9.mp4"),
+                  1920, 1080, title, args.watermark, with_audio=with_audio)
+    if segments:
+        kept = sum(d for _s, d in segments)
+        print("Encoding 1080x1920 short: %d highlight%s, %.1fs of %.1fs ..."
+              % (len(segments), "" if len(segments) == 1 else "s", kept, duration))
+        for start, dur in segments:
+            near = [d for f, _k, d in events if start <= f / FPS <= start + dur]
+            print("    %s +%.1fs  %s" % (stamp(int(start * FPS)), dur,
+                                         ", ".join(near[:3]) or "(no event)"))
+    else:
+        print("Encoding 1080x1920 vertical short (full length) ...")
+    tall = encode(native, os.path.join(folder, f"{slug}_9x16.mp4"),
+                  1080, 1920, title, args.watermark,
+                  segments=segments, with_audio=with_audio)
+
     with open(os.path.join(folder, "narration.txt"), "w") as handle:
         handle.write(narration(events, duration, args.game, args.players) + "\n")
     meta = build_metadata(args.game, args.players, events, title, args.watermark)
@@ -455,7 +595,9 @@ def main():
     print("\n" + "=" * 66)
     print(f"Staged for review: {folder}")
     print(f"  {os.path.basename(wide)}   -> YouTube (upload by hand until audited)")
-    print(f"  {os.path.basename(tall)}   -> TikTok / Reels / Shorts")
+    span = ("[%d highlights, %.1fs]" % (len(segments), sum(d for _s, d in segments))
+            if segments else "[full length]")
+    print(f"  {os.path.basename(tall)} {span}  -> TikTok / Reels / Shorts")
     print(f"  metadata.json, narration.txt, events.csv ({len(events)} events)")
     print("  paste.txt        <- the three upload forms, ready to copy")
     print("\n" + block)

@@ -190,12 +190,14 @@ def narration(events, duration_s, game, players):
         if kind in ("death", "powerup", "powerdown", "1up"):
             lines.append(f"[{stamp(frame)}] {detail}")
     tail = []
+    def plural(n, word):
+        return f"{n} {word}" if n == 1 else f"{n} {word}s"
     if counts.get("coin"):
-        tail.append(f"{counts['coin']} coins")
+        tail.append(plural(counts["coin"], "coin"))
     if counts.get("death"):
-        tail.append(f"{counts['death']} deaths")
+        tail.append(plural(counts["death"], "death"))
     if counts.get("powerup"):
-        tail.append(f"{counts['powerup']} power-ups")
+        tail.append(plural(counts["powerup"], "power-up"))
     if tail:
         lines.append(f"[end] Final tally: {', '.join(tail)}.")
     return "\n".join(lines)
@@ -226,6 +228,75 @@ def build_metadata(game, players, events, title, watermark):
             "instagram": " ".join("#" + t for t in tags + ["reels", "retro"]),
         },
     }
+
+
+# Field limits worth catching BEFORE you are standing in the upload form with
+# a title the site silently truncates. YouTube's 100-character title and
+# Instagram's 30-hashtag cap are the two that actually bite.
+LIMITS = {
+    "youtube_title": 100,
+    "youtube_description": 5000,
+    "youtube_tags_total": 500,
+    "caption": 2200,
+    "instagram_hashtags": 30,
+}
+
+
+def _warn(label, value, limit, unit="characters"):
+    if value > limit:
+        return f"  !! {label} is {value} {unit}, over the {limit} limit -- it gets cut off\n"
+    return ""
+
+
+def paste_block(meta):
+    """Everything the three upload forms ask for, in the order they ask for it.
+
+    The upload stays manual, so the only tedium left is retyping titles and
+    hashtags into three different forms. This is that, ready to copy."""
+    title = meta.get("title", "")
+    description = meta.get("description", "")
+    tags = meta.get("hashtags", {})
+    yt_tags = ", ".join(t.lstrip("#") for t in tags.get("youtube", "").split())
+    ig_caption = title + "\n\n" + tags.get("instagram", "")
+    tt_caption = title + " " + tags.get("tiktok", "")
+
+    warn = ""
+    warn += _warn("YouTube title", len(title), LIMITS["youtube_title"])
+    warn += _warn("YouTube description", len(description), LIMITS["youtube_description"])
+    warn += _warn("YouTube tags", len(yt_tags), LIMITS["youtube_tags_total"])
+    warn += _warn("Instagram caption", len(ig_caption), LIMITS["caption"])
+    warn += _warn("Instagram hashtags", len(tags.get("instagram", "").split()),
+                  LIMITS["instagram_hashtags"], "tags")
+    warn += _warn("TikTok caption", len(tt_caption), LIMITS["caption"])
+
+    bar = "=" * 70
+    rule = lambda label: ("-- " + label + " ").ljust(70, "-")
+    out = [
+        bar,
+        "YOUTUBE  --  studio.youtube.com, upload the _16x9.mp4",
+        bar,
+        "\n" + rule("Title"),
+        title,
+        "\n" + rule("Description"),
+        description + "\n\n" + tags.get("youtube", ""),
+        "\n" + rule("Tags (comma separated)"),
+        yt_tags,
+        "\n" + rule("Visibility"),
+        "Private, or Schedule -- then review it and make it public.",
+        "\n" + bar,
+        "TIKTOK  --  tiktok.com/upload, upload the _9x16.mp4",
+        bar,
+        "\n" + rule("Caption"),
+        tt_caption,
+        "\n" + bar,
+        "INSTAGRAM  --  Reels, upload the _9x16.mp4",
+        bar,
+        "\n" + rule("Caption"),
+        ig_caption,
+    ]
+    if warn:
+        out += ["\n" + bar, "LENGTH WARNINGS", bar, warn.rstrip()]
+    return "\n".join(out) + "\n"
 
 
 UPLOAD_PLAN = """\
@@ -273,7 +344,7 @@ Instagram   CANNOT DO THIS FLOW AT ALL. The publishing API has no draft or
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--game", required=True, help="stable-retro game id (see list_games.py)")
+    parser.add_argument("--game", help="stable-retro game id (see list_games.py). Required unless --paste-block or --print-upload-plan.")
     parser.add_argument("--players", type=int, choices=[1, 2], default=1, help="1 = you alone. 2 = you plus an AI player, via play_human_vs_ai. (default: %(default)s)")
     parser.add_argument("--mode", choices=["versus", "coop", "race"], default="versus", help="Two-player match type, ignored when --players 1. (default: %(default)s)")
     parser.add_argument("--model", default=None, help="Checkpoint driving the AI player when --players 2. Without one the AI plays randomly, which makes for a much weaker video.")
@@ -284,12 +355,26 @@ def main():
     parser.add_argument("--out-dir", default="./studio_out", help="Parent for the dated review folder (default: %(default)s)")
     parser.add_argument("--from-mp4", default=None, help="Skip playing and re-cut an existing mp4 -- for redoing overlays without replaying.")
     parser.add_argument("--no-events", action="store_true", help="Skip the replay scan that builds the event timeline (faster, but narration.txt becomes generic)")
+    parser.add_argument("--paste-block", metavar="DIR", default=None, help="Print the copy-paste block for an already staged folder (or a metadata.json) and exit. A normal run also writes it to paste.txt.")
     parser.add_argument("--print-upload-plan", action="store_true", help="Explain what can and cannot be automated per platform, then exit")
     args = parser.parse_args()
 
     if args.print_upload_plan:
         print(UPLOAD_PLAN)
         return
+
+    if args.paste_block:
+        path = args.paste_block
+        if os.path.isdir(path):
+            path = os.path.join(path, "metadata.json")
+        if not os.path.exists(path):
+            sys.exit(f"No metadata.json at {path}")
+        with open(path) as handle:
+            print(paste_block(json.load(handle)))
+        return
+
+    if not args.game:
+        sys.exit("--game is required (see list_games.py)")
 
     if not shutil.which("ffmpeg"):
         sys.exit("ffmpeg is not on PATH -- see README step 1.")
@@ -356,11 +441,14 @@ def main():
 
     with open(os.path.join(folder, "narration.txt"), "w") as handle:
         handle.write(narration(events, duration, args.game, args.players) + "\n")
+    meta = build_metadata(args.game, args.players, events, title, args.watermark)
     with open(os.path.join(folder, "metadata.json"), "w") as handle:
-        json.dump(build_metadata(args.game, args.players, events, title, args.watermark),
-                  handle, indent=2)
+        json.dump(meta, handle, indent=2)
     with open(os.path.join(folder, "UPLOAD.txt"), "w") as handle:
         handle.write(UPLOAD_PLAN)
+    block = paste_block(meta)
+    with open(os.path.join(folder, "paste.txt"), "w") as handle:
+        handle.write(block)
     if bk2_path:
         shutil.copy2(bk2_path, folder)
 
@@ -369,8 +457,8 @@ def main():
     print(f"  {os.path.basename(wide)}   -> YouTube (upload by hand until audited)")
     print(f"  {os.path.basename(tall)}   -> TikTok / Reels / Shorts")
     print(f"  metadata.json, narration.txt, events.csv ({len(events)} events)")
-    print("\nRead UPLOAD.txt before automating any of this -- only TikTok")
-    print("supports post-privately-then-review. See --print-upload-plan.")
+    print("  paste.txt        <- the three upload forms, ready to copy")
+    print("\n" + block)
 
 
 if __name__ == "__main__":

@@ -147,8 +147,8 @@ def read_events(bk2_path, game):
         current = {
             "score": info.get("score"),
             "lives": info.get("lives"),
-            "coins": int(ram[coin_addr]) if coin_addr else None,
-            "power": int(ram[power_addr]) if power_addr else None,
+            "coins": int(ram[coin_addr]) if coin_addr is not None else None,
+            "power": int(ram[power_addr]) if power_addr is not None else None,
         }
         for key, now in current.items():
             was = prev.get(key)

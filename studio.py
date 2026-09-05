@@ -781,6 +781,21 @@ def main():
     folder = os.path.join(args.out_dir, f"{datetime.now():%Y%m%d-%H%M%S}_{slug}")
     os.makedirs(folder, exist_ok=True)
 
+    # Everything GENERATED belongs in the staged folder, and the native mp4 is
+    # generated -- stable-retro's playback tool writes it next to the .bk2 it
+    # replayed, which left it sitting in recordings/ looking like an output.
+    #
+    # It also has to live here for the folder to actually stand alone. The spec
+    # names it as the render source, so with the mp4 elsewhere, moving the
+    # folder or clearing recordings/ silently broke restyle.py -- despite the
+    # .bk2 being copied in for exactly that reason.
+    staged_source = os.path.join(folder, f"{slug}_source.mp4")
+    if args.from_mp4:
+        shutil.copy2(native, staged_source)      # not ours to move
+    else:
+        shutil.move(native, staged_source)
+    native = staged_source
+
     # Events first: the short is cut from them, so this has to run before the
     # encodes rather than after.
     events = []
@@ -831,7 +846,9 @@ def main():
     # wording, timing, font, size, colour and position all live here rather
     # than in the code, so changing any of them never means changing Python.
     spec = {
-        "source": os.path.abspath(native),
+        # Relative, so the whole folder can be moved or copied and still
+        # re-render. overlays.render_spec resolves it against the folder.
+        "source": os.path.basename(native),
         "outputs": [
             {"file": f"{slug}_16x9.mp4", "width": 1920, "height": 1080},
             {"file": f"{slug}_9x16.mp4", "width": 1080, "height": 1920},
@@ -870,8 +887,11 @@ def main():
     span = ("[%d highlights, %.1fs]" % (len(segments), sum(d for _s, d in segments))
             if segments else "[full length]")
     print(f"  {os.path.basename(tall)} {span}  -> TikTok / Reels / Shorts")
-    print(f"  metadata.json, narration.txt, events.csv ({len(events)} events)")
+    print(f"  {os.path.basename(native)}   <- the capture everything is rendered from")
     print("  paste.txt        <- the three upload forms, ready to copy")
+    print(f"  overlays.json, metadata.json, narration.txt, events.csv ({len(events)} events)")
+    print(f"\nEdit overlays.json and re-render in seconds:")
+    print(f"  python restyle.py {folder}")
     print("\n" + block)
 
 

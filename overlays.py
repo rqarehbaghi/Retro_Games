@@ -423,9 +423,17 @@ def has_audio_stream(path):
 def render_spec(spec, out_dir=None, only=None, verbose=True):
     """Render every output the spec lists. Returns the paths written."""
     style = merge_style(spec.get("style"))
+    # A relative source is relative to the SPEC's folder, not the working
+    # directory, so a staged folder re-renders wherever it has been moved to.
     source = spec["source"]
+    if not os.path.isabs(source):
+        source = os.path.join(out_dir or ".", source)
     if not os.path.exists(source):
-        raise SystemExit("Source video missing: %s" % source)
+        raise SystemExit(
+            "Source video missing: %s\n"
+            "  overlays.json names it as %r. If this folder was moved, the\n"
+            "  source should have moved with it."
+            % (source, spec["source"]))
     with_audio = has_audio_stream(source)
     segments = spec.get("segments")
     written = []

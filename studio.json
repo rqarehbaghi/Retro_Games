@@ -1,6 +1,8 @@
 {
   "_note": "Per-channel defaults for studio.py, so the handle and house style are set once here instead of retyped on every run. Command-line flags still override.",
+  "_fonts": "font = captions and watermark, title_font = the title. Keep a proportional face for captions: a fixed-cell pixel face such as Press Start 2P is about one em per character, so caption lines get shrunk hard to fit. char_width_ratio is only consulted when Pillow is missing and text cannot be measured -- set it to 1.0 if you point font at a pixel face and have no Pillow.",
   "watermark": "@PlayerTwoIsABot",
+  "level": "World 1-1",
   "transition": "fade",
-  "short_seconds": 15
+  "short_seconds": 0
 }

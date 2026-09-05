@@ -62,10 +62,42 @@ import time
 from datetime import datetime
 
 DEFAULT_FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-# Override with "font" in studio.json. DejaVu is merely what every Debian box
-# already has; a pixel face (Press Start 2P, Silkscreen) suits the footage far
-# better, and only the path has to change.
+# Override with "font" and "title_font" in studio.json. DejaVu is merely what
+# every Debian box already has.
+#
+# A pixel face suits the footage, but suits the TITLE specifically: Press Start
+# 2P and its relatives are fixed-cell, about one em per character, so a caption
+# that fits comfortably in DejaVu runs off both edges of the frame in it. Hence
+# two font settings rather than one, and the fitting below.
 FONT = DEFAULT_FONT
+TITLE_FONT = DEFAULT_FONT
+
+# Average advance width as a fraction of the font size, used only when Pillow
+# is not importable and text cannot be measured properly. ~0.55 suits a
+# proportional sans; set "char_width_ratio": 1.0 in studio.json for a
+# fixed-cell pixel face, or install Pillow and this is never consulted.
+CHAR_WIDTH_RATIO = 0.55
+
+
+def text_width(text, font_path, size):
+    """Rendered width in pixels, measured if possible and estimated if not."""
+    try:
+        from PIL import ImageFont
+        return ImageFont.truetype(font_path, size).getlength(text)
+    except Exception:
+        return len(text) * size * CHAR_WIDTH_RATIO
+
+
+def fit_size(text, font_path, size, max_width, floor=14):
+    """Largest size at or below `size` whose line fits inside max_width.
+
+    drawtext neither wraps nor shrinks -- an overlong line simply runs off both
+    edges of the frame, silently. That is easy to hit the moment the font
+    changes, since a pixel face is nearly twice the width of a sans at the same
+    point size."""
+    while size > floor and text_width(text, font_path, size) > max_width:
+        size -= 2
+    return size
 FPS = 60.0988
 
 
@@ -95,6 +127,8 @@ def fill_filter(width, height, title, watermark, blur=20, src_label="[0:v]",
     # label you read once; it does not need to compete with the game.
     title_size = max(18, width // 40)
     mark_size = max(14, width // 55)
+    if title:
+        title_size = fit_size(title, TITLE_FONT, title_size, int(width * 0.9))
     parts = [
         src_label + "split=2[bg][fg]",
         f"[bg]scale={width}:{height}:force_original_aspect_ratio=increase,"
@@ -105,7 +139,7 @@ def fill_filter(width, height, title, watermark, blur=20, src_label="[0:v]",
     ]
     if title:
         parts.append(
-            f"[v0]drawtext=fontfile={FONT}:text='{esc(title)}':fontcolor=white@0.92:"
+            f"[v0]drawtext=fontfile={TITLE_FONT}:text='{esc(title)}':fontcolor=white@0.92:"
             f"fontsize={title_size}:borderw={max(2, title_size // 12)}:"
             f"bordercolor=black@0.9:x=(w-text_w)/2:y={int(height * 0.045)}[v1]"
         )
@@ -343,11 +377,13 @@ def caption_filter(lines, width, height, label="[vin]", out_label="[vcap]"):
     read as a meme repost, not a channel."""
     if not lines:
         return "%snull%s" % (label, out_label)
-    size = max(20, width // 30)
+    base = max(20, width // 30)
+    margin = int(width * 0.92)
     chains = []
     current = label
     for i, (at, text) in enumerate(lines):
         nxt = out_label if i == len(lines) - 1 else "[cap%d]" % i
+        size = fit_size(text, FONT, base, margin)
         chains.append(
             "%sdrawtext=fontfile=%s:text='%s':fontcolor=white:fontsize=%d:"
             "borderw=%d:bordercolor=black@0.92:shadowcolor=black@0.55:"
@@ -355,6 +391,7 @@ def caption_filter(lines, width, height, label="[vin]", out_label="[vcap]"):
             "enable='between(t,%.2f,%.2f)'%s"
             % (current, FONT, esc(text), size, max(2, size // 12),
                caption_y(width, height), at, at + CAPTION_HOLD, nxt))
+
         current = nxt
     return ";".join(chains)
 
@@ -836,8 +873,15 @@ Instagram   CANNOT DO THIS FLOW AT ALL. The publishing API has no draft or
 
 def main():
     cfg = load_studio_config()
-    global FONT
+    global FONT, TITLE_FONT, CHAR_WIDTH_RATIO
     FONT = cfg.get("font", DEFAULT_FONT)
+    TITLE_FONT = cfg.get("title_font", FONT)
+    CHAR_WIDTH_RATIO = cfg.get("char_width_ratio", CHAR_WIDTH_RATIO)
+    for path, what in ((FONT, "font"), (TITLE_FONT, "title_font")):
+        if not os.path.exists(path):
+            sys.exit(f"{what} not found: {path}\n"
+                     f"  Check the path in studio.json, or fall back to\n"
+                     f"  {DEFAULT_FONT}")
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--game", help="stable-retro game id (see list_games.py). Required unless --paste-block or --print-upload-plan.")
     parser.add_argument("--players", type=int, choices=[1, 2], default=1, help="1 = you alone. 2 = you plus an AI player, via play_human_vs_ai. (default: %(default)s)")
@@ -880,8 +924,6 @@ def main():
 
     if not shutil.which("ffmpeg"):
         sys.exit("ffmpeg is not on PATH -- see README step 1.")
-    if not os.path.exists(FONT):
-        sys.exit(f"Font missing: {FONT}\n  sudo apt install -y fonts-dejavu-core")
 
     # Real title is written once the events are known; this only names the folder.
     os.makedirs(args.record_dir, exist_ok=True)

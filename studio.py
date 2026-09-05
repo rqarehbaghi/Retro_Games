@@ -2,9 +2,17 @@
 """
 One command: play, then get finished videos staged for review and upload.
 
-    python studio.py --game SuperMarioBros3-Nes-v0 --players 1
+    python studio.py --game SuperMarioBros3-Nes-v0
 
-Play until you close the window, and this produces, in a dated folder:
+That is the whole command. Play until you close the window; everything after
+is decided from the run itself. The title is written from what happened
+("cleared without dying", "died 3 times", "14 coin run"), the handle and
+house style come from studio.json, and cuts are joined with a fade through
+black -- chosen because cross-dissolving pixel art into pixel art muddies
+both frames and pixelize on already-pixelated content reads as an encoding
+fault. Every one of those is still overridable, but none has to be decided.
+
+It produces, in a dated folder:
 
     <slug>_16x9.mp4    1920x1080 landscape master (YouTube)
     <slug>_9x16.mp4    1080x1920 short, cut to highlights (Shorts / Reels / TikTok)
@@ -129,6 +137,73 @@ def encode(src_mp4, out_path, width, height, title, watermark, crf=18,
         check=True,
     )
     return out_path
+
+
+STUDIO_CONFIG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "studio.json")
+
+# Console suffixes stable-retro appends to every game id. Stripped for display
+# so a title reads "Super Mario Bros 3" and not "SuperMarioBros3-Nes-v0".
+CONSOLE_SUFFIXES = ("Nes", "Snes", "Genesis", "GameBoy", "GbColor", "GbAdvance",
+                    "Atari2600", "Sms", "GameGear", "PCEngine", "N64", "Saturn",
+                    "Sega32X", "SegaCD", "Master System")
+
+
+def load_studio_config(path=STUDIO_CONFIG):
+    """Per-channel defaults, so the handle and house style are set once here
+    rather than retyped on every run."""
+    try:
+        with open(path) as handle:
+            return json.load(handle)
+    except Exception:
+        return {}
+
+
+def pretty_game(game_id):
+    """SuperMarioBros3-Nes-v0 -> Super Mario Bros 3."""
+    name = re.sub(r"-v\d+$", "", game_id)
+    for suffix in CONSOLE_SUFFIXES:
+        name = re.sub(r"-" + re.escape(suffix) + r"$", "", name, flags=re.I)
+    name = name.replace("-", " ")
+    name = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", name)      # SuperMario -> Super Mario
+    name = re.sub(r"(?<=[A-Za-z])(?=\d)", " ", name)      # Bros3 -> Bros 3
+    return re.sub(r"\s+", " ", name).strip()
+
+
+def auto_title(game, events):
+    """A headline describing what actually happened in this run.
+
+    --title used to be effectively required: leaving it out burnt the raw game
+    id across the video. The event log already knows whether the run was
+    cleared, how many deaths it cost and what was collected, which is exactly
+    what a title should say, so there is nothing to type."""
+    name = pretty_game(game)
+    counts = {}
+    for _frame, kind, _detail in events:
+        counts[kind] = counts.get(kind, 0) + 1
+    deaths = counts.get("death", 0)
+    coins = counts.get("coin", 0)
+    powerups = counts.get("powerup", 0)
+    extra_lives = counts.get("1up", 0)
+    cleared = counts.get("clear", 0)
+
+    def times(n):
+        return "once" if n == 1 else "%d times" % n
+
+    if cleared and not deaths:
+        return "%s - cleared without dying" % name
+    if cleared:
+        return "%s - cleared it, died %s" % (name, times(deaths))
+    if extra_lives:
+        return "%s - found an extra life" % name
+    if deaths >= 3:
+        return "%s - died %s" % (name, times(deaths))
+    if coins >= 10:
+        return "%s - %d coin run" % (name, coins)
+    if powerups:
+        return "%s - power-up run" % name
+    if deaths:
+        return "%s - died %s" % (name, times(deaths))
+    return name
 
 
 # Weighted so the cut lands on what is worth watching. A clear or a 1-Up is the
@@ -548,22 +623,23 @@ Instagram   CANNOT DO THIS FLOW AT ALL. The publishing API has no draft or
 
 
 def main():
+    cfg = load_studio_config()
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--game", help="stable-retro game id (see list_games.py). Required unless --paste-block or --print-upload-plan.")
     parser.add_argument("--players", type=int, choices=[1, 2], default=1, help="1 = you alone. 2 = you plus an AI player, via play_human_vs_ai. (default: %(default)s)")
     parser.add_argument("--mode", choices=["versus", "coop", "race"], default="versus", help="Two-player match type, ignored when --players 1. (default: %(default)s)")
     parser.add_argument("--model", default=None, help="Checkpoint driving the AI player when --players 2. Without one the AI plays randomly, which makes for a much weaker video.")
     parser.add_argument("--state", default=None)
-    parser.add_argument("--title", default=None, help="Overlay text and metadata title. Defaults to the game id.")
-    parser.add_argument("--watermark", default="", help="Handle burnt into the bottom of both videos, e.g. @yourname")
+    parser.add_argument("--title", default=None, help="Overlay text and metadata title. Left out, one is written from what happened in the run -- cleared without dying, died twice, 14 coin run -- so nothing needs typing.")
+    parser.add_argument("--watermark", default=cfg.get("watermark", ""), help="Handle burnt into the bottom of both videos. Set it once as \"watermark\" in studio.json instead of passing it every run. (default: from studio.json)")
     parser.add_argument("--record-dir", default="./recordings")
     parser.add_argument("--out-dir", default="./studio_out", help="Parent for the dated review folder (default: %(default)s)")
     parser.add_argument("--from-mp4", default=None, help="Skip playing and re-cut an existing mp4 -- for redoing overlays without replaying.")
     parser.add_argument("--no-events", action="store_true", help="Skip the replay scan that builds the event timeline (faster, but narration.txt becomes generic)")
-    parser.add_argument("--short-seconds", type=float, default=15.0, help="Total length budget for the 9x16 short. The 16x9 master is always the full run. 0 keeps the short full length too. (default: %(default)s)")
+    parser.add_argument("--short-seconds", type=float, default=cfg.get("short_seconds", 15.0), help="Total length budget for the 9x16 short. The 16x9 master is always the full run. 0 keeps the short full length too. (default: %(default)s)")
     parser.add_argument("--clip-seconds", type=float, default=4.0, help="Seconds kept around each highlight. Smaller means more separate moments in the same budget, larger means fewer but with more room to breathe. (default: %(default)s)")
     parser.add_argument("--clip-lead", type=float, default=-1.0, help="Seconds of run-up kept before each event. The default of -1 means per-event: a death starts 4s early because the lives counter only moves at the END of the death sequence, while a coin starts 1s early. Any value >= 0 overrides that for every kind. (default: %(default)s)")
-    parser.add_argument("--transition", choices=TRANSITIONS, default="fade", help="How cuts are joined in the short. fade goes through black and is the safest; dissolve and pixelize cross-fade the pair and cost overlap at every join; none hard-cuts. (default: %(default)s)")
+    parser.add_argument("--transition", choices=TRANSITIONS, default=cfg.get("transition", "fade"), help="How cuts are joined in the short. fade goes through black and is the safest; dissolve and pixelize cross-fade the pair and cost overlap at every join; none hard-cuts. (default: %(default)s)")
     parser.add_argument("--transition-seconds", type=float, default=0.25, help="Length of each transition in seconds. (default: %(default)s)")
     parser.add_argument("--paste-block", metavar="DIR", default=None, help="Print the copy-paste block for an already staged folder (or a metadata.json) and exit. A normal run also writes it to paste.txt.")
     parser.add_argument("--print-upload-plan", action="store_true", help="Explain what can and cannot be automated per platform, then exit")
@@ -591,7 +667,7 @@ def main():
     if not os.path.exists(FONT):
         sys.exit(f"Font missing: {FONT}\n  sudo apt install -y fonts-dejavu-core")
 
-    title = args.title or args.game
+    # Real title is written once the events are known; this only names the folder.
     os.makedirs(args.record_dir, exist_ok=True)
     bk2_path = None
 
@@ -619,7 +695,7 @@ def main():
         if not native:
             sys.exit("playback_movie produced no mp4 (ffmpeg missing?). The .bk2 is kept.")
 
-    slug = slugify(title)
+    slug = slugify(args.title or pretty_game(args.game))
     folder = os.path.join(args.out_dir, f"{datetime.now():%Y%m%d-%H%M%S}_{slug}")
     os.makedirs(folder, exist_ok=True)
 
@@ -650,6 +726,10 @@ def main():
                                       seg_s=args.clip_seconds,
                                       lead=(args.clip_lead if args.clip_lead >= 0 else None))
     with_audio = has_audio_stream(native)
+
+    title = args.title or auto_title(args.game, events)
+    if not args.title:
+        print("Title: %s" % title)
 
     print("\nEncoding 1920x1080 landscape master ...")
     wide = encode(native, os.path.join(folder, f"{slug}_16x9.mp4"),

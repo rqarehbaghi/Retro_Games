@@ -1,0 +1,6 @@
+{
+  "_note": "Per-channel defaults for studio.py, so the handle and house style are set once here instead of retyped on every run. Command-line flags still override.",
+  "watermark": "@PlayerTwoIsABot",
+  "transition": "fade",
+  "short_seconds": 15
+}

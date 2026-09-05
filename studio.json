@@ -1,16 +1,22 @@
 {
   "_note": "Per-channel defaults for studio.py. Content keys are top level; everything about how it LOOKS goes under 'style'. Command-line flags still override.",
-  "_style": "size_div is a DIVISOR of the frame width, so a bigger number means smaller text. case: sentence|upper|lower|none. box draws a shaded plate behind the text; box_color takes ffmpeg colour syntax with alpha, e.g. black@0.5 or 0x1a1a2e@0.75. Anything here can also be overridden per caption in a staged overlays.json.",
-  "_fonts": "Run list_fonts.py to see every font on this machine drawn with your own caption text. Keep a proportional face for captions: a fixed-cell pixel face such as Press Start 2P is about one em per character, so caption lines get shrunk hard to fit.",
+  "_style": "size_div is a DIVISOR of the frame width, so a bigger number means smaller text. case: sentence|upper|lower|none. Depth comes from border + shadow; box draws a solid plate instead and is off. Colours take ffmpeg syntax with alpha, e.g. black@0.75 or 0x1a1a2e@0.6. Anything here can also be overridden per caption in a staged overlays.json.",
+  "_fonts": "Press Start 2P is fixed-cell at about one em per character, so caption LENGTH decides the rendered size more than size_div does -- keep lines near 30 characters. Run list_fonts.py to see every installed face drawn with your own text. If a path here goes missing the run warns and falls back to DejaVu rather than stopping.",
   "watermark": "@PlayerTwoIsABot",
   "level": "World 1-1",
   "short_seconds": 0,
   "style": {
+    "font": "/home/reza/.local/share/fonts/PressStart2P-Regular.ttf",
+    "title_font": "/home/reza/.local/share/fonts/PressStart2P-Regular.ttf",
+    "char_width_ratio": 1.0,
     "transition": "fade",
     "caption": {
       "case": "sentence",
-      "box": false,
-      "box_color": "black@0.5"
+      "shadow": true,
+      "shadow_color": "black@0.75",
+      "shadow_x": 3,
+      "shadow_y": 3,
+      "box": false
     }
   }
 }

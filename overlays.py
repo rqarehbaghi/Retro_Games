@@ -50,6 +50,10 @@ DEFAULT_STYLE = {
         "border_color": "black@0.9",
         "y_frac": 0.045,
         "case": "sentence",
+        "shadow": True,
+        "shadow_color": "black@0.75",
+        "shadow_x": 3,
+        "shadow_y": 3,
         "box": False,
         "box_color": "black@0.5",
         "box_pad": 12,
@@ -65,9 +69,14 @@ DEFAULT_STYLE = {
         # "sentence" capitalises the first letter of each sentence; "upper",
         # "lower" and "none" are the alternatives.
         "case": "sentence",
-        # A shaded plate behind the text, off by default because the outline
-        # already keeps it readable and a box covers a rectangle of the frame
-        # for as long as the line is up. Turn it on for a heavier look.
+        # Depth comes from an outline plus a drop shadow rather than a plate:
+        # a box covers a rectangle of the frame for as long as the line is up,
+        # while these cover only the glyphs. box stays available for a heavier
+        # look but is off.
+        "shadow": True,
+        "shadow_color": "black@0.75",
+        "shadow_x": 3,
+        "shadow_y": 3,
         "box": False,
         "box_color": "black@0.5",
         "box_pad": 14,
@@ -79,6 +88,10 @@ DEFAULT_STYLE = {
         "y_frac_vertical": 0.925,
         "y_frac_wide": 0.94,
         "case": "none",
+        "shadow": True,
+        "shadow_color": "black@0.6",
+        "shadow_x": 2,
+        "shadow_y": 2,
         "box": False,
         "box_color": "black@0.35",
         "box_pad": 8,
@@ -186,7 +199,8 @@ def apply_case(text, mode):
 
 def draw(label, out_label, text, font, size, y, color, border_color,
          border_w=None, shadow=False, x="(w-text_w)/2", enable=None,
-         box=False, box_color="black@0.5", box_pad=12):
+         box=False, box_color="black@0.5", box_pad=12,
+         shadow_color="black@0.75", shadow_x=3, shadow_y=3):
     """One drawtext stage.
 
     Outlined rather than boxed: a filled box takes a rectangle of the frame for
@@ -205,7 +219,8 @@ def draw(label, out_label, text, font, size, y, color, border_color,
     if box:
         parts += ["box=1", "boxcolor=%s" % box_color, "boxborderw=%d" % box_pad]
     if shadow:
-        parts += ["shadowcolor=black@0.55", "shadowx=2", "shadowy=2"]
+        parts += ["shadowcolor=%s" % shadow_color,
+                  "shadowx=%d" % shadow_x, "shadowy=%d" % shadow_y]
     if enable:
         parts.append("enable='%s'" % enable)
     return ":".join(parts) + out_label
@@ -330,7 +345,11 @@ def build_filter(spec, width, height, src_label="[0:v]"):
                           int(height * cfg["y_frac"]), cfg["color"],
                           cfg["border_color"], box=cfg.get("box", False),
                           box_color=cfg.get("box_color", "black@0.5"),
-                          box_pad=cfg.get("box_pad", 12)))
+                          box_pad=cfg.get("box_pad", 12),
+                          shadow=cfg.get("shadow", True),
+                          shadow_color=cfg.get("shadow_color", "black@0.75"),
+                          shadow_x=cfg.get("shadow_x", 3),
+                          shadow_y=cfg.get("shadow_y", 3)))
         stage = "[v1]"
 
     mark = spec.get("watermark")
@@ -346,7 +365,11 @@ def build_filter(spec, width, height, src_label="[0:v]"):
                           cfg["border_color"], border_w=2, x=x,
                           box=cfg.get("box", False),
                           box_color=cfg.get("box_color", "black@0.35"),
-                          box_pad=cfg.get("box_pad", 8)))
+                          box_pad=cfg.get("box_pad", 8),
+                          shadow=cfg.get("shadow", True),
+                          shadow_color=cfg.get("shadow_color", "black@0.75"),
+                          shadow_x=cfg.get("shadow_x", 3),
+                          shadow_y=cfg.get("shadow_y", 3)))
         stage = "[v2]"
 
     caps = remap_captions(spec.get("captions", []), spec.get("segments"))
@@ -370,7 +393,11 @@ def build_filter(spec, width, height, src_label="[0:v]"):
         parts.append(draw(stage, nxt, text, font, size,
                           cap.get("y", y), cap.get("color", cfg["color"]),
                           cap.get("border_color", cfg["border_color"]),
-                          shadow=cfg.get("shadow", True),
+                          shadow=cap.get("shadow", cfg.get("shadow", True)),
+                          shadow_color=cap.get("shadow_color",
+                                               cfg.get("shadow_color", "black@0.75")),
+                          shadow_x=cap.get("shadow_x", cfg.get("shadow_x", 3)),
+                          shadow_y=cap.get("shadow_y", cfg.get("shadow_y", 3)),
                           box=cap.get("box", cfg.get("box", False)),
                           box_color=cap.get("box_color", cfg.get("box_color", "black@0.5")),
                           box_pad=cap.get("box_pad", cfg.get("box_pad", 14)),

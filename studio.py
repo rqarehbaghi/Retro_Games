@@ -134,45 +134,45 @@ def auto_title(game, level=None):
 # and a caption that boasts about a mushroom reads badly. {n} is filled with
 # the running count of that event where a pool uses it.
 CAPTION_LINES = {
-    # No {game} here: the title burnt across the top already says which game it
-    # is, and repeating it wastes the one line that has to earn the watch.
+    # KEEP THESE SHORT -- around 30 characters. The default face is Press Start
+    # 2P, which is fixed-cell at roughly one em per character, so a 43-char
+    # line has to shrink to about 23px on a 1080-wide frame to fit while a
+    # 24-char line stays near 32px. Length is what decides how big the text
+    # ends up, not the size setting.
     #
     # A STARTING TABLE, not the final wording. Every run writes the chosen
     # lines into overlays.json beside the video and restyle.py re-renders after
     # you edit it, so the funniest version of any of these is the one written
     # after actually watching the clip.
-    "open": ["watch a grown adult lose to 1988",
-             "one take. no edits. no talent.",
-             "this is going to be rough for everyone"],
-    "death": ["he died. to that. to THAT.",
-              "a mushroom with legs ended his run",
-              "that goomba has a job and a family. he has neither.",
-              "walked into it like it owed him money",
-              "he had one job. the job was go right.",
-              "death {n}. the goombas have a group chat about him.",
-              "thirty years of gaming, everyone. thirty."],
-    "shrink": ["small again. like his prospects.",
-               "held that mushroom for nine entire seconds",
+    "open": ["watch this go badly",
+             "no edits. no talent.",
+             "this will be rough"],
+    "death": ["he died. to THAT.",
+              "killed by a mushroom",
+              "walked right into it",
+              "that was avoidable",
+              "30 years of gaming.",
+              "death {n}. incredible."],
+    "shrink": ["small again. fitting.",
                "back to factory settings",
-               "the mushroom filed a complaint and left"],
-    "powerdown": ["the tail is gone. so is the dignity.",
+               "held it for 9 seconds"],
+    "powerdown": ["there goes the tail",
                   "downgraded. deserved.",
-                  "briefly had something nice"],
-    "powerup": ["a mushroom. this changes nothing.",
-                "briefly competent. savour it.",
-                "peak. it is all downhill from here.",
-                "do not get attached"],
-    "1up": ["an extra life. for what, exactly.",
-            "1-up. now he can disappoint twice."],
-    "coin": ["{n} coins. still cannot jump.",
-             "{n} coins and not one good decision",
-             "hoarding currency, squandering talent"],
-    "clear": ["cleared it. the level went easy on him.",
-              "finished. the bar was on the floor.",
-              "level complete. nobody clapped."],
-    "pipe": ["down a pipe, away from his problems",
-             "hiding in a pipe. relatable.",
-             "found the one place with no goombas"],
+                  "had something nice once"],
+    "powerup": ["do not get attached",
+                "briefly competent",
+                "peak. downhill now."],
+    "1up": ["an extra life. why.",
+            "more chances to fail"],
+    "coin": ["{n} coins. still bad.",
+             "{n} coins, zero skill",
+             "rich and talentless"],
+    "clear": ["cleared it. eventually.",
+              "the bar was on the floor",
+              "nobody clapped"],
+    "pipe": ["hiding in a pipe",
+             "away from his problems",
+             "no goombas down here"],
 }
 
 CAPTION_HOLD = 2.6        # seconds each line stays up
@@ -738,9 +738,14 @@ def main():
 
     for key in ("font", "title_font"):
         if not os.path.exists(style[key]):
-            sys.exit(f"{key} not found: {style[key]}\n"
-                     f"  Fix the path in studio.json, or drop the key to use\n"
-                     f"  {DEFAULT_FONT}")
+            # Warn and carry on rather than stopping: a font path that has
+            # moved should not cost a recording that has already been played.
+            print(f"WARNING: {key} not found: {style[key]}")
+            print(f"         falling back to {DEFAULT_FONT}")
+            style[key] = DEFAULT_FONT
+    if not os.path.exists(style["font"]):
+        sys.exit(f"No usable font. Install the fallback:\n"
+                 f"  sudo apt install -y fonts-dejavu-core")
     if not shutil.which("ffmpeg"):
         sys.exit("ffmpeg is not on PATH -- see README step 1.")
 

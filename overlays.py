@@ -65,6 +65,7 @@ DEFAULT_STYLE = {
         "border_color": "black@0.92",
         "shadow": True,
         "hold": 2.6,
+        "max_lines": 3,
         "y_frac_vertical": 0.80,   # into the blurred band, clear of the game
         "y_frac_wide": HUD_TOP - 0.08,   # lower third, above the status bar
         # "sentence" capitalises the first letter of each sentence; "upper",
@@ -214,6 +215,46 @@ def apply_case(text, mode):
         elif ch in ".!?":
             capitalise = True
     return "".join(out)
+
+
+def wrap_text(text, font_path, size, max_width, ratio=CHAR_WIDTH_RATIO,
+              max_lines=3):
+    """Break a line into at most max_lines that each fit max_width."""
+    lines, current = [], ""
+    for word in text.split():
+        trial = (current + " " + word).strip()
+        if not current or text_width(trial, font_path, size, ratio) <= max_width:
+            current = trial
+        else:
+            lines.append(current)
+            current = word
+            if len(lines) >= max_lines:
+                break
+    if current and len(lines) < max_lines:
+        lines.append(current)
+    return lines
+
+
+def layout_text(text, font_path, size, max_width, ratio=CHAR_WIDTH_RATIO,
+                max_lines=3, floor=14):
+    """(size, lines) for a caption -- wrapped first, shrunk only if it must be.
+
+    Shrinking alone was the wrong lever. A fixed-cell face fits about 24
+    characters across a 1080 frame, so a sentence worth reading could only be
+    shown by making it too small to read. Wrapping buys three times the room at
+    full size, which is what lets the captions actually say something."""
+    words = text.split()
+    while size > floor:
+        lines = wrap_text(text, font_path, size, max_width, ratio, max_lines)
+        # wrap_text stops at max_lines and DROPS whatever is left, so a line
+        # that nearly fits comes back quietly missing its ending. Checking the
+        # word count catches that; without it the punchline just vanishes.
+        complete = sum(len(line.split()) for line in lines) == len(words)
+        if lines and complete and all(
+                text_width(line, font_path, size, ratio) <= max_width for line in lines):
+            return size, lines
+        size -= 2
+    return size, wrap_text(text, font_path, size, max_width, ratio, max_lines)
 
 
 def draw(label, out_label, text, font, size, y, color, border_color,
@@ -408,10 +449,19 @@ def build_filter(spec, width, height, src_label="[0:v]"):
         font = cap.get("font", style["font"])
         text = apply_case(cap["text"], cap.get("case", cfg.get("case", "none")))
         size = cap.get("size") or text_size(cfg, width, height, floor=16)
-        size = fit_size(text, font, size, int(width * 0.92), ratio)
-        hold = cap.get("hold", cfg["hold"])
-        parts.append(draw(stage, nxt, text, font, size,
-                          cap.get("y", y), cap.get("color", cfg["color"]),
+        size, wrapped = layout_text(text, font, size, int(width * 0.92), ratio,
+                                    max_lines=cfg.get("max_lines", 3))
+        # Longer lines need longer on screen, or a three-line joke flashes past
+        # before it can be read.
+        hold = cap.get("hold") or max(cfg["hold"], len(text) / 13.0)
+        line_h = int(size * 1.35)
+        # The block grows UPWARD from its anchor, so a three-line caption does
+        # not push down into the status bar the anchor was chosen to clear.
+        top = cap.get("y", y) - (len(wrapped) - 1) * line_h
+        for j, line in enumerate(wrapped):
+            leg = nxt if j == len(wrapped) - 1 else "[cap%d_%d]" % (i, j)
+            parts.append(draw(stage, leg, line, font, size,
+                          top + j * line_h, cap.get("color", cfg["color"]),
                           cap.get("border_color", cfg["border_color"]),
                           shadow=cap.get("shadow", cfg.get("shadow", True)),
                           shadow_color=cap.get("shadow_color",
@@ -422,6 +472,7 @@ def build_filter(spec, width, height, src_label="[0:v]"):
                           box_color=cap.get("box_color", cfg.get("box_color", "black@0.5")),
                           box_pad=cap.get("box_pad", cfg.get("box_pad", 14)),
                           enable="between(t,%.2f,%.2f)" % (cap["at"], cap["at"] + hold)))
+            stage = leg
         stage = nxt
     return ";".join(parts)
 

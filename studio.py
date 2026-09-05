@@ -134,49 +134,51 @@ def auto_title(game, level=None):
 # and a caption that boasts about a mushroom reads badly. {n} is filled with
 # the running count of that event where a pool uses it.
 CAPTION_LINES = {
-    # KEEP THESE SHORT -- around 30 characters. The default face is Press Start
-    # 2P, which is fixed-cell at roughly one em per character, so a 43-char
-    # line has to shrink to about 23px on a 1080-wide frame to fit while a
-    # 24-char line stays near 32px. Length is what decides how big the text
-    # ends up, not the size setting.
+    # The voice is a commentator who has watched a great deal of this and is
+    # not impressed easily -- but is FAIR. Mistakes get taken apart; genuinely
+    # good play gets credit, delivered as a backhanded compliment rather than
+    # withheld. A caption that only ever sneers stops being funny by the third
+    # one, because nothing is at stake in the praise.
+    #
+    # Lines can run long now: captions wrap onto up to three lines and stay on
+    # screen in proportion to their length, so there is room for an actual joke
+    # instead of a fragment.
     #
     # A STARTING TABLE, not the final wording. Every run writes the chosen
     # lines into overlays.json beside the video and restyle.py re-renders after
     # you edit it, so the funniest version of any of these is the one written
     # after actually watching the clip.
-    "open": ["watch this go badly",
-             "no edits. no talent.",
-             "this will be rough"],
-    "death": ["he died. to THAT.",
-              "killed by a mushroom",
-              "walked right into it",
-              "that was avoidable",
-              "30 years of gaming.",
-              "death {n}. incredible."],
-    "shrink": ["small again. fitting.",
-               "back to factory settings",
-               "held it for 9 seconds"],
-    "powerdown": ["there goes the tail",
-                  "downgraded. deserved.",
-                  "had something nice once"],
-    "powerup": ["do not get attached",
-                "briefly competent",
-                "peak. downhill now."],
-    "1up": ["an extra life. why.",
-            "more chances to fail"],
-    "coin": ["{n} coins. still bad.",
-             "{n} coins, zero skill",
-             "rich and talentless"],
-    "clear": ["cleared it. eventually.",
-              "the bar was on the floor",
-              "nobody clapped"],
-    "pipe": ["hiding in a pipe",
-             "away from his problems",
-             "no goombas down here"],
+    "open": ["Right. A grown adult, a 1988 cartridge, and no excuses.",
+             "He has played this before. Allegedly.",
+             "One take. Everything you are about to see was avoidable."],
+    "death": ["Killed by the first enemy in the game. A round one. With a face.",
+              "He saw it coming and walked at it anyway. Bold.",
+              "Death {n}. At this point the goombas are just spectating.",
+              "That enemy has stood there since 1988 waiting for exactly this.",
+              "Avoidable. Every single frame of that was avoidable."],
+    "shrink": ["And it is gone. Nine glorious seconds of being large.",
+               "Back to small. Back to being a target.",
+               "The mushroom gave its life for absolutely nothing."],
+    "powerdown": ["There goes the tail. He had it for one screen.",
+                  "Downgraded, and honestly, earned."],
+    "powerup": ["A mushroom. Look at him. Practically a professional.",
+                "Genuine competence. I am noting it for the record.",
+                "Upgraded. Enjoy it, it will not survive the next screen.",
+                "Now he is big, and the confidence is already a problem."],
+    "1up": ["An extra life, for a man who clearly needs the inventory.",
+            "A 1-Up. Credit where it is due. He will waste it in a minute."],
+    "coin": ["{n} coins. Financially secure, mechanically hopeless.",
+             "{n} coins collected, none of which make him better at this.",
+             "{n} coins. Genuinely tidy collecting, for whatever that is worth."],
+    "clear": ["He cleared it. I am as surprised as you are, and I am paid to watch.",
+              "Level complete, and the last stretch was actually good. There. Said it.",
+              "Finished. Not pretty, but finished, and that counts."],
+    "pipe": ["Into a pipe. Hiding from his responsibilities.",
+             "Down a pipe, where there are fewer witnesses."],
 }
 
 CAPTION_HOLD = 2.6        # seconds each line stays up
-CAPTION_GAP = 5.0         # minimum seconds between lines, so they do not crowd
+CAPTION_GAP = 1.5         # clear seconds between one line leaving and the next
 COIN_EVERY = 10           # only caption coins at milestones
 
 
@@ -229,8 +231,14 @@ def caption_script(events, duration, game, seed=None):
         at = frame / FPS
         if at + CAPTION_HOLD > duration:
             continue
-        if lines and at - lines[-1][0] < CAPTION_GAP:
-            continue
+        # Space against when the previous line LEAVES the screen, not when it
+        # arrived: holds scale with length now and can exceed a fixed gap, so a
+        # constant would let a long caption still be up when the next appears.
+        if lines:
+            prev_at, prev_text = lines[-1]
+            prev_hold = max(CAPTION_HOLD, len(prev_text) / 13.0)
+            if at < prev_at + prev_hold + CAPTION_GAP:
+                continue
         lines.append((at, text))
     return lines
 
@@ -804,7 +812,16 @@ def main():
     events = []
     if bk2_path and not args.no_events:
         print("Scanning the replay for events ...")
-        events = read_events(bk2_path, args.game)
+        try:
+            events = read_events(bk2_path, args.game)
+        except Exception as exc:
+            # The scan replays the whole run through the emulator, so it has
+            # plenty of ways to fail that have nothing to do with video. It
+            # must not take the videos down with it -- without this, a scan
+            # error left a staged folder holding the source and nothing else.
+            print(f"WARNING: event scan failed ({exc.__class__.__name__}: {exc})")
+            print("         rendering without captions; the videos are unaffected.")
+            events = []
         with open(os.path.join(folder, "events.csv"), "w", newline="") as handle:
             writer = csv.writer(handle)
             writer.writerow(["frame", "timestamp", "kind", "detail"])

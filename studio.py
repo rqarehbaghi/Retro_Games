@@ -61,43 +61,13 @@ import sys
 import time
 from datetime import datetime
 
-DEFAULT_FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-# Override with "font" and "title_font" in studio.json. DejaVu is merely what
-# every Debian box already has.
-#
-# A pixel face suits the footage, but suits the TITLE specifically: Press Start
-# 2P and its relatives are fixed-cell, about one em per character, so a caption
-# that fits comfortably in DejaVu runs off both edges of the frame in it. Hence
-# two font settings rather than one, and the fitting below.
-FONT = DEFAULT_FONT
-TITLE_FONT = DEFAULT_FONT
-
-# Average advance width as a fraction of the font size, used only when Pillow
-# is not importable and text cannot be measured properly. ~0.55 suits a
-# proportional sans; set "char_width_ratio": 1.0 in studio.json for a
-# fixed-cell pixel face, or install Pillow and this is never consulted.
-CHAR_WIDTH_RATIO = 0.55
+from overlays import (DEFAULT_FONT, DEFAULT_STYLE, TRANSITIONS,
+                      merge_style, render_spec, save_spec)
 
 
-def text_width(text, font_path, size):
-    """Rendered width in pixels, measured if possible and estimated if not."""
-    try:
-        from PIL import ImageFont
-        return ImageFont.truetype(font_path, size).getlength(text)
-    except Exception:
-        return len(text) * size * CHAR_WIDTH_RATIO
 
 
-def fit_size(text, font_path, size, max_width, floor=14):
-    """Largest size at or below `size` whose line fits inside max_width.
 
-    drawtext neither wraps nor shrinks -- an overlong line simply runs off both
-    edges of the frame, silently. That is easy to hit the moment the font
-    changes, since a pixel face is nearly twice the width of a sans at the same
-    point size."""
-    while size > floor and text_width(text, font_path, size) > max_width:
-        size -= 2
-    return size
 FPS = 60.0988
 
 
@@ -110,82 +80,8 @@ def slugify(text):
     return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:60] or "session"
 
 
-def esc(text):
-    """Escape a string for ffmpeg's drawtext, which treats ' : \\ % specially.
-    Apostrophes are replaced rather than escaped -- quoting them through a
-    filter_complex string survives neither shell nor ffmpeg reliably, and a
-    typographic apostrophe renders identically."""
-    out = text.replace("\\", "\\\\").replace(":", "\\:").replace("%", "\\%")
-    return out.replace("'", "’")
 
 
-def fill_filter(width, height, title, watermark, blur=20, src_label="[0:v]",
-                captions=None):
-    """Blurred-fill letterbox: a zoomed, blurred copy of the frame behind the
-    sharp nearest-neighbour gameplay, so the canvas is full at any aspect."""
-    # Both were far too big and boxed, which ate the frame. The title is a
-    # label you read once; it does not need to compete with the game.
-    title_size = max(18, width // 40)
-    mark_size = max(14, width // 55)
-    if title:
-        title_size = fit_size(title, TITLE_FONT, title_size, int(width * 0.9))
-    parts = [
-        src_label + "split=2[bg][fg]",
-        f"[bg]scale={width}:{height}:force_original_aspect_ratio=increase,"
-        f"crop={width}:{height},gblur=sigma={blur}[bgb]",
-        f"[fg]scale={width}:{height}:force_original_aspect_ratio=decrease:"
-        f"flags=neighbor[fgs]",
-        "[bgb][fgs]overlay=(W-w)/2:(H-h)/2[v0]",
-    ]
-    if title:
-        parts.append(
-            f"[v0]drawtext=fontfile={TITLE_FONT}:text='{esc(title)}':fontcolor=white@0.92:"
-            f"fontsize={title_size}:borderw={max(2, title_size // 12)}:"
-            f"bordercolor=black@0.9:x=(w-text_w)/2:y={int(height * 0.045)}[v1]"
-        )
-    else:
-        parts.append("[v0]null[v1]")
-    if watermark:
-        parts.append(
-            f"[v1]drawtext=fontfile={FONT}:text='{esc(watermark)}':"
-            f"fontcolor=white@0.6:fontsize={mark_size}:borderw=2:"
-            f"bordercolor=black@0.7:x={watermark_x(width, height)}:"
-            f"y={watermark_y(width, height)}[vout]"
-        )
-    else:
-        parts.append("[v1]null[v2]")
-    if watermark:
-        parts[-1] = parts[-1].replace("[vout]", "[v2]")
-    parts.append(caption_filter(captions or [], width, height,
-                                label="[v2]", out_label="[vout]"))
-    return ";".join(parts)
-
-
-def encode(src_mp4, out_path, width, height, title, watermark, crf=18,
-           segments=None, with_audio=True, transition="fade", trans_s=0.25,
-           captions=None):
-    """`segments` cuts the source down to those (start, duration) windows and
-    joins them, in the same pass that scales and captions -- so a highlight
-    reel costs one encode, not a cut pass plus a join pass."""
-    cut, vlabel, alabel = cut_filter(segments, with_audio, transition, trans_s)
-    graph = fill_filter(width, height, title, watermark, src_label=vlabel,
-                        captions=remap_captions(captions or [], segments))
-    if cut:
-        graph = cut + ";" + graph
-    audio_map = ["-map", alabel] if alabel else []
-    subprocess.run(
-        [
-            "ffmpeg", "-nostdin", "-y", "-i", src_mp4,
-            "-filter_complex", graph,
-            "-map", "[vout]", *audio_map,
-            "-r", "60", "-c:v", "libx264", "-preset", "slow", "-crf", str(crf),
-            "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k",
-            "-movflags", "+faststart",
-            out_path,
-        ],
-        check=True,
-    )
-    return out_path
 
 
 STUDIO_CONFIG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "studio.json")
@@ -238,35 +134,42 @@ def auto_title(game, level=None):
 # and a caption that boasts about a mushroom reads badly. {n} is filled with
 # the running count of that event where a pool uses it.
 CAPTION_LINES = {
-    # No {game} here: the title burnt across the top already says which game
-    # it is, and repeating it wastes the one line that has to earn the watch.
-    "open": ["watch this go badly",
+    # No {game} here: the title burnt across the top already says which game it
+    # is, and repeating it wastes the one line that has to earn the watch.
+    #
+    # A STARTING TABLE, not the final wording. Every run writes the chosen
+    # lines into overlays.json beside the video and restyle.py re-renders after
+    # you edit it, so the funniest version of any of these is the one written
+    # after actually watching the clip.
+    "open": ["watch a grown adult lose to 1988",
              "one take. no edits. no talent.",
-             "how hard can it be"],
-    "death": ["died to the first thing that moved",
-              "a goomba. it was a goomba.",
-              "that was avoidable in every possible way",
-              "thirty years of gaming experience, everyone",
-              "he saw it coming and went anyway",
-              "death {n}. consider a different hobby."],
-    "shrink": ["small again. fitting.",
-               "back to being useless",
-               "held that powerup for almost no time at all"],
-    "powerdown": ["there goes the tail",
-                  "downgraded. earned it.",
+             "this is going to be rough for everyone"],
+    "death": ["he died. to that. to THAT.",
+              "a mushroom with legs ended his run",
+              "that goomba has a job and a family. he has neither.",
+              "walked into it like it owed him money",
+              "he had one job. the job was go right.",
+              "death {n}. the goombas have a group chat about him.",
+              "thirty years of gaming, everyone. thirty."],
+    "shrink": ["small again. like his prospects.",
+               "held that mushroom for nine entire seconds",
+               "back to factory settings",
+               "the mushroom filed a complaint and left"],
+    "powerdown": ["the tail is gone. so is the dignity.",
+                  "downgraded. deserved.",
                   "briefly had something nice"],
-    "powerup": ["a mushroom. do not get attached.",
-                "briefly competent",
-                "this will end badly",
-                "peaked"],
-    "1up": ["an extra life. it will not help.",
-            "1-up. more chances to disappoint."],
-    "coin": ["{n} coins. still no skill.",
-             "{n} coins, zero technique",
-             "{n} coins. the coins are not the problem."],
-    "clear": ["cleared it. eventually.",
-              "finished. nobody is impressed.",
-              "level complete. the bar was low."],
+    "powerup": ["a mushroom. this changes nothing.",
+                "briefly competent. savour it.",
+                "peak. it is all downhill from here.",
+                "do not get attached"],
+    "1up": ["an extra life. for what, exactly.",
+            "1-up. now he can disappoint twice."],
+    "coin": ["{n} coins. still cannot jump.",
+             "{n} coins and not one good decision",
+             "hoarding currency, squandering talent"],
+    "clear": ["cleared it. the level went easy on him.",
+              "finished. the bar was on the floor.",
+              "level complete. nobody clapped."],
 }
 
 CAPTION_HOLD = 2.6        # seconds each line stays up
@@ -316,84 +219,13 @@ def caption_script(events, duration, game, seed=None):
     return lines
 
 
-def remap_captions(lines, segments):
-    """Move caption times onto the cut timeline.
-
-    Caption times are in SOURCE seconds. When the short is a highlight cut the
-    output timeline is different, so a line would otherwise appear over the
-    wrong moment. Lines whose event was cut out are dropped."""
-    if not segments:
-        return lines
-    out = []
-    for at, text in lines:
-        elapsed = 0.0
-        for seg_start, seg_dur in segments:
-            if seg_start <= at < seg_start + seg_dur:
-                out.append((elapsed + (at - seg_start), text))
-                break
-            elapsed += seg_dur
-    return out
 
 
-# The console draws its status bar across the bottom of the frame -- roughly
-# the last fifth of the picture on an NES. Text dropped on top of it makes both
-# unreadable, which is what 0.90 did on the 16:9 render.
-HUD_TOP = 0.82
 
 
-def caption_y(width, height):
-    """Where a caption can sit without covering anything that matters.
-
-    Depends on the shape of the canvas, which is why one hardcoded fraction was
-    wrong twice. Scaled into 9:16 the frame leaves a deep blurred band top and
-    bottom, so the caption drops neatly below the picture entirely. Scaled into
-    16:9 the picture fills the full height and the bands are on the SIDES
-    instead: there is no room underneath, so the caption has to overlay, and it
-    goes just ABOVE the status bar rather than through it."""
-    if height > width:
-        return int(height * 0.80)          # into the bottom band
-    return int(height * (HUD_TOP - 0.08))  # lower third, clear of the HUD
 
 
-def watermark_y(width, height):
-    return int(height * (0.925 if height > width else 0.94))
 
-
-def watermark_x(width, height):
-    """Centred in the bottom band on vertical; tucked into the blurred
-    pillarbox on wide, where centring would put it on the status bar."""
-    if height > width:
-        return "(w-text_w)/2"
-    return str(int(width * 0.02))
-
-
-def caption_filter(lines, width, height, label="[vin]", out_label="[vcap]"):
-    """drawtext chain that shows each line for CAPTION_HOLD seconds.
-
-    Outlined text rather than a filled box. A black box is opaque, so it takes
-    a rectangle of the frame away for as long as the line is up; an outline
-    stays readable over anything while covering only the glyphs. Sized off the
-    width so it scales with the canvas, and kept small -- captions that shout
-    read as a meme repost, not a channel."""
-    if not lines:
-        return "%snull%s" % (label, out_label)
-    base = max(20, width // 30)
-    margin = int(width * 0.92)
-    chains = []
-    current = label
-    for i, (at, text) in enumerate(lines):
-        nxt = out_label if i == len(lines) - 1 else "[cap%d]" % i
-        size = fit_size(text, FONT, base, margin)
-        chains.append(
-            "%sdrawtext=fontfile=%s:text='%s':fontcolor=white:fontsize=%d:"
-            "borderw=%d:bordercolor=black@0.92:shadowcolor=black@0.55:"
-            "shadowx=2:shadowy=2:x=(w-text_w)/2:y=%d:"
-            "enable='between(t,%.2f,%.2f)'%s"
-            % (current, FONT, esc(text), size, max(2, size // 12),
-               caption_y(width, height), at, at + CAPTION_HOLD, nxt))
-
-        current = nxt
-    return ";".join(chains)
 
 
 # Weighted so the cut lands on what is worth watching. A clear or a 1-Up is the
@@ -475,110 +307,8 @@ def highlight_segments(events, total_s, budget_s, seg_s=4.0, lead=None):
     return [(start, end - start) for start, end in chosen]
 
 
-TRANSITIONS = ("none", "fade", "dissolve", "pixelize")
-OUT_FPS = 60
 
 
-def cut_filter(segments, with_audio=True, transition="fade", trans_s=0.25):
-    """trim/concat prefix that stitches the chosen segments into one stream,
-    so the whole thing stays a single ffmpeg pass instead of encoding clips to
-    disk and re-encoding the join.
-
-    Hard cuts between unrelated moments read as a glitch rather than an edit,
-    so segments are separated by a transition:
-
-      fade      each segment fades from and to black. Cheap, robust, and the
-                usual grammar for a highlight reel -- it reads as "next
-                moment" rather than "the video broke". The default.
-      dissolve  xfade cross-dissolve. Softer, but pixel art cross-dissolved
-                into other pixel art goes muddy for the overlap.
-      pixelize  xfade pixelize, which suits the material but is heavier.
-      none      straight cuts.
-
-    fade needs no xfade chaining, so it survives any segment count and any
-    ffmpeg build; the xfade options chain pairwise and cost trans_s of overlap
-    at every join."""
-    if not segments:
-        return "", "[0:v]", "0:a?"
-
-    n = len(segments)
-    chains, vlabels, alabels = [], [], []
-    for i, (start, duration) in enumerate(segments):
-        vchain = ("[0:v]trim=start=%.3f:duration=%.3f,setpts=PTS-STARTPTS"
-                  % (start, duration))
-        if transition in ("dissolve", "pixelize"):
-            # xfade refuses a stream whose frame rate it cannot determine, and
-            # trim+setpts leaves it undefined:
-            #   The inputs needs to be a constant frame rate; current rate of
-            #   1/0 is invalid
-            # Pinning it here fixes that. The output is forced to the same rate
-            # anyway, so this changes nothing except making the rate explicit.
-            vchain += ",fps=%d" % OUT_FPS
-        if transition == "fade":
-            # Fade in on every segment but the first, out on every one but the
-            # last, so the reel opens and closes on the picture rather than on
-            # black.
-            if i > 0:
-                vchain += ",fade=t=in:st=0:d=%.3f" % trans_s
-            if i < n - 1:
-                vchain += ",fade=t=out:st=%.3f:d=%.3f" % (
-                    max(0.0, duration - trans_s), trans_s)
-        chains.append(vchain + "[cv%d]" % i)
-        vlabels.append("[cv%d]" % i)
-        if with_audio:
-            achain = ("[0:a]atrim=start=%.3f:duration=%.3f,asetpts=PTS-STARTPTS"
-                      % (start, duration))
-            if transition == "fade":
-                if i > 0:
-                    achain += ",afade=t=in:st=0:d=%.3f" % trans_s
-                if i < n - 1:
-                    achain += ",afade=t=out:st=%.3f:d=%.3f" % (
-                        max(0.0, duration - trans_s), trans_s)
-            chains.append(achain + "[ca%d]" % i)
-            alabels.append("[ca%d]" % i)
-
-    if transition in ("dissolve", "pixelize") and n > 1:
-        kind = "fade" if transition == "dissolve" else "pixelize"
-        # xfade overlaps the pair, so each join shortens the result by trans_s
-        # and every later offset has to account for the ones before it.
-        prev_v, prev_a = vlabels[0], (alabels[0] if with_audio else None)
-        elapsed = segments[0][1]
-        for i in range(1, n):
-            out_v = "[xv%d]" % i
-            offset = max(0.0, elapsed - trans_s)
-            chains.append("%s%sxfade=transition=%s:duration=%.3f:offset=%.3f%s"
-                          % (prev_v, vlabels[i], kind, trans_s, offset, out_v))
-            prev_v = out_v
-            if with_audio:
-                out_a = "[xa%d]" % i
-                chains.append("%s%sacrossfade=d=%.3f%s"
-                              % (prev_a, alabels[i], trans_s, out_a))
-                prev_a = out_a
-            elapsed += segments[i][1] - trans_s
-        chains.append("%snull[vcut]" % prev_v)
-        if with_audio:
-            chains.append("%sanull[acut]" % prev_a)
-    else:
-        chains.append("".join(vlabels) + "concat=n=%d:v=1:a=0[vcut]" % n)
-        if with_audio:
-            chains.append("".join(alabels) + "concat=n=%d:v=0:a=1[acut]" % n)
-
-    return ";".join(chains), "[vcut]", ("[acut]" if with_audio else None)
-
-
-def has_audio_stream(path):
-    """Assumes audio when it cannot tell. A cut built with no audio chain drops
-    the soundtrack silently, and on a gameplay clip that loses the music with
-    nothing in the output to say so; guessing wrong the other way fails loudly
-    at encode time instead, which is the better error to have."""
-    try:
-        out = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "a",
-                              "-show_entries", "stream=index", "-of", "csv=p=0", path],
-                             capture_output=True, text=True, check=True)
-        return bool(out.stdout.strip())
-    except Exception:
-        print("  (could not probe for audio -- assuming the source has some)")
-        return True
 
 
 TRANSITION_DROP = 600
@@ -589,30 +319,44 @@ POWER_TIERS = {0: "small", 1: "big", 2: "fire", 3: "raccoon"}
 # RewardShaper already skips those cases. read_events did not, so finishing a
 # level printed "back to small mario" as though it were a hit. A death does the
 # same thing, roughly three seconds before the lives counter catches up.
-POWER_NOISE_WINDOW = 300      # frames, ~5s at 60fps
+# A level ending in SMB3 is the goal card, then a score tally, then the map --
+# comfortably more than five seconds, so the first version of this window (300
+# frames) expired before the clear was logged and the caption survived anyway.
+POWER_NOISE_WINDOW = 900          # 15s, long enough to span the whole outro
+END_OF_RUN_WINDOW = 900           # a drop this close to the end of the tape
 
 
-def filter_power_noise(events):
-    """Drop power drops that are really a death or a level ending.
+def filter_power_noise(events, total_frames=None):
+    """Drop power changes that are really a death or a level ending.
 
-    Done as a second pass because the giveaway arrives LATER than the drop: on
-    a fatal hit the power byte clears immediately while `lives` only decrements
-    at the end of the death animation, so nothing at the moment of the drop can
-    tell you which it was."""
+    The power byte at 0x00ED is cleared by the game on BOTH of those, not only
+    when something hits you -- games.json records this, and RewardShaper
+    already skips it. Two things make it awkward here.
+
+    First, the giveaway arrives LATER than the drop: on a fatal hit the byte
+    clears at once while `lives` only decrements at the end of the death
+    animation, so nothing at the moment of the drop can say which it was. Hence
+    a second pass rather than an inline test.
+
+    Second, a run that ENDS at the level end never logs a clear at all -- the
+    recording stops before the position collapses -- so anchoring only on a
+    following event misses exactly the case that kept being reported. A drop
+    within END_OF_RUN_WINDOW of the last frame is therefore treated as the
+    outro as well: nothing happening with fifteen seconds left and no play
+    afterwards is a hit worth captioning."""
     marks = [f for f, kind, _d in events if kind in ("death", "clear")]
-    if not marks:
-        return events
     kept = []
     for frame, kind, detail in events:
-        if kind in ("shrink", "powerdown") and any(
-                0 <= mark - frame <= POWER_NOISE_WINDOW or
-                0 <= frame - mark <= 60 for mark in marks):
-            continue
+        if kind in ("shrink", "powerdown"):
+            if any(0 <= mark - frame <= POWER_NOISE_WINDOW or
+                   0 <= frame - mark <= 120 for mark in marks):
+                continue
+            if total_frames is not None and total_frames - frame <= END_OF_RUN_WINDOW:
+                continue
         kept.append((frame, kind, detail))
     return kept
 
 
-# ----------------------------------------------------------------- events --
 def read_events(bk2_path, game):
     """Replay the recording and note what happened, so narration and titles
     describe the real run instead of being generic. Degrades to an empty
@@ -701,7 +445,7 @@ def read_events(bk2_path, game):
         if term or trunc:
             break
     env.close()
-    return filter_power_noise(events)
+    return filter_power_noise(events, total_frames=frame)
 
 
 def narration(events, duration_s, game, players):
@@ -873,15 +617,11 @@ Instagram   CANNOT DO THIS FLOW AT ALL. The publishing API has no draft or
 
 def main():
     cfg = load_studio_config()
-    global FONT, TITLE_FONT, CHAR_WIDTH_RATIO
-    FONT = cfg.get("font", DEFAULT_FONT)
-    TITLE_FONT = cfg.get("title_font", FONT)
-    CHAR_WIDTH_RATIO = cfg.get("char_width_ratio", CHAR_WIDTH_RATIO)
-    for path, what in ((FONT, "font"), (TITLE_FONT, "title_font")):
-        if not os.path.exists(path):
-            sys.exit(f"{what} not found: {path}\n"
-                     f"  Check the path in studio.json, or fall back to\n"
-                     f"  {DEFAULT_FONT}")
+    # Style is data now: whatever studio.json sets is merged over the
+    # renderer defaults and written into overlays.json, so restyle.py can
+    # change any of it later without touching code.
+    style = merge_style({k: cfg[k] for k in cfg
+                         if k in DEFAULT_STYLE or k in ("font", "title_font")})
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--game", help="stable-retro game id (see list_games.py). Required unless --paste-block or --print-upload-plan.")
     parser.add_argument("--players", type=int, choices=[1, 2], default=1, help="1 = you alone. 2 = you plus an AI player, via play_human_vs_ai. (default: %(default)s)")
@@ -922,6 +662,11 @@ def main():
     if not args.game:
         sys.exit("--game is required (see list_games.py)")
 
+    for key in ("font", "title_font"):
+        if not os.path.exists(style[key]):
+            sys.exit(f"{key} not found: {style[key]}\n"
+                     f"  Fix the path in studio.json, or drop the key to use\n"
+                     f"  {DEFAULT_FONT}")
     if not shutil.which("ffmpeg"):
         sys.exit("ffmpeg is not on PATH -- see README step 1.")
 
@@ -983,7 +728,6 @@ def main():
         segments = highlight_segments(events, duration, args.short_seconds,
                                       seg_s=args.clip_seconds,
                                       lead=(args.clip_lead if args.clip_lead >= 0 else None))
-    with_audio = has_audio_stream(native)
 
     title = args.title or auto_title(args.game, args.level)
     lines = [] if args.no_captions else caption_script(events, duration, args.game)
@@ -994,25 +738,36 @@ def main():
         for at, text in lines:
             print("    %s  %s" % (stamp(int(at * FPS)), text))
 
-    print("\nEncoding 1920x1080 landscape master ...")
-    wide = encode(native, os.path.join(folder, f"{slug}_16x9.mp4"),
-                  1920, 1080, title, args.watermark, with_audio=with_audio,
-                  captions=lines)
     if segments:
         kept = sum(d for _s, d in segments)
-        print("Encoding 1080x1920 short: %d highlight%s, %.1fs of %.1fs ..."
+        print("Short is a cut: %d highlight%s, %.1fs of %.1fs"
               % (len(segments), "" if len(segments) == 1 else "s", kept, duration))
-        for start, dur in segments:
-            near = [d for f, _k, d in events if start <= f / FPS <= start + dur]
-            print("    %s +%.1fs  %s" % (stamp(int(start * FPS)), dur,
+        for seg_start, seg_dur in segments:
+            near = [d for f, _k, d in events
+                    if seg_start <= f / FPS <= seg_start + seg_dur]
+            print("    %s +%.1fs  %s" % (stamp(int(seg_start * FPS)), seg_dur,
                                          ", ".join(near[:3]) or "(no event)"))
-    else:
-        print("Encoding 1080x1920 vertical short (full length) ...")
-    tall = encode(native, os.path.join(folder, f"{slug}_9x16.mp4"),
-                  1080, 1920, title, args.watermark,
-                  segments=segments, with_audio=with_audio,
-                  transition=args.transition, trans_s=args.transition_seconds,
-                  captions=lines)
+
+    # Everything drawn on the video, as data. This is the file restyle.py edits:
+    # wording, timing, font, size, colour and position all live here rather
+    # than in the code, so changing any of them never means changing Python.
+    spec = {
+        "source": os.path.abspath(native),
+        "outputs": [
+            {"file": f"{slug}_16x9.mp4", "width": 1920, "height": 1080},
+            {"file": f"{slug}_9x16.mp4", "width": 1080, "height": 1920},
+        ],
+        "title": title,
+        "watermark": args.watermark,
+        "captions": [{"at": round(at, 2), "text": text} for at, text in lines],
+        "style": style,
+    }
+    if segments:
+        spec["segments"] = [[round(a, 3), round(b, 3)] for a, b in segments]
+    save_spec(spec, os.path.join(folder, "overlays.json"))
+
+    written = render_spec(spec, out_dir=folder)
+    wide, tall = written[0], written[1]
 
     with open(os.path.join(folder, "narration.txt"), "w") as handle:
         handle.write(narration(events, duration, args.game, args.players) + "\n")

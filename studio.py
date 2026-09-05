@@ -14,7 +14,9 @@ Play until you close the window, and this produces, in a dated folder:
 
 THE SHORT IS CUT, NOT TRUNCATED. --short-seconds (default 15) is a budget, not
 a stop point: the run is cut down to the moments that earned their place and
-those are joined in order. Selection comes from the RAM event log -- the exact
+those are joined in order, separated by a fade
+through black so a jump between unrelated moments reads as an edit rather
+than a glitch (--transition none/fade/dissolve/pixelize). Selection comes from the RAM event log -- the exact
 frame a power-up was taken or a life was lost -- so it is ground truth rather
 than inference. That is also why no AI highlight detector is involved: those
 score interest from pixels, audio energy or a transcript, and gameplay with no
@@ -105,11 +107,11 @@ def fill_filter(width, height, title, watermark, blur=20, src_label="[0:v]"):
 
 
 def encode(src_mp4, out_path, width, height, title, watermark, crf=18,
-           segments=None, with_audio=True):
+           segments=None, with_audio=True, transition="fade", trans_s=0.25):
     """`segments` cuts the source down to those (start, duration) windows and
     joins them, in the same pass that scales and captions -- so a highlight
     reel costs one encode, not a cut pass plus a join pass."""
-    cut, vlabel, alabel = cut_filter(segments, with_audio)
+    cut, vlabel, alabel = cut_filter(segments, with_audio, transition, trans_s)
     graph = fill_filter(width, height, title, watermark, src_label=vlabel)
     if cut:
         graph = cut + ";" + graph
@@ -132,8 +134,20 @@ def encode(src_mp4, out_path, width, height, title, watermark, crf=18,
 # Weighted so the cut lands on what is worth watching. A clear or a 1-Up is the
 # payoff, a power-up is the setup, a hit is at least dramatic; coins are common
 # enough that they should only break ties.
-EVENT_WEIGHTS = {"clear": 5.0, "1up": 5.0, "powerup": 4.0, "death": 3.0,
+EVENT_WEIGHTS = {"clear": 5.0, "1up": 5.0, "death": 4.5, "powerup": 4.0,
                  "powerdown": 2.0, "coin": 1.0, "score": 0.25}
+
+# How far BEFORE the logged frame each kind of moment actually starts.
+#
+# Events are logged when the underlying value changes, and some values change
+# long after the thing you want to watch. A death is the worst case: `lives`
+# only decrements at the END of the death sequence, after the death-jump
+# animation and the screen fade -- roughly three seconds after the hit that
+# caused it. A 1.5s lead there starts the clip on the aftermath and misses
+# the kill entirely, which is exactly what it looked like. Coins are the other
+# extreme: the counter moves on the frame you touch them.
+EVENT_LEAD = {"death": 4.0, "clear": 4.0, "powerdown": 2.5, "1up": 2.0,
+              "powerup": 1.5, "coin": 1.0, "score": 1.0}
 
 
 def best_window(events, total_s, want_s):
@@ -151,7 +165,7 @@ def best_window(events, total_s, want_s):
     return best_start
 
 
-def highlight_segments(events, total_s, budget_s, seg_s=4.0, lead=1.5):
+def highlight_segments(events, total_s, budget_s, seg_s=4.0, lead=None):
     """The moments worth keeping, as chronological (start, duration) pairs.
 
     NOT the first N seconds -- a level opens with walking right, so a naive
@@ -173,7 +187,10 @@ def highlight_segments(events, total_s, budget_s, seg_s=4.0, lead=1.5):
     chosen, used = [], 0.0
     for frame, kind, _detail in sorted(
             events, key=lambda e: -EVENT_WEIGHTS.get(e[1], 0.5)):
-        start = max(0.0, min(frame / FPS - lead, total_s - seg_s))
+        # A lead given on the command line applies to everything; otherwise
+        # each kind gets the run-up it actually needs.
+        ahead = lead if lead is not None else EVENT_LEAD.get(kind, 1.5)
+        start = max(0.0, min(frame / FPS - ahead, total_s - seg_s))
         end = min(total_s, start + seg_s)
         for i, (existing_start, existing_end) in enumerate(chosen):
             if start <= existing_end and end >= existing_start:
@@ -193,25 +210,94 @@ def highlight_segments(events, total_s, budget_s, seg_s=4.0, lead=1.5):
     return [(start, end - start) for start, end in chosen]
 
 
-def cut_filter(segments, with_audio=True):
+TRANSITIONS = ("none", "fade", "dissolve", "pixelize")
+OUT_FPS = 60
+
+
+def cut_filter(segments, with_audio=True, transition="fade", trans_s=0.25):
     """trim/concat prefix that stitches the chosen segments into one stream,
     so the whole thing stays a single ffmpeg pass instead of encoding clips to
-    disk and re-encoding the join."""
+    disk and re-encoding the join.
+
+    Hard cuts between unrelated moments read as a glitch rather than an edit,
+    so segments are separated by a transition:
+
+      fade      each segment fades from and to black. Cheap, robust, and the
+                usual grammar for a highlight reel -- it reads as "next
+                moment" rather than "the video broke". The default.
+      dissolve  xfade cross-dissolve. Softer, but pixel art cross-dissolved
+                into other pixel art goes muddy for the overlap.
+      pixelize  xfade pixelize, which suits the material but is heavier.
+      none      straight cuts.
+
+    fade needs no xfade chaining, so it survives any segment count and any
+    ffmpeg build; the xfade options chain pairwise and cost trans_s of overlap
+    at every join."""
     if not segments:
         return "", "[0:v]", "0:a?"
+
+    n = len(segments)
     chains, vlabels, alabels = [], [], []
     for i, (start, duration) in enumerate(segments):
-        chains.append("[0:v]trim=start=%.3f:duration=%.3f,setpts=PTS-STARTPTS[cv%d]"
-                      % (start, duration, i))
+        vchain = ("[0:v]trim=start=%.3f:duration=%.3f,setpts=PTS-STARTPTS"
+                  % (start, duration))
+        if transition in ("dissolve", "pixelize"):
+            # xfade refuses a stream whose frame rate it cannot determine, and
+            # trim+setpts leaves it undefined:
+            #   The inputs needs to be a constant frame rate; current rate of
+            #   1/0 is invalid
+            # Pinning it here fixes that. The output is forced to the same rate
+            # anyway, so this changes nothing except making the rate explicit.
+            vchain += ",fps=%d" % OUT_FPS
+        if transition == "fade":
+            # Fade in on every segment but the first, out on every one but the
+            # last, so the reel opens and closes on the picture rather than on
+            # black.
+            if i > 0:
+                vchain += ",fade=t=in:st=0:d=%.3f" % trans_s
+            if i < n - 1:
+                vchain += ",fade=t=out:st=%.3f:d=%.3f" % (
+                    max(0.0, duration - trans_s), trans_s)
+        chains.append(vchain + "[cv%d]" % i)
         vlabels.append("[cv%d]" % i)
         if with_audio:
-            chains.append("[0:a]atrim=start=%.3f:duration=%.3f,asetpts=PTS-STARTPTS[ca%d]"
-                          % (start, duration, i))
+            achain = ("[0:a]atrim=start=%.3f:duration=%.3f,asetpts=PTS-STARTPTS"
+                      % (start, duration))
+            if transition == "fade":
+                if i > 0:
+                    achain += ",afade=t=in:st=0:d=%.3f" % trans_s
+                if i < n - 1:
+                    achain += ",afade=t=out:st=%.3f:d=%.3f" % (
+                        max(0.0, duration - trans_s), trans_s)
+            chains.append(achain + "[ca%d]" % i)
             alabels.append("[ca%d]" % i)
-    n = len(segments)
-    chains.append("".join(vlabels) + "concat=n=%d:v=1:a=0[vcut]" % n)
-    if with_audio:
-        chains.append("".join(alabels) + "concat=n=%d:v=0:a=1[acut]" % n)
+
+    if transition in ("dissolve", "pixelize") and n > 1:
+        kind = "fade" if transition == "dissolve" else "pixelize"
+        # xfade overlaps the pair, so each join shortens the result by trans_s
+        # and every later offset has to account for the ones before it.
+        prev_v, prev_a = vlabels[0], (alabels[0] if with_audio else None)
+        elapsed = segments[0][1]
+        for i in range(1, n):
+            out_v = "[xv%d]" % i
+            offset = max(0.0, elapsed - trans_s)
+            chains.append("%s%sxfade=transition=%s:duration=%.3f:offset=%.3f%s"
+                          % (prev_v, vlabels[i], kind, trans_s, offset, out_v))
+            prev_v = out_v
+            if with_audio:
+                out_a = "[xa%d]" % i
+                chains.append("%s%sacrossfade=d=%.3f%s"
+                              % (prev_a, alabels[i], trans_s, out_a))
+                prev_a = out_a
+            elapsed += segments[i][1] - trans_s
+        chains.append("%snull[vcut]" % prev_v)
+        if with_audio:
+            chains.append("%sanull[acut]" % prev_a)
+    else:
+        chains.append("".join(vlabels) + "concat=n=%d:v=1:a=0[vcut]" % n)
+        if with_audio:
+            chains.append("".join(alabels) + "concat=n=%d:v=0:a=1[acut]" % n)
+
     return ";".join(chains), "[vcut]", ("[acut]" if with_audio else None)
 
 
@@ -476,7 +562,9 @@ def main():
     parser.add_argument("--no-events", action="store_true", help="Skip the replay scan that builds the event timeline (faster, but narration.txt becomes generic)")
     parser.add_argument("--short-seconds", type=float, default=15.0, help="Total length budget for the 9x16 short. The 16x9 master is always the full run. 0 keeps the short full length too. (default: %(default)s)")
     parser.add_argument("--clip-seconds", type=float, default=4.0, help="Seconds kept around each highlight. Smaller means more separate moments in the same budget, larger means fewer but with more room to breathe. (default: %(default)s)")
-    parser.add_argument("--clip-lead", type=float, default=1.5, help="Seconds of run-up kept before each event, so the moment has context instead of starting on the payoff. (default: %(default)s)")
+    parser.add_argument("--clip-lead", type=float, default=-1.0, help="Seconds of run-up kept before each event. The default of -1 means per-event: a death starts 4s early because the lives counter only moves at the END of the death sequence, while a coin starts 1s early. Any value >= 0 overrides that for every kind. (default: %(default)s)")
+    parser.add_argument("--transition", choices=TRANSITIONS, default="fade", help="How cuts are joined in the short. fade goes through black and is the safest; dissolve and pixelize cross-fade the pair and cost overlap at every join; none hard-cuts. (default: %(default)s)")
+    parser.add_argument("--transition-seconds", type=float, default=0.25, help="Length of each transition in seconds. (default: %(default)s)")
     parser.add_argument("--paste-block", metavar="DIR", default=None, help="Print the copy-paste block for an already staged folder (or a metadata.json) and exit. A normal run also writes it to paste.txt.")
     parser.add_argument("--print-upload-plan", action="store_true", help="Explain what can and cannot be automated per platform, then exit")
     args = parser.parse_args()
@@ -559,7 +647,8 @@ def main():
     segments = []
     if args.short_seconds and duration:
         segments = highlight_segments(events, duration, args.short_seconds,
-                                      seg_s=args.clip_seconds, lead=args.clip_lead)
+                                      seg_s=args.clip_seconds,
+                                      lead=(args.clip_lead if args.clip_lead >= 0 else None))
     with_audio = has_audio_stream(native)
 
     print("\nEncoding 1920x1080 landscape master ...")
@@ -577,7 +666,8 @@ def main():
         print("Encoding 1080x1920 vertical short (full length) ...")
     tall = encode(native, os.path.join(folder, f"{slug}_9x16.mp4"),
                   1080, 1920, title, args.watermark,
-                  segments=segments, with_audio=with_audio)
+                  segments=segments, with_audio=with_audio,
+                  transition=args.transition, trans_s=args.transition_seconds)
 
     with open(os.path.join(folder, "narration.txt"), "w") as handle:
         handle.write(narration(events, duration, args.game, args.players) + "\n")

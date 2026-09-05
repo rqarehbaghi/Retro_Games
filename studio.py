@@ -61,7 +61,11 @@ import sys
 import time
 from datetime import datetime
 
-FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+DEFAULT_FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+# Override with "font" in studio.json. DejaVu is merely what every Debian box
+# already has; a pixel face (Press Start 2P, Silkscreen) suits the footage far
+# better, and only the path has to change.
+FONT = DEFAULT_FONT
 FPS = 60.0988
 
 
@@ -87,8 +91,10 @@ def fill_filter(width, height, title, watermark, blur=20, src_label="[0:v]",
                 captions=None):
     """Blurred-fill letterbox: a zoomed, blurred copy of the frame behind the
     sharp nearest-neighbour gameplay, so the canvas is full at any aspect."""
-    title_size = max(28, width // 22)
-    mark_size = max(20, width // 38)
+    # Both were far too big and boxed, which ate the frame. The title is a
+    # label you read once; it does not need to compete with the game.
+    title_size = max(18, width // 40)
+    mark_size = max(14, width // 55)
     parts = [
         src_label + "split=2[bg][fg]",
         f"[bg]scale={width}:{height}:force_original_aspect_ratio=increase,"
@@ -99,17 +105,18 @@ def fill_filter(width, height, title, watermark, blur=20, src_label="[0:v]",
     ]
     if title:
         parts.append(
-            f"[v0]drawtext=fontfile={FONT}:text='{esc(title)}':fontcolor=white:"
-            f"fontsize={title_size}:x=(w-text_w)/2:y={height // 24}:"
-            f"box=1:boxcolor=black@0.55:boxborderw=14[v1]"
+            f"[v0]drawtext=fontfile={FONT}:text='{esc(title)}':fontcolor=white@0.92:"
+            f"fontsize={title_size}:borderw={max(2, title_size // 12)}:"
+            f"bordercolor=black@0.9:x=(w-text_w)/2:y={int(height * 0.045)}[v1]"
         )
     else:
         parts.append("[v0]null[v1]")
     if watermark:
         parts.append(
             f"[v1]drawtext=fontfile={FONT}:text='{esc(watermark)}':"
-            f"fontcolor=white@0.85:fontsize={mark_size}:x=(w-text_w)/2:"
-            f"y=h-{height // 14}:box=1:boxcolor=black@0.35:boxborderw=8[vout]"
+            f"fontcolor=white@0.6:fontsize={mark_size}:borderw=2:"
+            f"bordercolor=black@0.7:x={watermark_x(width, height)}:"
+            f"y={watermark_y(width, height)}[vout]"
         )
     else:
         parts.append("[v1]null[v2]")
@@ -199,29 +206,33 @@ def auto_title(game, level=None):
 CAPTION_LINES = {
     # No {game} here: the title burnt across the top already says which game
     # it is, and repeating it wastes the one line that has to earn the watch.
-    "open": ["no save states. no edits.",
-             "one take, mistakes included",
+    "open": ["watch this go badly",
+             "one take. no edits. no talent.",
              "how hard can it be"],
-    "death": ["well. that happened.",
-              "i saw it coming and walked into it anyway",
-              "that one is entirely on me",
-              "goomba 1, me 0",
-              "death {n}. we are learning nothing."],
-    "powerup": ["big mario era begins",
-                "finally, a mushroom",
-                "powerful. briefly.",
-                "upgrade acquired"],
-    "powerdown": ["and it is gone",
-                  "back to small mario",
-                  "easy come, easy go"],
-    "1up": ["an extra life, for the collection",
-            "1-up. now i can afford to die again."],
-    "coin": ["{n} coins. still broke.",
-             "{n} coins and counting",
-             "collecting currency i cannot spend"],
-    "clear": ["cleared it",
-              "level complete, barely",
-              "that will do"],
+    "death": ["died to the first thing that moved",
+              "a goomba. it was a goomba.",
+              "that was avoidable in every possible way",
+              "thirty years of gaming experience, everyone",
+              "he saw it coming and went anyway",
+              "death {n}. consider a different hobby."],
+    "shrink": ["small again. fitting.",
+               "back to being useless",
+               "held that powerup for almost no time at all"],
+    "powerdown": ["there goes the tail",
+                  "downgraded. earned it.",
+                  "briefly had something nice"],
+    "powerup": ["a mushroom. do not get attached.",
+                "briefly competent",
+                "this will end badly",
+                "peaked"],
+    "1up": ["an extra life. it will not help.",
+            "1-up. more chances to disappoint."],
+    "coin": ["{n} coins. still no skill.",
+             "{n} coins, zero technique",
+             "{n} coins. the coins are not the problem."],
+    "clear": ["cleared it. eventually.",
+              "finished. nobody is impressed.",
+              "level complete. the bar was low."],
 }
 
 CAPTION_HOLD = 2.6        # seconds each line stays up
@@ -290,23 +301,60 @@ def remap_captions(lines, segments):
     return out
 
 
+# The console draws its status bar across the bottom of the frame -- roughly
+# the last fifth of the picture on an NES. Text dropped on top of it makes both
+# unreadable, which is what 0.90 did on the 16:9 render.
+HUD_TOP = 0.82
+
+
+def caption_y(width, height):
+    """Where a caption can sit without covering anything that matters.
+
+    Depends on the shape of the canvas, which is why one hardcoded fraction was
+    wrong twice. Scaled into 9:16 the frame leaves a deep blurred band top and
+    bottom, so the caption drops neatly below the picture entirely. Scaled into
+    16:9 the picture fills the full height and the bands are on the SIDES
+    instead: there is no room underneath, so the caption has to overlay, and it
+    goes just ABOVE the status bar rather than through it."""
+    if height > width:
+        return int(height * 0.80)          # into the bottom band
+    return int(height * (HUD_TOP - 0.08))  # lower third, clear of the HUD
+
+
+def watermark_y(width, height):
+    return int(height * (0.925 if height > width else 0.94))
+
+
+def watermark_x(width, height):
+    """Centred in the bottom band on vertical; tucked into the blurred
+    pillarbox on wide, where centring would put it on the status bar."""
+    if height > width:
+        return "(w-text_w)/2"
+    return str(int(width * 0.02))
+
+
 def caption_filter(lines, width, height, label="[vin]", out_label="[vcap]"):
-    """drawtext chain that shows each line for CAPTION_HOLD seconds."""
+    """drawtext chain that shows each line for CAPTION_HOLD seconds.
+
+    Outlined text rather than a filled box. A black box is opaque, so it takes
+    a rectangle of the frame away for as long as the line is up; an outline
+    stays readable over anything while covering only the glyphs. Sized off the
+    width so it scales with the canvas, and kept small -- captions that shout
+    read as a meme repost, not a channel."""
     if not lines:
         return "%snull%s" % (label, out_label)
-    # Larger than the title (width // 22): the title is a label you read once,
-    # the captions are what the viewer is meant to follow.
-    size = max(30, width // 20)
+    size = max(20, width // 30)
     chains = []
     current = label
     for i, (at, text) in enumerate(lines):
         nxt = out_label if i == len(lines) - 1 else "[cap%d]" % i
         chains.append(
             "%sdrawtext=fontfile=%s:text='%s':fontcolor=white:fontsize=%d:"
-            "x=(w-text_w)/2:y=h-%d:box=1:boxcolor=black@0.6:boxborderw=16:"
+            "borderw=%d:bordercolor=black@0.92:shadowcolor=black@0.55:"
+            "shadowx=2:shadowy=2:x=(w-text_w)/2:y=%d:"
             "enable='between(t,%.2f,%.2f)'%s"
-            % (current, FONT, esc(text), size, int(height * 0.22), at,
-               at + CAPTION_HOLD, nxt))
+            % (current, FONT, esc(text), size, max(2, size // 12),
+               caption_y(width, height), at, at + CAPTION_HOLD, nxt))
         current = nxt
     return ";".join(chains)
 
@@ -315,7 +363,7 @@ def caption_filter(lines, width, height, label="[vin]", out_label="[vcap]"):
 # payoff, a power-up is the setup, a hit is at least dramatic; coins are common
 # enough that they should only break ties.
 EVENT_WEIGHTS = {"clear": 5.0, "1up": 5.0, "death": 4.5, "powerup": 4.0,
-                 "powerdown": 2.0, "coin": 1.0, "score": 0.25}
+                 "powerdown": 2.0, "shrink": 2.5, "coin": 1.0, "score": 0.25}
 
 # How far BEFORE the logged frame each kind of moment actually starts.
 #
@@ -326,7 +374,7 @@ EVENT_WEIGHTS = {"clear": 5.0, "1up": 5.0, "death": 4.5, "powerup": 4.0,
 # caused it. A 1.5s lead there starts the clip on the aftermath and misses
 # the kill entirely, which is exactly what it looked like. Coins are the other
 # extreme: the counter moves on the frame you touch them.
-EVENT_LEAD = {"death": 4.0, "clear": 4.0, "powerdown": 2.5, "1up": 2.0,
+EVENT_LEAD = {"death": 4.0, "clear": 4.0, "powerdown": 2.5, "shrink": 2.5, "1up": 2.0,
               "powerup": 1.5, "coin": 1.0, "score": 1.0}
 
 
@@ -496,6 +544,37 @@ def has_audio_stream(path):
         return True
 
 
+TRANSITION_DROP = 600
+POWER_TIERS = {0: "small", 1: "big", 2: "fire", 3: "raccoon"}
+
+# The power byte is cleared by the game on death AND on level exit, not just
+# when something hits you -- games.json records this against 0x00ED, and
+# RewardShaper already skips those cases. read_events did not, so finishing a
+# level printed "back to small mario" as though it were a hit. A death does the
+# same thing, roughly three seconds before the lives counter catches up.
+POWER_NOISE_WINDOW = 300      # frames, ~5s at 60fps
+
+
+def filter_power_noise(events):
+    """Drop power drops that are really a death or a level ending.
+
+    Done as a second pass because the giveaway arrives LATER than the drop: on
+    a fatal hit the power byte clears immediately while `lives` only decrements
+    at the end of the death animation, so nothing at the moment of the drop can
+    tell you which it was."""
+    marks = [f for f, kind, _d in events if kind in ("death", "clear")]
+    if not marks:
+        return events
+    kept = []
+    for frame, kind, detail in events:
+        if kind in ("shrink", "powerdown") and any(
+                0 <= mark - frame <= POWER_NOISE_WINDOW or
+                0 <= frame - mark <= 60 for mark in marks):
+            continue
+        kept.append((frame, kind, detail))
+    return kept
+
+
 # ----------------------------------------------------------------- events --
 def read_events(bk2_path, game):
     """Replay the recording and note what happened, so narration and titles
@@ -522,13 +601,35 @@ def read_events(bk2_path, game):
     env.initial_state = movie.get_state()
     env.reset()
 
+    prog_key = None
+    prog_hi = None
+    prog = (defaults.get("progress_use_info_x"), defaults.get("progress_address_high"))
+    if prog[0]:
+        prog_key = "hpos"
+        prog_hi = prog[1]
+
     events, frame = [], 0
     prev = {}
+    last_pos = None
     while movie.step():
         keys = [movie.get_key(i, p) for p in range(movie.players)
                 for i in range(env.num_buttons)]
         _obs, _r, term, trunc, info = env.step(keys)
         ram = env.get_ram()
+        position = None
+        if prog_key is not None:
+            low = info.get(prog_key)
+            if low is not None:
+                position = int(low) + (int(ram[prog_hi]) << 8 if prog_hi is not None else 0)
+        if position is not None and last_pos is not None:
+            # A big backward jump with no life lost is the level ending, not
+            # movement -- the page byte absorbs hpos wraps, so ordinary travel
+            # never produces one. Same test RewardShaper uses.
+            if position - last_pos < -TRANSITION_DROP:
+                events.append((frame, "clear", "level ended"))
+        if position is not None:
+            last_pos = position
+
         current = {
             "score": info.get("score"),
             "lives": info.get("lives"),
@@ -546,9 +647,15 @@ def read_events(bk2_path, game):
             elif key == "coins" and 0 < now - was <= 5:
                 events.append((frame, "coin", f"coin ({now})"))
             elif key == "power" and now > was:
-                events.append((frame, "powerup", f"powered up (tier {now})"))
+                events.append((frame, "powerup",
+                               f"{POWER_TIERS.get(was, was)} -> {POWER_TIERS.get(now, now)}"))
             elif key == "power" and now < was:
-                events.append((frame, "powerdown", f"took a hit (tier {now})"))
+                # Dropping to 0 and dropping a tier are different events: losing
+                # the tail still leaves you big. Calling both "back to small"
+                # was wrong on every raccoon -> big hit.
+                kind = "shrink" if now == 0 else "powerdown"
+                events.append((frame, kind,
+                               f"{POWER_TIERS.get(was, was)} -> {POWER_TIERS.get(now, now)}"))
             elif key == "score" and now > was:
                 # info score is one tenth of the HUD value for this game
                 events.append((frame, "score", f"+{(now - was) * 10} points"))
@@ -557,7 +664,7 @@ def read_events(bk2_path, game):
         if term or trunc:
             break
     env.close()
-    return events
+    return filter_power_noise(events)
 
 
 def narration(events, duration_s, game, players):
@@ -572,7 +679,7 @@ def narration(events, duration_s, game, players):
     for _frame, kind, _detail in events:
         counts[kind] = counts.get(kind, 0) + 1
     for frame, kind, detail in events:
-        if kind in ("death", "powerup", "powerdown", "1up"):
+        if kind in ("death", "powerup", "powerdown", "shrink", "1up", "clear"):
             lines.append(f"[{stamp(frame)}] {detail}")
     tail = []
     def plural(n, word):
@@ -729,6 +836,8 @@ Instagram   CANNOT DO THIS FLOW AT ALL. The publishing API has no draft or
 
 def main():
     cfg = load_studio_config()
+    global FONT
+    FONT = cfg.get("font", DEFAULT_FONT)
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--game", help="stable-retro game id (see list_games.py). Required unless --paste-block or --print-upload-plan.")
     parser.add_argument("--players", type=int, choices=[1, 2], default=1, help="1 = you alone. 2 = you plus an AI player, via play_human_vs_ai. (default: %(default)s)")

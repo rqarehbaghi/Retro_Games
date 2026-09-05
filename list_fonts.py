@@ -75,7 +75,15 @@ def render_sheet(fonts, sample, out_path):
     stage = "[0:v]"
     for i, (path, family, style) in enumerate(fonts):
         top = 20 + i * ROW_HEIGHT
-        label = "%d. %s %s" % (i + 1, family, style)
+        # fc-list reports each NAMED INSTANCE of a variable font separately
+        # (Ubuntu Condensed Extra Bold, Ubuntu Sans Thin Italic ...) but they
+        # all share one file, and drawtext renders that file at its DEFAULT
+        # instance regardless. Labelling a row with the instance name would
+        # promise a weight the sample does not show.
+        variable = "[" in os.path.basename(path)
+        label = "%d. %s%s" % (i + 1, family,
+                              " (variable font, shown at its default weight)"
+                              if variable else " " + style)
         nxt = "[l%d]" % i
         # The label is drawn in a known-good face so a broken font cannot make
         # its own row unidentifiable.

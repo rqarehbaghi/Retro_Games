@@ -124,13 +124,24 @@ def esc(text):
     return out.replace("'", "’")
 
 
+# Characters ffmpeg treats as structure rather than text. A filtergraph uses
+# [] for stream labels, comma to separate filters and semicolon to separate
+# chains, while : separates a filter option from its value -- so a PATH holding
+# any of them derails the parse. Ubuntu ships its variable fonts as, literally,
+# Ubuntu[wdth,wght].ttf, which contains three of them.
+FILTER_META = (chr(92), ":", ",", "[", "]", ";", chr(39))
+
+
 def esc_path(path):
     """Escape a path for a drawtext fontfile= option.
 
-    Unescaped this works right up until a font lives somewhere with a space or
-    a colon in the name, at which point ffmpeg reads the rest of the path as
-    further filter options and fails with something unrelated-looking."""
-    return str(path).replace(chr(92), chr(92) * 2).replace(":", chr(92) + ":")
+    Escaping rather than quoting because a quoted path still breaks on a
+    literal quote in the name, and this has to survive whatever the font
+    directory happens to contain."""
+    out = str(path)
+    for ch in FILTER_META:
+        out = out.replace(ch, chr(92) + ch)
+    return out
 
 
 def text_width(text, font_path, size, ratio=CHAR_WIDTH_RATIO):

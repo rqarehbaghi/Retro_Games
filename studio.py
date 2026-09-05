@@ -520,65 +520,337 @@ def read_events(bk2_path, game):
     return filter_power_noise(events, total_frames=frame)
 
 
-def narration(events, duration_s, game, players):
-    """A timestamped script. Deliberately plain text rather than synthesised
-    audio: which TTS to use is a real decision (a local voice is free and
-    sounds it, a hosted one costs per character and needs an API key) and
-    hardcoding one here would make that choice for you. Pipe this into
-    whichever you pick."""
-    who = "I play" if players == 1 else "an AI and I play"
-    lines = [f"[0:00] {game} -- {who}. {int(duration_s)} seconds of footage."]
+# Talking over the whole run, not just its highlights. A commentary track that
+# only speaks when something happens leaves most of a 90-second video silent,
+# so the gaps get filled with observation -- which is what a real commentator
+# does while nothing much is going on.
+NARRATION_OPEN = [
+    "Here we go. {game}, {level}. No save states, no rewinds, no second takes.",
+    "{game}, {level}. A cartridge older than most of the audience, and a man who "
+    "insists he remembers how this goes.",
+    "Welcome back. {game}, {level}, played straight through. Whatever happens "
+    "next, it happened live.",
+]
+
+NARRATION_FILL = [
+    "Look at this. Not one pixel of it has changed since 1988, and neither has "
+    "the correct way to play it.",
+    "There is a rhythm to this level that people spent childhoods learning. We "
+    "will see whether any of it survived.",
+    "Everything on this screen is trying to kill him, politely, on a fixed "
+    "schedule, exactly as it did decades ago.",
+    "The music has not stopped. The music never stops. That is half of why "
+    "anyone remembers this game at all.",
+    "Nothing here is random. Every enemy, every block, every gap is in the same "
+    "place it has always been.",
+    "This is the part where muscle memory is supposed to take over. Any moment "
+    "now.",
+    "Somewhere out there is a person who can do this level in forty seconds "
+    "without breathing hard. This is not that person.",
+    "Steady progress. I want to acknowledge it now, because I suspect it will "
+    "not last.",
+]
+
+NARRATION_EVENT = {
+    "death": [
+        "And there it is. Killed by the oldest, slowest, most telegraphed enemy "
+        "in the entire game.",
+        "He walked into that. Not tripped, not got cornered. Walked.",
+        "That was avoidable, and I want that noted. Every frame of it was "
+        "avoidable.",
+        "Death number {n}. The enemies are not even trying at this point.",
+    ],
+    "shrink": [
+        "And the mushroom is gone. Nine seconds of being large, wasted.",
+        "Back to small. Back to being exactly one mistake from the start of the "
+        "level.",
+    ],
+    "powerdown": [
+        "There goes the tail, after roughly one screen of ownership.",
+        "Downgraded. Somewhere a raccoon is filing a complaint.",
+    ],
+    "powerup": [
+        "A mushroom, and credit where it is due, that was a clean grab.",
+        "Powered up. He looks dangerous now. He is not, but he looks it.",
+        "Good. Genuinely good. I am contractually obliged to say something "
+        "unkind later, so enjoy this.",
+    ],
+    "1up": [
+        "An extra life. Earned, and almost certainly about to be spent.",
+        "A one up. That is the good news. The bad news is the next thirty "
+        "seconds.",
+    ],
+    "coin": [
+        "{n} coins now. Financially secure. Mechanically, we will see.",
+        "Coins are stacking up. That is real, that counts, that is skill.",
+    ],
+    "clear": [
+        "And that is the level. Finished, on camera, no retries. Say what you "
+        "like about the middle section, the ending was clean.",
+        "Cleared. I am going to be honest with you, I did not expect that, and I "
+        "am paid to expect things.",
+    ],
+    "pipe": [
+        "Into a pipe, away from his problems.",
+        "Down we go. Fewer witnesses down here.",
+    ],
+}
+
+NARRATION_CLOSE = [
+    "That is the run. {tally} Somewhere a version of this that went smoothly "
+    "exists, and this was not it.",
+    "And that is where we leave it. {tally} Same time next level.",
+    "Run over. {tally} You may now go and remember this game as harder than it "
+    "was.",
+]
+
+WORDS_PER_MINUTE = 150      # a plain TTS read
+NARRATION_GAP = 6.0         # fill any silence longer than this
+
+
+def _tally(events):
     counts = {}
     for _frame, kind, _detail in events:
         counts[kind] = counts.get(kind, 0) + 1
-    for frame, kind, detail in events:
-        if kind in ("death", "powerup", "powerdown", "shrink", "1up",
-                    "clear", "pipe"):
-            lines.append(f"[{stamp(frame)}] {detail}")
-    tail = []
-    def plural(n, word):
-        return f"{n} {word}" if n == 1 else f"{n} {word}s"
-    if counts.get("coin"):
-        tail.append(plural(counts["coin"], "coin"))
-    if counts.get("death"):
-        tail.append(plural(counts["death"], "death"))
-    if counts.get("powerup"):
-        tail.append(plural(counts["powerup"], "power-up"))
-    if tail:
-        lines.append(f"[end] Final tally: {', '.join(tail)}.")
+    bits = []
+    for kind, word in (("coin", "coin"), ("death", "death"),
+                       ("powerup", "power-up"), ("1up", "extra life")):
+        n = counts.get(kind)
+        if n:
+            bits.append("%d %s%s" % (n, word, "" if n == 1 else "s"))
+    return ("Final count: " + ", ".join(bits) + ".") if bits else ""
+
+
+def narration(events, duration_s, game, players, level=None, seed=None):
+    """A full commentary script, timed across the whole run.
+
+    Previously this listed the handful of moments the captions already covered,
+    which left roughly eighty seconds of a ninety-second video with nothing
+    being said over it. A commentary track has to keep talking, so event lines
+    are the spine and observation fills the silences between them."""
+    rng = random.Random(seed if seed is not None else "%s-narration" % game)
+    name = pretty_game(game)
+    where = level or "from the top"
+    used = {}
+
+    def pick(pool, key, **fmt):
+        seen = used.setdefault(key, set())
+        fresh = [line for line in pool if line not in seen] or list(pool)
+        if len(fresh) == len(pool):
+            seen.clear()
+        line = rng.choice(fresh)
+        seen.add(line)
+        return line.format(game=name, level=where, **fmt)
+
+    script = [(0.4, pick(NARRATION_OPEN, "open"))]
+    counts = {}
+    for frame, kind, _detail in events:
+        counts[kind] = counts.get(kind, 0) + 1
+        pool = NARRATION_EVENT.get(kind)
+        if not pool:
+            continue
+        if kind == "coin" and counts[kind] % 10:
+            continue
+        at = frame / FPS
+        if at > duration_s - 3:
+            continue
+        script.append((at, pick(pool, kind, n=counts[kind])))
+
+    # Fill the silences. Reading rate sets how long a line occupies, so a gap
+    # is only filled when there is genuinely room for another one.
+    script.sort()
+
+    def spoken(text):
+        return len(text.split()) / WORDS_PER_MINUTE * 60.0
+
+    filled = []
+    for i, (at, text) in enumerate(script):
+        filled.append((at, text))
+        cursor = at + spoken(text)
+        # Against the SORTED neighbour: indexing the unsorted list here left a
+        # fifteen-second silence in the middle of a run it thought it had filled.
+        next_at = script[i + 1][0] if i + 1 < len(script) else duration_s
+        while next_at - cursor > NARRATION_GAP:
+            line = pick(NARRATION_FILL, "fill")
+            filled.append((cursor + 1.0, line))
+            cursor += 1.0 + spoken(line)
+
+    tally = _tally(events)
+    close = pick(NARRATION_CLOSE, "close", tally=tally)
+    # After everything else has finished speaking, not merely near the end --
+    # placing it by duration alone put the sign-off before the last event.
+    last_end = max((at + spoken(text) for at, text in filled), default=0.0)
+    # Late enough to be a sign-off, early enough to finish before the footage
+    # does -- placing it purely by duration put it before the final event, and
+    # placing it purely after that final line ran it past the end of the video.
+    close_at = max(last_end + 0.5, duration_s - spoken(close) - 0.5)
+    overruns = close_at + spoken(close) > duration_s
+    filled.append((min(close_at, max(0.0, duration_s - 0.5)), close))
+    filled.sort()
+
+    lines = ["# Commentary script for %s%s" % (name, ", " + level if level else ""),
+             "# %d seconds of footage, about %d words, read at ~%d wpm."
+             % (duration_s,
+                sum(len(t.split()) for _a, t in filled), WORDS_PER_MINUTE),
+             "# Timestamps are when each line should START.",
+             ""]
+    if overruns:
+        lines.insert(3, "# NOTE the sign-off runs past the end of the footage. "
+                        "Trim it, or hold the last frame.")
+    for at, text in filled:
+        lines.append("[%s] %s" % (stamp(int(at * FPS)), text))
     return "\n".join(lines)
 
 
-def build_metadata(game, players, events, title, watermark):
+# ------------------------------------------------------------ the copy ----
+# Nostalgia is the actual pitch. The audience for a World 1-1 run is not
+# looking for a tutorial -- they played this, or watched a sibling play it, and
+# the description has to say so before it says anything else.
+DESC_OPEN = [
+    "If you were there for this one, you already know the sound of that first "
+    "overworld theme better than you know your own phone number.",
+    "Some games you remember. This one you can still hear. The moment that "
+    "music starts, you are eight years old and it is a Saturday.",
+    "There was a time when this screen was the whole world, and getting past it "
+    "was the most important thing happening that week.",
+]
+
+DESC_BODY = [
+    "No save states, no rewinds, no second attempts. One take, mistakes "
+    "included, exactly the way it was played when the only thing standing "
+    "between you and the start of the level was a very small number of lives.",
+    "Played straight through on emulation of the original hardware. Same enemy "
+    "placement, same physics, same unforgiving gap you have been falling into "
+    "since the eighties.",
+    "Everything here is the original game, untouched. No romhacks, no practice "
+    "tools, no rewinding the bad bits. What you see is what happened.",
+]
+
+DESC_CLOSE = [
+    "Drop a comment if you remember where the secret in this level is. Half of "
+    "you do. The other half are about to find out.",
+    "Tell me in the comments how old you were when you first played this. Be "
+    "honest, we are all in the same boat here.",
+    "If this brought something back, subscribe -- more of the same, one level at "
+    "a time, no save states.",
+]
+
+YOUTUBE_TAGS = ["retro gaming", "nes", "nintendo", "nostalgia", "80s games",
+                "90s kids", "retro games", "classic gaming", "gameplay",
+                "full playthrough", "no commentary", "childhood games"]
+
+
+def build_description(game, level, events, duration_s, players, watermark, seed=None):
+    """A real YouTube description: hook, context, what happened, and a prompt.
+
+    The old one was three lines and a stat count, which is not a description --
+    it is a caption with delusions. Long-form platforms expect several hundred
+    words and use them for search."""
+    rng = random.Random(seed if seed is not None else "%s-desc" % game)
+    name = pretty_game(game)
+    where = ("%s, %s" % (name, level)) if level else name
+
     counts = {}
     for _frame, kind, _detail in events:
         counts[kind] = counts.get(kind, 0) + 1
-    tags = ["retrogaming", "nes", "gameplay", "speedrun", "gaming"]
+
+    chapters = []
+    for frame, kind, detail in events:
+        if kind in ("powerup", "1up", "clear", "death", "pipe"):
+            secs = int(frame / FPS)
+            chapters.append("%d:%02d  %s" % (secs // 60, secs % 60, {
+                "powerup": "Power-up",
+                "1up": "Extra life",
+                "clear": "Level clear",
+                "death": "Death",
+                "pipe": "Into a pipe",
+            }[kind]))
+
+    parts = [where + ".", "", rng.choice(DESC_OPEN), "", rng.choice(DESC_BODY), ""]
     if players == 2:
-        tags += ["ai", "humanvsai", "machinelearning"]
-    description = (
-        f"{game}, played live.\n\n"
-        f"Coins: {counts.get('coin', 0)} | deaths: {counts.get('death', 0)} | "
-        f"power-ups: {counts.get('powerup', 0)}\n\n"
-        f"{watermark}"
-    )
+        parts += ["Two players: one human, one trained neural network. "
+                  "The machine has played this level more times than any person "
+                  "alive, and it still cannot be trusted near a pit.", ""]
+    if chapters:
+        # YouTube only turns these into real chapters when the list starts at
+        # 0:00, so the run-up is an entry rather than an omission.
+        chapters.insert(0, "0:00  Start")
+        parts.append("CHAPTERS")
+        parts.extend("  " + c for c in chapters[:14])
+        parts.append("")
+    tally = _tally(events)
+    if tally:
+        parts += [tally, ""]
+    parts += [rng.choice(DESC_CLOSE), "",
+              "Runtime: %d:%02d" % (int(duration_s) // 60, int(duration_s) % 60), ""]
+    if watermark:
+        parts += [watermark, ""]
+    parts.append(" ".join("#" + t.replace(" ", "") for t in YOUTUBE_TAGS[:8]))
+    return "\n".join(parts)
+
+
+def build_short_caption(game, level, events, watermark, tags, seed=None):
+    """The one-field caption TikTok and Instagram give you: hook then tags."""
+    rng = random.Random(seed if seed is not None else "%s-short" % game)
+    name = pretty_game(game)
+    hooks = [
+        "%s. If you know, you know." % (level or name),
+        "%s%s, one take, no save states. Tell me you remember this."
+        % (name, ", " + level if level else ""),
+        "Be honest, how old were you when you first played this? %s%s"
+        % (name, ", " + level if level else ""),
+    ]
+    counts = {}
+    for _f, kind, _d in events:
+        counts[kind] = counts.get(kind, 0) + 1
+    if counts.get("death"):
+        hooks.append("Died %d time%s on a level I have beaten a hundred times. %s"
+                     % (counts["death"], "" if counts["death"] == 1 else "s", name))
+    return "%s\n\n%s\n%s" % (rng.choice(hooks), watermark, tags)
+
+
+def build_metadata(game, players, events, title, watermark, level=None,
+                   duration_s=0.0):
+    counts = {}
+    for _frame, kind, _detail in events:
+        counts[kind] = counts.get(kind, 0) + 1
+    tags = list(YOUTUBE_TAGS)
+    if players == 2:
+        tags += ["ai", "human vs ai", "machine learning", "reinforcement learning"]
+    hashtags = {
+        "youtube": " ".join("#" + t.replace(" ", "") for t in tags[:10]),
+        "tiktok": " ".join("#" + t.replace(" ", "")
+                           for t in ["retro", "nostalgia", "nes", "gaming",
+                                     "90skids", "fyp"]),
+        "instagram": " ".join("#" + t.replace(" ", "")
+                              for t in ["retrogaming", "nostalgia", "nes",
+                                        "nintendo", "90skids", "80skids",
+                                        "retro", "gaming", "reels"]),
+    }
     return {
         "title": title,
-        "description": description,
         "game": game,
+        "level": level,
         "players": players,
+        "duration_seconds": round(duration_s, 1),
         "event_counts": counts,
-        "hashtags": {
-            "youtube": " ".join("#" + t for t in tags),
-            "tiktok": " ".join("#" + t for t in tags[:5] + ["fyp"]),
-            "instagram": " ".join("#" + t for t in tags + ["reels", "retro"]),
+        "description": build_description(game, level, events, duration_s,
+                                         players, watermark),
+        "tags": tags,
+        "hashtags": hashtags,
+        "captions": {
+            "tiktok": build_short_caption(game, level, events, watermark,
+                                          hashtags["tiktok"]),
+            "instagram": build_short_caption(game, level, events, watermark,
+                                             hashtags["instagram"]),
         },
     }
 
 
-# Field limits worth catching BEFORE you are standing in the upload form with
-# a title the site silently truncates. YouTube's 100-character title and
-# Instagram's 30-hashtag cap are the two that actually bite.
+# Limits worth catching BEFORE you are standing in the upload form with copy
+# the site silently truncates. YouTube's 100-character title and Instagram's
+# 30-hashtag cap are the two that actually bite; the description limits are
+# generous but a long description is exactly when you stop counting.
 LIMITS = {
     "youtube_title": 100,
     "youtube_description": 5000,
@@ -590,30 +862,34 @@ LIMITS = {
 
 def _warn(label, value, limit, unit="characters"):
     if value > limit:
-        return f"  !! {label} is {value} {unit}, over the {limit} limit -- it gets cut off\n"
+        return "  !! %s is %d %s, over the %d limit -- it gets cut off\n" % (
+            label, value, unit, limit)
     return ""
 
 
 def paste_block(meta):
-    """Everything the three upload forms ask for, in the order they ask for it.
+    """Every upload form's fields, in the order that form asks for them.
 
-    The upload stays manual, so the only tedium left is retyping titles and
-    hashtags into three different forms. This is that, ready to copy."""
+    The upload stays manual, so the tedium left is retyping copy into three
+    different sites. This is that, ready to copy -- including the full
+    description rather than a three-line stub."""
     title = meta.get("title", "")
     description = meta.get("description", "")
-    tags = meta.get("hashtags", {})
-    yt_tags = ", ".join(t.lstrip("#") for t in tags.get("youtube", "").split())
-    ig_caption = title + "\n\n" + tags.get("instagram", "")
-    tt_caption = title + " " + tags.get("tiktok", "")
+    tags = meta.get("tags", [])
+    hashtags = meta.get("hashtags", {})
+    captions = meta.get("captions", {})
+    yt_tags = ", ".join(tags)
+    tt = captions.get("tiktok", "")
+    ig = captions.get("instagram", "")
 
     warn = ""
     warn += _warn("YouTube title", len(title), LIMITS["youtube_title"])
     warn += _warn("YouTube description", len(description), LIMITS["youtube_description"])
     warn += _warn("YouTube tags", len(yt_tags), LIMITS["youtube_tags_total"])
-    warn += _warn("Instagram caption", len(ig_caption), LIMITS["caption"])
-    warn += _warn("Instagram hashtags", len(tags.get("instagram", "").split()),
+    warn += _warn("TikTok caption", len(tt), LIMITS["caption"])
+    warn += _warn("Instagram caption", len(ig), LIMITS["caption"])
+    warn += _warn("Instagram hashtags", len(hashtags.get("instagram", "").split()),
                   LIMITS["instagram_hashtags"], "tags")
-    warn += _warn("TikTok caption", len(tt_caption), LIMITS["caption"])
 
     bar = "=" * 70
     rule = lambda label: ("-- " + label + " ").ljust(70, "-")
@@ -623,8 +899,8 @@ def paste_block(meta):
         bar,
         "\n" + rule("Title"),
         title,
-        "\n" + rule("Description"),
-        description + "\n\n" + tags.get("youtube", ""),
+        "\n" + rule("Description (%d chars)" % len(description)),
+        description,
         "\n" + rule("Tags (comma separated)"),
         yt_tags,
         "\n" + rule("Visibility"),
@@ -632,13 +908,13 @@ def paste_block(meta):
         "\n" + bar,
         "TIKTOK  --  tiktok.com/upload, upload the _9x16.mp4",
         bar,
-        "\n" + rule("Caption"),
-        tt_caption,
+        "\n" + rule("Caption (%d chars)" % len(tt)),
+        tt,
         "\n" + bar,
         "INSTAGRAM  --  Reels, upload the _9x16.mp4",
         bar,
-        "\n" + rule("Caption"),
-        ig_caption,
+        "\n" + rule("Caption (%d chars)" % len(ig)),
+        ig,
     ]
     if warn:
         out += ["\n" + bar, "LENGTH WARNINGS", bar, warn.rstrip()]
@@ -872,6 +1148,11 @@ def main():
         "outputs": [
             {"file": f"{slug}_16x9.mp4", "width": 1920, "height": 1080},
             {"file": f"{slug}_9x16.mp4", "width": 1080, "height": 1920},
+            # Clean master: HD, correctly framed, nothing burnt in. The source
+            # mp4 is native NES resolution and unusable as delivery footage, so
+            # without this there was no full-size copy free of text.
+            {"file": f"{slug}_16x9_clean.mp4", "width": 1920, "height": 1080,
+             "overlays": False},
         ],
         "title": title,
         "watermark": args.watermark,
@@ -883,14 +1164,17 @@ def main():
     save_spec(spec, os.path.join(folder, "overlays.json"))
 
     written = render_spec(spec, out_dir=folder)
-    wide, tall = written[0], written[1]
+    wide, tall, clean = written[0], written[1], written[2]
 
     with open(os.path.join(folder, "narration.txt"), "w") as handle:
-        handle.write(narration(events, duration, args.game, args.players) + "\n")
+        handle.write(narration(events, duration, args.game, args.players,
+                               level=args.level) + "\n")
     with open(os.path.join(folder, "captions.txt"), "w") as handle:
         for at, text in lines:
             handle.write("%s  %s\n" % (stamp(int(at * FPS)), text))
-    meta = build_metadata(args.game, args.players, events, title, args.watermark)
+    meta = build_metadata(args.game, args.players, events, title,
+                          args.watermark, level=args.level,
+                          duration_s=duration)
     with open(os.path.join(folder, "metadata.json"), "w") as handle:
         json.dump(meta, handle, indent=2)
     with open(os.path.join(folder, "UPLOAD.txt"), "w") as handle:
@@ -905,6 +1189,7 @@ def main():
     span = ("[%d highlights, %.1fs]" % (len(segments), sum(d for _s, d in segments))
             if segments else "[full length]")
     print(f"  {os.path.basename(tall)} {span}  -> TikTok / Reels / Shorts")
+    print(f"  {os.path.basename(clean)}   <- HD, no text, for re-edits and thumbnails")
     print(f"  {os.path.basename(native)}   <- the capture everything is rendered from")
     if bk2_path:
         print(f"  {os.path.basename(bk2_path)}   <- the raw replay, a few KB")

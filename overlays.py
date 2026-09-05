@@ -380,8 +380,13 @@ def remap_captions(captions, segments):
     return out
 
 
-def build_filter(spec, width, height, src_label="[0:v]"):
-    """The full video chain: blurred fill, title, watermark, captions."""
+def build_filter(spec, width, height, src_label="[0:v]", overlays=True):
+    """The full video chain: blurred fill, then title, watermark and captions.
+
+    overlays=False stops after the fill, which is how the clean master is
+    produced: same framing and same upscale, no text burnt in. Wanted whenever
+    the footage has to be reusable -- a thumbnail, a re-edit, a different
+    caption pass, or simply a copy without a handle on it."""
     style = merge_style(spec.get("style"))
     ratio = style["char_width_ratio"]
     vertical = height > width
@@ -395,6 +400,10 @@ def build_filter(spec, width, height, src_label="[0:v]"):
     ]
 
     stage = "[v0]"
+    if not overlays:
+        parts.append("[v0]null[vout]")
+        return ";".join(parts)
+
     title = spec.get("title")
     if title:
         cfg = style["title"]
@@ -517,12 +526,15 @@ def render_spec(spec, out_dir=None, only=None, verbose=True):
         cut, vlabel, alabel = cut_filter(segments, with_audio,
                                          style["transition"],
                                          style["transition_seconds"])
-        graph = build_filter(spec, width, height, src_label=vlabel)
+        graph = build_filter(spec, width, height, src_label=vlabel,
+                             overlays=out.get("overlays", True))
         if cut:
             graph = cut + ";" + graph
         audio_map = ["-map", alabel] if alabel else []
         if verbose:
-            print("Rendering %s (%dx%d) ..." % (out["file"], width, height))
+            print("Rendering %s (%dx%d)%s ..."
+                  % (out["file"], width, height,
+                     "" if out.get("overlays", True) else "  [clean, no text]"))
         subprocess.run(
             ["ffmpeg", "-nostdin", "-y", "-i", source,
              "-filter_complex", graph, "-map", "[vout]", *audio_map,

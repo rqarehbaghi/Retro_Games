@@ -186,11 +186,24 @@ def caption_script(events, duration, game, seed=None):
     rng = random.Random(seed if seed is not None else game)
     lines = []
 
+    used = {}
+
     def pool(kind, count=None):
+        """A line not yet used for this kind, until the pool runs dry.
+
+        Plain rng.choice picks independently every time, so a long run printed
+        "peak. it is all downhill from here." three times -- which is exactly
+        what having pools was supposed to prevent."""
         options = CAPTION_LINES.get(kind)
         if not options:
             return None
-        text = rng.choice(options)
+        seen = used.setdefault(kind, set())
+        fresh = [o for o in options if o not in seen]
+        if not fresh:
+            seen.clear()
+            fresh = list(options)
+        text = rng.choice(fresh)
+        seen.add(text)
         return text.format(n=count, game=pretty_game(game))
 
     opener = pool("open")
@@ -620,8 +633,17 @@ def main():
     # Style is data now: whatever studio.json sets is merged over the
     # renderer defaults and written into overlays.json, so restyle.py can
     # change any of it later without touching code.
-    style = merge_style({k: cfg[k] for k in cfg
-                         if k in DEFAULT_STYLE or k in ("font", "title_font")})
+    # Styling comes from a "style" object plus a few scalars, NEVER from
+    # whatever happens to share a name with a style group: studio.json's
+    # top-level "watermark" is the handle text, while DEFAULT_STYLE's
+    # "watermark" is how to draw it, and letting the two meet put a string
+    # where a dict belonged.
+    style_cfg = dict(cfg.get("style", {}))
+    for key in ("font", "title_font", "char_width_ratio", "transition",
+                "transition_seconds", "blur", "crf"):
+        if key in cfg:
+            style_cfg.setdefault(key, cfg[key])
+    style = merge_style(style_cfg)
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--game", help="stable-retro game id (see list_games.py). Required unless --paste-block or --print-upload-plan.")
     parser.add_argument("--players", type=int, choices=[1, 2], default=1, help="1 = you alone. 2 = you plus an AI player, via play_human_vs_ai. (default: %(default)s)")

@@ -67,11 +67,27 @@ DEFAULT_STYLE = {
 }
 
 
+# Style group names that are ALSO content field names elsewhere. "watermark"
+# is both the handle you burn in and the group describing how to draw it, and
+# putting the string where the group belongs replaced a dict with a str -- which
+# surfaced far away as "string indices must be integers" inside build_filter.
+GROUPS = tuple(k for k, v in DEFAULT_STYLE.items() if isinstance(v, dict))
+
+
 def merge_style(user):
-    """User style over DEFAULT_STYLE, one level deep."""
+    """User style over DEFAULT_STYLE, one level deep.
+
+    Type-checked, because a group silently replaced by a scalar does not fail
+    here -- it fails much later inside the filter builder with an error that
+    says nothing about the config that caused it."""
     out = {k: (dict(v) if isinstance(v, dict) else v) for k, v in DEFAULT_STYLE.items()}
     for key, value in (user or {}).items():
-        if isinstance(value, dict) and isinstance(out.get(key), dict):
+        if key in GROUPS:
+            if not isinstance(value, dict):
+                raise ValueError(
+                    "style %r must be an object of settings, got %r. "
+                    "If you meant the watermark TEXT, that is a top-level key "
+                    "in studio.json, not a style key." % (key, value))
             out[key].update(value)
         else:
             out[key] = value

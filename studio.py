@@ -61,6 +61,8 @@ import sys
 import time
 from datetime import datetime
 
+import writer
+
 from overlays import (DEFAULT_FONT, DEFAULT_STYLE, TRANSITIONS,
                       merge_style, render_spec, save_spec)
 
@@ -999,12 +1001,28 @@ def main():
     parser.add_argument("--transition-seconds", type=float, default=0.25, help="Length of each transition in seconds. (default: %(default)s)")
     parser.add_argument("--no-captions", action="store_true", help="Turn off the timed commentary captions. They are written from the event log, so they land on the thing they are about.")
     parser.add_argument("--level", default=cfg.get("level"), help="Where in the game this run is, e.g. World 1-1. Shown after the game name in the title. Set it once as the level key in studio.json.")
+    parser.add_argument("--writer", choices=("table", "ollama"), default=cfg.get("writer", "table"), help="Who writes the captions, commentary and descriptions. 'table' uses the built-in pools, which repeat across runs. 'ollama' asks a model running on this machine to write them fresh against what actually happened, falling back to the tables if it is unreachable or returns nothing usable. (default: %(default)s)")
+    parser.add_argument("--writer-model", default=cfg.get("writer_model", writer.DEFAULT_MODEL), help="Ollama model for --writer ollama. See writer.py for what fits a 24GB card. (default: %(default)s)")
+    parser.add_argument("--writer-host", default=cfg.get("writer_host", writer.DEFAULT_HOST), help="Where Ollama is listening. (default: %(default)s)")
+    parser.add_argument("--list-writer-models", action="store_true", help="Show which Ollama models are installed, with notes on what suits a 24GB card, then exit")
     parser.add_argument("--paste-block", metavar="DIR", default=None, help="Print the copy-paste block for an already staged folder (or a metadata.json) and exit. A normal run also writes it to paste.txt.")
     parser.add_argument("--print-upload-plan", action="store_true", help="Explain what can and cannot be automated per platform, then exit")
     args = parser.parse_args()
 
     if args.print_upload_plan:
         print(UPLOAD_PLAN)
+        return
+
+    if args.list_writer_models:
+        if not writer.available(args.writer_host):
+            print(f"No Ollama server at {args.writer_host}. Start one with:  ollama serve")
+        else:
+            found = writer.installed_models(args.writer_host)
+            print("Installed:" if found else "No models pulled yet.")
+            for name in found:
+                print("  " + name)
+        print()
+        print(writer.MODEL_NOTES)
         return
 
     if args.paste_block:
@@ -1099,10 +1117,10 @@ def main():
             print("         rendering without captions; the videos are unaffected.")
             events = []
         with open(os.path.join(folder, "events.csv"), "w", newline="") as handle:
-            writer = csv.writer(handle)
-            writer.writerow(["frame", "timestamp", "kind", "detail"])
+            rows = csv.writer(handle)
+            rows.writerow(["frame", "timestamp", "kind", "detail"])
             for frame, kind, detail in events:
-                writer.writerow([frame, stamp(frame), kind, detail])
+                rows.writerow([frame, stamp(frame), kind, detail])
 
     duration = 0.0
     try:
@@ -1120,7 +1138,31 @@ def main():
                                       lead=(args.clip_lead if args.clip_lead >= 0 else None))
 
     title = args.title or auto_title(args.game, args.level)
-    lines = [] if args.no_captions else caption_script(events, duration, args.game)
+
+    # A model, when one is asked for and reachable; the tables otherwise. Every
+    # writer entry point returns None on any failure, so an unreachable model
+    # costs a bit of variety and never the run.
+    ai = None
+    if args.writer == "ollama":
+        if not writer.available(args.writer_host):
+            print(f"WARNING: no Ollama at {args.writer_host} -- using the built-in tables.")
+            print( "         start one with 'ollama serve', or drop --writer ollama.")
+        else:
+            print(f"Writing with {args.writer_model} ...")
+            ai = dict(model=args.writer_model, host=args.writer_host)
+
+    ctx = dict(game=pretty_game(args.game), level=args.level, duration_s=duration,
+               players=args.players, events=events, fps=FPS)
+
+    lines = []
+    if not args.no_captions:
+        written_caps = writer.captions(**ctx, **ai) if ai else None
+        if written_caps:
+            lines = [(c["at"], c["text"]) for c in written_caps]
+        else:
+            if ai:
+                print("  (captions: falling back to the tables)")
+            lines = caption_script(events, duration, args.game)
     if not args.title:
         print("Title: %s" % title)
     if lines:
@@ -1167,14 +1209,36 @@ def main():
     wide, tall, clean = written[0], written[1], written[2]
 
     with open(os.path.join(folder, "narration.txt"), "w") as handle:
-        handle.write(narration(events, duration, args.game, args.players,
-                               level=args.level) + "\n")
+        written_narr = writer.narration(**ctx, **ai) if ai else None
+        if written_narr:
+            handle.write("# Commentary for %s%s, written by %s.\n"
+                         % (pretty_game(args.game),
+                            ", " + args.level if args.level else "",
+                            args.writer_model))
+            handle.write("# Timestamps are when each line should START.\n\n")
+            for item in written_narr:
+                handle.write("[%s] %s\n"
+                             % (stamp(int(item["at"] * FPS)), item["text"]))
+        else:
+            if ai:
+                print("  (narration: falling back to the tables)")
+            handle.write(narration(events, duration, args.game, args.players,
+                                   level=args.level) + "\n")
     with open(os.path.join(folder, "captions.txt"), "w") as handle:
         for at, text in lines:
             handle.write("%s  %s\n" % (stamp(int(at * FPS)), text))
     meta = build_metadata(args.game, args.players, events, title,
                           args.watermark, level=args.level,
                           duration_s=duration)
+    written_copy = writer.copy(**ctx, watermark=args.watermark, **ai) if ai else None
+    if written_copy:
+        meta["description"] = written_copy["description"]
+        meta["tags"] = written_copy["tags"] or meta["tags"]
+        meta["captions"] = {"tiktok": written_copy["tiktok"],
+                            "instagram": written_copy["instagram"]}
+        meta["written_by"] = args.writer_model
+    elif ai:
+        print("  (descriptions: falling back to the tables)")
     with open(os.path.join(folder, "metadata.json"), "w") as handle:
         json.dump(meta, handle, indent=2)
     with open(os.path.join(folder, "UPLOAD.txt"), "w") as handle:

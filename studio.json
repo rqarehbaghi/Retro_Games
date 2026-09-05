@@ -1,10 +1,14 @@
 {
   "_note": "Per-channel defaults for studio.py. Content keys are top level; everything about how it LOOKS goes under 'style'. Command-line flags still override.",
-  "_style": "size_div is a DIVISOR of the frame width, so a bigger number means smaller text. case: sentence|upper|lower|none. Depth comes from border + shadow; box draws a solid plate instead and is off. Colours take ffmpeg syntax with alpha, e.g. black@0.75 or 0x1a1a2e@0.6. Anything here can also be overridden per caption in a staged overlays.json.",
-  "_fonts": "Press Start 2P is fixed-cell at about one em per character, so caption LENGTH decides the rendered size more than size_div does -- keep lines near 30 characters. Run list_fonts.py to see every installed face drawn with your own text. If a path here goes missing the run warns and falls back to DejaVu rather than stopping.",
+  "_writer": "'table' uses the built-in phrase pools, which repeat across runs. 'ollama' asks a model on this machine to write the captions, commentary and descriptions fresh against what actually happened, and falls back to the tables if it is unreachable or returns nothing usable. Run 'python studio.py --list-writer-models' for what is installed and what fits a 24GB card.",
+  "_style": "size_div divides the SHORT edge of the frame, so one setting renders the same size in both outputs and a bigger number means smaller text. case: sentence|upper|lower|none. Depth is border + shadow; box draws a solid plate instead and is off. Anything here can also be overridden per caption in a staged overlays.json.",
+  "_fonts": "Press Start 2P is fixed-cell at about one em per character, so caption LENGTH decides the rendered size more than size_div does. Captions wrap to three lines, so keep them under about 70 characters. Run list_fonts.py to see every installed face drawn with your own text.",
   "watermark": "@PlayerTwoIsABot",
   "level": "World 1-1",
   "short_seconds": 0,
+  "writer": "table",
+  "writer_model": "qwen3:30b-a3b",
+  "writer_host": "http://localhost:11434",
   "style": {
     "font": "/home/reza/.local/share/fonts/PressStart2P-Regular.ttf",
     "title_font": "/home/reza/.local/share/fonts/PressStart2P-Regular.ttf",

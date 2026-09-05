@@ -23,8 +23,16 @@ decoding: passing a JSON schema as `format` restricts the sampler to tokens
 that can legally continue a valid document, so a small model cannot wander off
 and produce prose where a list was wanted.
 
+    sudo apt-get install -y zstd     # the installer unpacks with it and
+                                     # stops with an error if it is missing
     curl -fsSL https://ollama.com/install.sh | sh
-    ollama pull qwen3:30b-a3b        # see MODEL_NOTES below
+    ollama pull qwen3:30b-a3b        # see MODEL_NOTES below; ~18GB download
+
+On WSL2, systemd is often not running, so the installer's service never
+starts and nothing is listening. Run `ollama serve` in its own terminal.
+`ollama ps` then says whether a loaded model is on the GPU or has fallen back
+to CPU -- on CPU a 30B model is far too slow to be worth waiting for, and
+studio.py will simply appear to hang rather than fail.
 
 The model gets the real event timeline -- the frame and kind of every death,
 power-up, coin and level clear -- so it writes about what happened rather than

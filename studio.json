@@ -1,8 +1,16 @@
 {
-  "_note": "Per-channel defaults for studio.py, so the handle and house style are set once here instead of retyped on every run. Command-line flags still override.",
-  "_fonts": "font = captions and watermark, title_font = the title. Keep a proportional face for captions: a fixed-cell pixel face such as Press Start 2P is about one em per character, so caption lines get shrunk hard to fit. char_width_ratio is only consulted when Pillow is missing and text cannot be measured -- set it to 1.0 if you point font at a pixel face and have no Pillow.",
+  "_note": "Per-channel defaults for studio.py. Content keys are top level; everything about how it LOOKS goes under 'style'. Command-line flags still override.",
+  "_style": "size_div is a DIVISOR of the frame width, so a bigger number means smaller text. case: sentence|upper|lower|none. box draws a shaded plate behind the text; box_color takes ffmpeg colour syntax with alpha, e.g. black@0.5 or 0x1a1a2e@0.75. Anything here can also be overridden per caption in a staged overlays.json.",
+  "_fonts": "Run list_fonts.py to see every font on this machine drawn with your own caption text. Keep a proportional face for captions: a fixed-cell pixel face such as Press Start 2P is about one em per character, so caption lines get shrunk hard to fit.",
   "watermark": "@PlayerTwoIsABot",
   "level": "World 1-1",
-  "transition": "fade",
-  "short_seconds": 0
+  "short_seconds": 0,
+  "style": {
+    "transition": "fade",
+    "caption": {
+      "case": "sentence",
+      "box": false,
+      "box_color": "black@0.5"
+    }
+  }
 }

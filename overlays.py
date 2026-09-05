@@ -42,27 +42,46 @@ DEFAULT_STYLE = {
     "transition_seconds": 0.25,
     "blur": 20,
     "crf": 18,
+    # size_div is a DIVISOR of the frame width, so a LARGER number means
+    # SMALLER text. These are 1.25x the previous values, i.e. 20% smaller.
     "title": {
-        "size_div": 40,          # font size = frame width / size_div
+        "size_div": 50,
         "color": "white@0.92",
         "border_color": "black@0.9",
         "y_frac": 0.045,
+        "case": "sentence",
+        "box": False,
+        "box_color": "black@0.5",
+        "box_pad": 12,
     },
     "caption": {
-        "size_div": 30,
+        "size_div": 37,
         "color": "white",
         "border_color": "black@0.92",
         "shadow": True,
         "hold": 2.6,
         "y_frac_vertical": 0.80,   # into the blurred band, clear of the game
         "y_frac_wide": HUD_TOP - 0.08,   # lower third, above the status bar
+        # "sentence" capitalises the first letter of each sentence; "upper",
+        # "lower" and "none" are the alternatives.
+        "case": "sentence",
+        # A shaded plate behind the text, off by default because the outline
+        # already keeps it readable and a box covers a rectangle of the frame
+        # for as long as the line is up. Turn it on for a heavier look.
+        "box": False,
+        "box_color": "black@0.5",
+        "box_pad": 14,
     },
     "watermark": {
-        "size_div": 55,
+        "size_div": 69,
         "color": "white@0.6",
         "border_color": "black@0.7",
         "y_frac_vertical": 0.925,
         "y_frac_wide": 0.94,
+        "case": "none",
+        "box": False,
+        "box_color": "black@0.35",
+        "box_pad": 8,
     },
 }
 
@@ -134,8 +153,29 @@ def fit_size(text, font_path, size, max_width, ratio=CHAR_WIDTH_RATIO, floor=14)
     return size
 
 
+def apply_case(text, mode):
+    """Sentence case by default: the pools are written lowercase because that
+    is how the voice reads while writing them, but all-lowercase on screen
+    looks like a mistake rather than a style."""
+    if mode == "upper":
+        return text.upper()
+    if mode == "lower":
+        return text.lower()
+    if mode != "sentence":
+        return text
+    out, capitalise = [], True
+    for ch in text:
+        out.append(ch.upper() if capitalise and ch.isalpha() else ch)
+        if ch.isalpha() or ch.isdigit():
+            capitalise = False
+        elif ch in ".!?":
+            capitalise = True
+    return "".join(out)
+
+
 def draw(label, out_label, text, font, size, y, color, border_color,
-         border_w=None, shadow=False, x="(w-text_w)/2", enable=None):
+         border_w=None, shadow=False, x="(w-text_w)/2", enable=None,
+         box=False, box_color="black@0.5", box_pad=12):
     """One drawtext stage.
 
     Outlined rather than boxed: a filled box takes a rectangle of the frame for
@@ -151,6 +191,8 @@ def draw(label, out_label, text, font, size, y, color, border_color,
         "x=%s" % x,
         "y=%d" % y,
     ]
+    if box:
+        parts += ["box=1", "boxcolor=%s" % box_color, "boxborderw=%d" % box_pad]
     if shadow:
         parts += ["shadowcolor=black@0.55", "shadowx=2", "shadowy=2"]
     if enable:
@@ -270,11 +312,14 @@ def build_filter(spec, width, height, src_label="[0:v]"):
     title = spec.get("title")
     if title:
         cfg = style["title"]
-        size = fit_size(title, style["title_font"],
+        text = apply_case(title, cfg.get("case", "none"))
+        size = fit_size(text, style["title_font"],
                         max(18, width // cfg["size_div"]), int(width * 0.9), ratio)
-        parts.append(draw(stage, "[v1]", title, style["title_font"], size,
+        parts.append(draw(stage, "[v1]", text, style["title_font"], size,
                           int(height * cfg["y_frac"]), cfg["color"],
-                          cfg["border_color"]))
+                          cfg["border_color"], box=cfg.get("box", False),
+                          box_color=cfg.get("box_color", "black@0.5"),
+                          box_pad=cfg.get("box_pad", 12)))
         stage = "[v1]"
 
     mark = spec.get("watermark")
@@ -285,9 +330,12 @@ def build_filter(spec, width, height, src_label="[0:v]"):
         # pillarbox on wide, where centring would put it on the status bar.
         x = "(w-text_w)/2" if vertical else str(int(width * 0.02))
         y = cfg["y_frac_vertical"] if vertical else cfg["y_frac_wide"]
-        parts.append(draw(stage, "[v2]", mark, style["font"], size,
-                          int(height * y), cfg["color"], cfg["border_color"],
-                          border_w=2, x=x))
+        parts.append(draw(stage, "[v2]", apply_case(mark, cfg.get("case", "none")),
+                          style["font"], size, int(height * y), cfg["color"],
+                          cfg["border_color"], border_w=2, x=x,
+                          box=cfg.get("box", False),
+                          box_color=cfg.get("box_color", "black@0.35"),
+                          box_pad=cfg.get("box_pad", 8)))
         stage = "[v2]"
 
     caps = remap_captions(spec.get("captions", []), spec.get("segments"))
@@ -304,13 +352,17 @@ def build_filter(spec, width, height, src_label="[0:v]"):
     for i, cap in enumerate(caps):
         nxt = "[vout]" if i == len(caps) - 1 else "[cap%d]" % i
         font = cap.get("font", style["font"])
-        size = cap.get("size") or max(20, width // cfg["size_div"])
-        size = fit_size(cap["text"], font, size, int(width * 0.92), ratio)
+        text = apply_case(cap["text"], cap.get("case", cfg.get("case", "none")))
+        size = cap.get("size") or max(18, width // cfg["size_div"])
+        size = fit_size(text, font, size, int(width * 0.92), ratio)
         hold = cap.get("hold", cfg["hold"])
-        parts.append(draw(stage, nxt, cap["text"], font, size,
+        parts.append(draw(stage, nxt, text, font, size,
                           cap.get("y", y), cap.get("color", cfg["color"]),
                           cap.get("border_color", cfg["border_color"]),
                           shadow=cfg.get("shadow", True),
+                          box=cap.get("box", cfg.get("box", False)),
+                          box_color=cap.get("box_color", cfg.get("box_color", "black@0.5")),
+                          box_pad=cap.get("box_pad", cfg.get("box_pad", 14)),
                           enable="between(t,%.2f,%.2f)" % (cap["at"], cap["at"] + hold)))
         stage = nxt
     return ";".join(parts)

@@ -170,6 +170,9 @@ CAPTION_LINES = {
     "clear": ["cleared it. the level went easy on him.",
               "finished. the bar was on the floor.",
               "level complete. nobody clapped."],
+    "pipe": ["down a pipe, away from his problems",
+             "hiding in a pipe. relatable.",
+             "found the one place with no goombas"],
 }
 
 CAPTION_HOLD = 2.6        # seconds each line stays up
@@ -245,7 +248,8 @@ def caption_script(events, duration, game, seed=None):
 # payoff, a power-up is the setup, a hit is at least dramatic; coins are common
 # enough that they should only break ties.
 EVENT_WEIGHTS = {"clear": 5.0, "1up": 5.0, "death": 4.5, "powerup": 4.0,
-                 "powerdown": 2.0, "shrink": 2.5, "coin": 1.0, "score": 0.25}
+                 "powerdown": 2.0, "shrink": 2.5, "pipe": 2.0, "coin": 1.0,
+                 "score": 0.25}
 
 # How far BEFORE the logged frame each kind of moment actually starts.
 #
@@ -256,7 +260,7 @@ EVENT_WEIGHTS = {"clear": 5.0, "1up": 5.0, "death": 4.5, "powerup": 4.0,
 # caused it. A 1.5s lead there starts the clip on the aftermath and misses
 # the kill entirely, which is exactly what it looked like. Coins are the other
 # extreme: the counter moves on the frame you touch them.
-EVENT_LEAD = {"death": 4.0, "clear": 4.0, "powerdown": 2.5, "shrink": 2.5, "1up": 2.0,
+EVENT_LEAD = {"death": 4.0, "clear": 4.0, "powerdown": 2.5, "shrink": 2.5, "pipe": 1.5, "1up": 2.0,
               "powerup": 1.5, "coin": 1.0, "score": 1.0}
 
 
@@ -370,6 +374,34 @@ def filter_power_noise(events, total_frames=None):
     return kept
 
 
+# A pipe and a level ending look identical in position: both collapse it by
+# more than TRANSITION_DROP with no life lost. The LEVEL TIMER separates them.
+# It only ever counts down during play, and is reset UP when a new level
+# starts, so an increase shortly after a collapse means a new level began --
+# i.e. the previous one really ended. Going down a pipe keeps the same timer
+# running down, because it is the same level.
+CLEAR_CONFIRM_WINDOW = 600        # frames to wait for the timer to reset
+END_OF_TAPE_WINDOW = 600          # a collapse this close to the end
+
+
+def classify_collapses(collapses, timeline, total_frames):
+    """Turn position collapses into 'clear' or 'pipe' events.
+
+    Without this every pipe in the level was captioned as a level completion,
+    because nothing at the moment of the collapse distinguishes them."""
+    out = []
+    for frame in collapses:
+        window = [t for t in timeline[frame:frame + CLEAR_CONFIRM_WINDOW] if t is not None]
+        before = next((t for t in reversed(timeline[:frame]) if t is not None), None)
+        reset = before is not None and any(t > before + 5 for t in window)
+        ended = total_frames - frame <= END_OF_TAPE_WINDOW
+        if reset or (ended and not window):
+            out.append((frame, "clear", "level ended"))
+        else:
+            out.append((frame, "pipe", "went down a pipe"))
+    return out
+
+
 def read_events(bk2_path, game):
     """Replay the recording and note what happened, so narration and titles
     describe the real run instead of being generic. Degrades to an empty
@@ -402,9 +434,13 @@ def read_events(bk2_path, game):
         prog_key = "hpos"
         prog_hi = prog[1]
 
+    timer_addr = defaults.get("timer_address")
+
     events, frame = [], 0
     prev = {}
     last_pos = None
+    collapses = []
+    timeline = []
     while movie.step():
         keys = [movie.get_key(i, p) for p in range(movie.players)
                 for i in range(env.num_buttons)]
@@ -420,9 +456,22 @@ def read_events(bk2_path, game):
             # movement -- the page byte absorbs hpos wraps, so ordinary travel
             # never produces one. Same test RewardShaper uses.
             if position - last_pos < -TRANSITION_DROP:
-                events.append((frame, "clear", "level ended"))
+                # A CANDIDATE only. Going down a pipe collapses position in
+                # exactly the same way a level ending does, which is why every
+                # pipe was captioned "level complete". Confirmed below against
+                # the timer, which is the one thing that tells them apart.
+                collapses.append(frame)
         if position is not None:
             last_pos = position
+        if timer_addr is not None:
+            try:
+                timeline.append(int(ram[timer_addr]) * 100
+                                + int(ram[timer_addr + 1]) * 10
+                                + int(ram[timer_addr + 2]))
+            except Exception:
+                timeline.append(None)
+        else:
+            timeline.append(None)
 
         current = {
             "score": info.get("score"),
@@ -458,6 +507,8 @@ def read_events(bk2_path, game):
         if term or trunc:
             break
     env.close()
+    events.extend(classify_collapses(collapses, timeline, frame))
+    events.sort(key=lambda e: e[0])
     return filter_power_noise(events, total_frames=frame)
 
 
@@ -473,7 +524,8 @@ def narration(events, duration_s, game, players):
     for _frame, kind, _detail in events:
         counts[kind] = counts.get(kind, 0) + 1
     for frame, kind, detail in events:
-        if kind in ("death", "powerup", "powerdown", "shrink", "1up", "clear"):
+        if kind in ("death", "powerup", "powerdown", "shrink", "1up",
+                    "clear", "pipe"):
             lines.append(f"[{stamp(frame)}] {detail}")
     tail = []
     def plural(n, word):

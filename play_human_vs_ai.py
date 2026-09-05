@@ -209,9 +209,18 @@ def play_match(game, state, model_path, record_dir, scale=3, fps_cap=60, mode="v
             # -- the latter produces impossible inputs like LEFT+RIGHT.
             p2_action = discretize_ai_action(np.random.randint(len(AI_COMBOS)), buttons)
 
-        # Combine actions based on player count
+        # Combine actions based on player count.
+        #
+        # stable-retro wants ONE FLAT array of num_buttons * players, laid out
+        # player-major (all of P1's buttons, then all of P2's) -- not a 2-D
+        # (players, buttons) array. Stacking produced shape (2, 9), and
+        # retro_env.action_to_array then sliced a row where it expected a
+        # single button, so int(ap[i]) got a 9-element array:
+        #   TypeError: only 0-dimensional arrays can be converted to Python scalars
+        # The same flat player-major layout is what movie.get_key uses when a
+        # 2-player recording is replayed (see studio.read_events).
         if num_players == 2:
-            joint_action = np.array([p1_action, p2_action])
+            joint_action = np.concatenate([p1_action, p2_action])
         else:
             joint_action = p1_action
 

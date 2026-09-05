@@ -53,6 +53,7 @@ import csv
 import glob
 import json
 import os
+import random
 import re
 import shutil
 import subprocess
@@ -82,7 +83,8 @@ def esc(text):
     return out.replace("'", "’")
 
 
-def fill_filter(width, height, title, watermark, blur=20, src_label="[0:v]"):
+def fill_filter(width, height, title, watermark, blur=20, src_label="[0:v]",
+                captions=None):
     """Blurred-fill letterbox: a zoomed, blurred copy of the frame behind the
     sharp nearest-neighbour gameplay, so the canvas is full at any aspect."""
     title_size = max(28, width // 22)
@@ -110,17 +112,23 @@ def fill_filter(width, height, title, watermark, blur=20, src_label="[0:v]"):
             f"y=h-{height // 14}:box=1:boxcolor=black@0.35:boxborderw=8[vout]"
         )
     else:
-        parts.append("[v1]null[vout]")
+        parts.append("[v1]null[v2]")
+    if watermark:
+        parts[-1] = parts[-1].replace("[vout]", "[v2]")
+    parts.append(caption_filter(captions or [], width, height,
+                                label="[v2]", out_label="[vout]"))
     return ";".join(parts)
 
 
 def encode(src_mp4, out_path, width, height, title, watermark, crf=18,
-           segments=None, with_audio=True, transition="fade", trans_s=0.25):
+           segments=None, with_audio=True, transition="fade", trans_s=0.25,
+           captions=None):
     """`segments` cuts the source down to those (start, duration) windows and
     joins them, in the same pass that scales and captions -- so a highlight
     reel costs one encode, not a cut pass plus a join pass."""
     cut, vlabel, alabel = cut_filter(segments, with_audio, transition, trans_s)
-    graph = fill_filter(width, height, title, watermark, src_label=vlabel)
+    graph = fill_filter(width, height, title, watermark, src_label=vlabel,
+                        captions=remap_captions(captions or [], segments))
     if cut:
         graph = cut + ";" + graph
     audio_map = ["-map", alabel] if alabel else []
@@ -169,41 +177,138 @@ def pretty_game(game_id):
     return re.sub(r"\s+", " ", name).strip()
 
 
-def auto_title(game, events):
-    """A headline describing what actually happened in this run.
+def auto_title(game, level=None):
+    """The label to burn across the top: what game, and where in it.
 
-    --title used to be effectively required: leaving it out burnt the raw game
-    id across the video. The event log already knows whether the run was
-    cleared, how many deaths it cost and what was collected, which is exactly
-    what a title should say, so there is nothing to type."""
+    This used to append a statistic -- "14 coin run", "died 3 times" -- which
+    is a scoreboard, not a title. Nobody scrolling needs the tally, and it
+    dates the clip to one run. Game and level is what a viewer actually wants
+    to know."""
     name = pretty_game(game)
+    return "%s - %s" % (name, level) if level else name
+
+
+# Lines timed to what actually happened, because the event log knows exactly
+# when it happened. A handle burnt in the corner is branding, not commentary --
+# these are the commentary. Pools rather than single strings so a run with four
+# deaths does not print the same sentence four times.
+#
+# Voice is dry and self-deprecating: this is footage of the author playing,
+# and a caption that boasts about a mushroom reads badly. {n} is filled with
+# the running count of that event where a pool uses it.
+CAPTION_LINES = {
+    # No {game} here: the title burnt across the top already says which game
+    # it is, and repeating it wastes the one line that has to earn the watch.
+    "open": ["no save states. no edits.",
+             "one take, mistakes included",
+             "how hard can it be"],
+    "death": ["well. that happened.",
+              "i saw it coming and walked into it anyway",
+              "that one is entirely on me",
+              "goomba 1, me 0",
+              "death {n}. we are learning nothing."],
+    "powerup": ["big mario era begins",
+                "finally, a mushroom",
+                "powerful. briefly.",
+                "upgrade acquired"],
+    "powerdown": ["and it is gone",
+                  "back to small mario",
+                  "easy come, easy go"],
+    "1up": ["an extra life, for the collection",
+            "1-up. now i can afford to die again."],
+    "coin": ["{n} coins. still broke.",
+             "{n} coins and counting",
+             "collecting currency i cannot spend"],
+    "clear": ["cleared it",
+              "level complete, barely",
+              "that will do"],
+}
+
+CAPTION_HOLD = 2.6        # seconds each line stays up
+CAPTION_GAP = 5.0         # minimum seconds between lines, so they do not crowd
+COIN_EVERY = 10           # only caption coins at milestones
+
+
+def caption_script(events, duration, game, seed=None):
+    """(start_seconds, text) pairs for the whole run.
+
+    Deliberately sparse. A caption on every coin would be a wall of text over
+    the gameplay, so coins only speak at milestones and nothing lands within
+    CAPTION_GAP of the previous line."""
+    rng = random.Random(seed if seed is not None else game)
+    lines = []
+
+    def pool(kind, count=None):
+        options = CAPTION_LINES.get(kind)
+        if not options:
+            return None
+        text = rng.choice(options)
+        return text.format(n=count, game=pretty_game(game))
+
+    opener = pool("open")
+    if opener:
+        lines.append((0.6, opener))
+
     counts = {}
-    for _frame, kind, _detail in events:
+    for frame, kind, _detail in events:
         counts[kind] = counts.get(kind, 0) + 1
-    deaths = counts.get("death", 0)
-    coins = counts.get("coin", 0)
-    powerups = counts.get("powerup", 0)
-    extra_lives = counts.get("1up", 0)
-    cleared = counts.get("clear", 0)
+        if kind == "coin" and counts[kind] % COIN_EVERY:
+            continue
+        if kind == "score":
+            continue
+        text = pool(kind, counts[kind])
+        if not text:
+            continue
+        # Events are logged when the value changes, which for a death is after
+        # the animation -- so the line lands as the punchline rather than
+        # spoiling it. No extra offset needed.
+        at = frame / FPS
+        if at + CAPTION_HOLD > duration:
+            continue
+        if lines and at - lines[-1][0] < CAPTION_GAP:
+            continue
+        lines.append((at, text))
+    return lines
 
-    def times(n):
-        return "once" if n == 1 else "%d times" % n
 
-    if cleared and not deaths:
-        return "%s - cleared without dying" % name
-    if cleared:
-        return "%s - cleared it, died %s" % (name, times(deaths))
-    if extra_lives:
-        return "%s - found an extra life" % name
-    if deaths >= 3:
-        return "%s - died %s" % (name, times(deaths))
-    if coins >= 10:
-        return "%s - %d coin run" % (name, coins)
-    if powerups:
-        return "%s - power-up run" % name
-    if deaths:
-        return "%s - died %s" % (name, times(deaths))
-    return name
+def remap_captions(lines, segments):
+    """Move caption times onto the cut timeline.
+
+    Caption times are in SOURCE seconds. When the short is a highlight cut the
+    output timeline is different, so a line would otherwise appear over the
+    wrong moment. Lines whose event was cut out are dropped."""
+    if not segments:
+        return lines
+    out = []
+    for at, text in lines:
+        elapsed = 0.0
+        for seg_start, seg_dur in segments:
+            if seg_start <= at < seg_start + seg_dur:
+                out.append((elapsed + (at - seg_start), text))
+                break
+            elapsed += seg_dur
+    return out
+
+
+def caption_filter(lines, width, height, label="[vin]", out_label="[vcap]"):
+    """drawtext chain that shows each line for CAPTION_HOLD seconds."""
+    if not lines:
+        return "%snull%s" % (label, out_label)
+    # Larger than the title (width // 22): the title is a label you read once,
+    # the captions are what the viewer is meant to follow.
+    size = max(30, width // 20)
+    chains = []
+    current = label
+    for i, (at, text) in enumerate(lines):
+        nxt = out_label if i == len(lines) - 1 else "[cap%d]" % i
+        chains.append(
+            "%sdrawtext=fontfile=%s:text='%s':fontcolor=white:fontsize=%d:"
+            "x=(w-text_w)/2:y=h-%d:box=1:boxcolor=black@0.6:boxborderw=16:"
+            "enable='between(t,%.2f,%.2f)'%s"
+            % (current, FONT, esc(text), size, int(height * 0.22), at,
+               at + CAPTION_HOLD, nxt))
+        current = nxt
+    return ";".join(chains)
 
 
 # Weighted so the cut lands on what is worth watching. A clear or a 1-Up is the
@@ -641,6 +746,8 @@ def main():
     parser.add_argument("--clip-lead", type=float, default=-1.0, help="Seconds of run-up kept before each event. The default of -1 means per-event: a death starts 4s early because the lives counter only moves at the END of the death sequence, while a coin starts 1s early. Any value >= 0 overrides that for every kind. (default: %(default)s)")
     parser.add_argument("--transition", choices=TRANSITIONS, default=cfg.get("transition", "fade"), help="How cuts are joined in the short. fade goes through black and is the safest; dissolve and pixelize cross-fade the pair and cost overlap at every join; none hard-cuts. (default: %(default)s)")
     parser.add_argument("--transition-seconds", type=float, default=0.25, help="Length of each transition in seconds. (default: %(default)s)")
+    parser.add_argument("--no-captions", action="store_true", help="Turn off the timed commentary captions. They are written from the event log, so they land on the thing they are about.")
+    parser.add_argument("--level", default=cfg.get("level"), help="Where in the game this run is, e.g. World 1-1. Shown after the game name in the title. Set it once as the level key in studio.json.")
     parser.add_argument("--paste-block", metavar="DIR", default=None, help="Print the copy-paste block for an already staged folder (or a metadata.json) and exit. A normal run also writes it to paste.txt.")
     parser.add_argument("--print-upload-plan", action="store_true", help="Explain what can and cannot be automated per platform, then exit")
     args = parser.parse_args()
@@ -727,13 +834,19 @@ def main():
                                       lead=(args.clip_lead if args.clip_lead >= 0 else None))
     with_audio = has_audio_stream(native)
 
-    title = args.title or auto_title(args.game, events)
+    title = args.title or auto_title(args.game, args.level)
+    lines = [] if args.no_captions else caption_script(events, duration, args.game)
     if not args.title:
         print("Title: %s" % title)
+    if lines:
+        print("Captions (%d):" % len(lines))
+        for at, text in lines:
+            print("    %s  %s" % (stamp(int(at * FPS)), text))
 
     print("\nEncoding 1920x1080 landscape master ...")
     wide = encode(native, os.path.join(folder, f"{slug}_16x9.mp4"),
-                  1920, 1080, title, args.watermark, with_audio=with_audio)
+                  1920, 1080, title, args.watermark, with_audio=with_audio,
+                  captions=lines)
     if segments:
         kept = sum(d for _s, d in segments)
         print("Encoding 1080x1920 short: %d highlight%s, %.1fs of %.1fs ..."
@@ -747,10 +860,14 @@ def main():
     tall = encode(native, os.path.join(folder, f"{slug}_9x16.mp4"),
                   1080, 1920, title, args.watermark,
                   segments=segments, with_audio=with_audio,
-                  transition=args.transition, trans_s=args.transition_seconds)
+                  transition=args.transition, trans_s=args.transition_seconds,
+                  captions=lines)
 
     with open(os.path.join(folder, "narration.txt"), "w") as handle:
         handle.write(narration(events, duration, args.game, args.players) + "\n")
+    with open(os.path.join(folder, "captions.txt"), "w") as handle:
+        for at, text in lines:
+            handle.write("%s  %s\n" % (stamp(int(at * FPS)), text))
     meta = build_metadata(args.game, args.players, events, title, args.watermark)
     with open(os.path.join(folder, "metadata.json"), "w") as handle:
         json.dump(meta, handle, indent=2)

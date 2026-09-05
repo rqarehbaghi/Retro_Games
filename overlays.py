@@ -42,10 +42,11 @@ DEFAULT_STYLE = {
     "transition_seconds": 0.25,
     "blur": 20,
     "crf": 18,
-    # size_div is a DIVISOR of the frame width, so a LARGER number means
-    # SMALLER text. These are 1.25x the previous values, i.e. 20% smaller.
+    # size_div divides the SHORT EDGE of the frame (see text_size), so one
+    # setting renders the same size in both outputs. A LARGER number still
+    # means SMALLER text.
     "title": {
-        "size_div": 50,
+        "size_div": 36,
         "color": "white@0.92",
         "border_color": "black@0.9",
         "y_frac": 0.045,
@@ -59,7 +60,7 @@ DEFAULT_STYLE = {
         "box_pad": 12,
     },
     "caption": {
-        "size_div": 37,
+        "size_div": 26,
         "color": "white",
         "border_color": "black@0.92",
         "shadow": True,
@@ -82,7 +83,7 @@ DEFAULT_STYLE = {
         "box_pad": 14,
     },
     "watermark": {
-        "size_div": 69,
+        "size_div": 52,
         "color": "white@0.6",
         "border_color": "black@0.7",
         "y_frac_vertical": 0.925,
@@ -163,6 +164,24 @@ def text_width(text, font_path, size, ratio=CHAR_WIDTH_RATIO):
         return ImageFont.truetype(font_path, size).getlength(text)
     except Exception:
         return len(text) * size * ratio
+
+
+def text_size(cfg, width, height, floor=14):
+    """Base font size for a text role on a frame this shape.
+
+    Sized off the SHORT EDGE, not the width. For a 9:16 frame the short edge is
+    the width, which is what a line of text spans; for 16:9 it is the height,
+    which is what the text is read against. Dividing the width in both cases
+    made one setting render 1080/37 = 29px on the vertical and 1920/37 = 51px
+    on the landscape -- the same number producing text 1.8x bigger in one
+    output than the other, which is exactly what it looked like.
+
+    size_div_vertical and size_div_wide override size_div per shape if the two
+    really should differ."""
+    basis = min(width, height)
+    key = "size_div_wide" if width > height else "size_div_vertical"
+    div = cfg.get(key) or cfg["size_div"]
+    return max(floor, int(basis / div))
 
 
 def fit_size(text, font_path, size, max_width, ratio=CHAR_WIDTH_RATIO, floor=14):
@@ -340,7 +359,8 @@ def build_filter(spec, width, height, src_label="[0:v]"):
         cfg = style["title"]
         text = apply_case(title, cfg.get("case", "none"))
         size = fit_size(text, style["title_font"],
-                        max(18, width // cfg["size_div"]), int(width * 0.9), ratio)
+                        text_size(cfg, width, height, floor=16),
+                        int(width * 0.9), ratio)
         parts.append(draw(stage, "[v1]", text, style["title_font"], size,
                           int(height * cfg["y_frac"]), cfg["color"],
                           cfg["border_color"], box=cfg.get("box", False),
@@ -355,7 +375,7 @@ def build_filter(spec, width, height, src_label="[0:v]"):
     mark = spec.get("watermark")
     if mark:
         cfg = style["watermark"]
-        size = max(14, width // cfg["size_div"])
+        size = text_size(cfg, width, height, floor=12)
         # Centred in the bottom band on vertical; tucked into the blurred
         # pillarbox on wide, where centring would put it on the status bar.
         x = "(w-text_w)/2" if vertical else str(int(width * 0.02))
@@ -387,7 +407,7 @@ def build_filter(spec, width, height, src_label="[0:v]"):
         nxt = "[vout]" if i == len(caps) - 1 else "[cap%d]" % i
         font = cap.get("font", style["font"])
         text = apply_case(cap["text"], cap.get("case", cfg.get("case", "none")))
-        size = cap.get("size") or max(18, width // cfg["size_div"])
+        size = cap.get("size") or text_size(cfg, width, height, floor=16)
         size = fit_size(text, font, size, int(width * 0.92), ratio)
         hold = cap.get("hold", cfg["hold"])
         parts.append(draw(stage, nxt, text, font, size,

@@ -704,7 +704,7 @@ def main():
     parser.add_argument("--state", default=None)
     parser.add_argument("--title", default=None, help="Overlay text and metadata title. Left out, one is written from what happened in the run -- cleared without dying, died twice, 14 coin run -- so nothing needs typing.")
     parser.add_argument("--watermark", default=cfg.get("watermark", ""), help="Handle burnt into the bottom of both videos. Set it once as \"watermark\" in studio.json instead of passing it every run. (default: from studio.json)")
-    parser.add_argument("--record-dir", default="./recordings")
+    parser.add_argument("--record-dir", default=None, help="Where the emulator writes its .bk2. Defaults to the staged folder itself, so a run produces one self-contained folder; give a path only if you want the raw captures kept separately, and the .bk2 is moved into the staged folder afterwards either way.")
     parser.add_argument("--out-dir", default="./studio_out", help="Parent for the dated review folder (default: %(default)s)")
     parser.add_argument("--from-mp4", default=None, help="Skip playing and re-cut an existing mp4 -- for redoing overlays without replaying.")
     parser.add_argument("--no-events", action="store_true", help="Skip the replay scan that builds the event timeline (faster, but narration.txt becomes generic)")
@@ -749,52 +749,55 @@ def main():
     if not shutil.which("ffmpeg"):
         sys.exit("ffmpeg is not on PATH -- see README step 1.")
 
-    # Real title is written once the events are known; this only names the folder.
-    os.makedirs(args.record_dir, exist_ok=True)
     bk2_path = None
 
+    # The staged folder is created BEFORE playing, and the emulator records
+    # straight into it, so one run produces exactly one folder holding
+    # everything: the .bk2, the capture it renders from, both finished videos
+    # and all the social collateral. Nothing is left anywhere else, and nothing
+    # is duplicated -- the .bk2 used to live in recordings/ AND be copied here.
+    slug = slugify(args.title or pretty_game(args.game))
+    folder = os.path.join(args.out_dir, f"{datetime.now():%Y%m%d-%H%M%S}_{slug}")
+    os.makedirs(folder, exist_ok=True)
+    # Only a --record-dir needs creating; the staged folder already exists.
+    record_dir = args.record_dir or folder
+    if args.record_dir:
+        os.makedirs(record_dir, exist_ok=True)
+
     if args.from_mp4:
-        native = args.from_mp4
+        # Someone else's file: copy it in rather than move it.
+        native = os.path.join(folder, f"{slug}_source.mp4")
+        shutil.copy2(args.from_mp4, native)
     else:
-        before = set(glob.glob(os.path.join(args.record_dir, "*.bk2")))
+        before = set(glob.glob(os.path.join(record_dir, "*.bk2")))
         started = time.time()
         if args.players == 1:
             from play_and_record import play_human_episode
             print(f"Starting {args.game} -- close the window when you are done.\n")
-            play_human_episode(args.game, args.state, args.record_dir)
+            play_human_episode(args.game, args.state, record_dir)
         else:
             from play_human_vs_ai import play_match
             if not args.model:
                 print("WARNING: --players 2 with no --model means the AI player is "
                       "picking random buttons. Fine for a pipeline test, weak as content.\n")
-            play_match(args.game, args.state, args.model, args.record_dir, mode=args.mode)
+            play_match(args.game, args.state, args.model, record_dir, mode=args.mode)
 
         from play_and_record import find_new_bk2, render_to_mp4
-        bk2_path = find_new_bk2(args.record_dir, before, started_at=started)
+        bk2_path = find_new_bk2(record_dir, before, started_at=started)
         if not bk2_path:
             sys.exit("No .bk2 was written -- nothing to render.")
+        if os.path.dirname(os.path.abspath(bk2_path)) != os.path.abspath(folder):
+            # Only when --record-dir sent it elsewhere.
+            bk2_path = shutil.move(bk2_path, os.path.join(folder, os.path.basename(bk2_path)))
+
+        # playback_movie writes the mp4 beside the .bk2 it replayed, which is
+        # already the staged folder, so this is an in-folder rename.
         native = render_to_mp4(bk2_path)
         if not native:
             sys.exit("playback_movie produced no mp4 (ffmpeg missing?). The .bk2 is kept.")
-
-    slug = slugify(args.title or pretty_game(args.game))
-    folder = os.path.join(args.out_dir, f"{datetime.now():%Y%m%d-%H%M%S}_{slug}")
-    os.makedirs(folder, exist_ok=True)
-
-    # Everything GENERATED belongs in the staged folder, and the native mp4 is
-    # generated -- stable-retro's playback tool writes it next to the .bk2 it
-    # replayed, which left it sitting in recordings/ looking like an output.
-    #
-    # It also has to live here for the folder to actually stand alone. The spec
-    # names it as the render source, so with the mp4 elsewhere, moving the
-    # folder or clearing recordings/ silently broke restyle.py -- despite the
-    # .bk2 being copied in for exactly that reason.
-    staged_source = os.path.join(folder, f"{slug}_source.mp4")
-    if args.from_mp4:
-        shutil.copy2(native, staged_source)      # not ours to move
-    else:
-        shutil.move(native, staged_source)
-    native = staged_source
+        staged = os.path.join(folder, f"{slug}_source.mp4")
+        if os.path.abspath(native) != os.path.abspath(staged):
+            native = shutil.move(native, staged)
 
     # Events first: the short is cut from them, so this has to run before the
     # encodes rather than after.
@@ -878,8 +881,6 @@ def main():
     block = paste_block(meta)
     with open(os.path.join(folder, "paste.txt"), "w") as handle:
         handle.write(block)
-    if bk2_path:
-        shutil.copy2(bk2_path, folder)
 
     print("\n" + "=" * 66)
     print(f"Staged for review: {folder}")
@@ -888,6 +889,8 @@ def main():
             if segments else "[full length]")
     print(f"  {os.path.basename(tall)} {span}  -> TikTok / Reels / Shorts")
     print(f"  {os.path.basename(native)}   <- the capture everything is rendered from")
+    if bk2_path:
+        print(f"  {os.path.basename(bk2_path)}   <- the raw replay, a few KB")
     print("  paste.txt        <- the three upload forms, ready to copy")
     print(f"  overlays.json, metadata.json, narration.txt, events.csv ({len(events)} events)")
     print(f"\nEdit overlays.json and re-render in seconds:")

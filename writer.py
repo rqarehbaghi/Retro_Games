@@ -61,7 +61,17 @@ DEFAULT_BACKEND = "claude-code"
 
 DEFAULT_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
 DEFAULT_MODEL = "qwen3:30b-a3b"
-CLAUDE_MODEL = "claude-opus-5"
+CLAUDE_MODEL = "claude-opus-4-8"
+
+# Effort sets how much the model spends thinking and answering. The API
+# default is "high"; "medium" is a deliberate step down, because writing
+# captions is not an intelligence-sensitive task and the ceiling here is the
+# voice rather than the reasoning. low | medium | high | xhigh | max.
+#
+# On Opus 4.8 specifically, NOT passing a `thinking` parameter means no
+# thinking at all, which is the cheapest this gets -- unlike Opus 5, where
+# thinking is on unless disabled.
+CLAUDE_EFFORT = "medium"
 TIMEOUT = 600      # a 14B writing a full commentary track is not quick
 
 MODEL_NOTES = """\
@@ -207,7 +217,7 @@ def claude_code_available(name=DEFAULT_CLI):
 
 
 def generate_claude_code(prompt, schema, verbose=True, timeout=300,
-                         cli=DEFAULT_CLI, **_kw):
+                         cli=DEFAULT_CLI, model=None, **_kw):
     """One generation through the Claude Code CLI. Parsed object, or None.
 
     This is the path that costs nothing extra: `claude -p` runs against a
@@ -229,8 +239,11 @@ def generate_claude_code(prompt, schema, verbose=True, timeout=300,
            "\n\nRespond with ONLY the JSON object described above. No preamble,"
            "\nno explanation, no markdown fence. It is parsed by a program.")
     try:
+        cmd = [binary, "-p", ask, "--output-format", "json"]
+        if model:
+            cmd += ["--model", model]
         result = subprocess.run(
-            [binary, "-p", ask, "--output-format", "json"],
+            cmd,
             capture_output=True, text=True, timeout=timeout)
         if result.returncode != 0:
             if verbose:
@@ -262,7 +275,8 @@ def claude_available():
         return False
 
 
-def generate_claude(prompt, schema, model=CLAUDE_MODEL, verbose=True, **_kw):
+def generate_claude(prompt, schema, model=CLAUDE_MODEL, effort=CLAUDE_EFFORT,
+                    verbose=True, **_kw):
     """One structured generation through the Anthropic API. Parsed object or None.
 
     output_config.format is the API's structured-output mode: it constrains the
@@ -287,7 +301,8 @@ def generate_claude(prompt, schema, model=CLAUDE_MODEL, verbose=True, **_kw):
             max_tokens=16000,
             system=VOICE,
             messages=[{"role": "user", "content": prompt}],
-            output_config={"format": {"type": "json_schema", "schema": strict}},
+            output_config={"effort": effort,
+                           "format": {"type": "json_schema", "schema": strict}},
         )
         if response.stop_reason == "refusal":
             if verbose:
@@ -306,10 +321,12 @@ def write(prompt, schema, backend=DEFAULT_BACKEND, **kw):
     if backend == "claude-code":
         return generate_claude_code(prompt, schema,
                                     verbose=kw.get("verbose", True),
-                                    cli=kw.get("cli", DEFAULT_CLI))
+                                    cli=kw.get("cli", DEFAULT_CLI),
+                                    model=kw.get("claude_model"))
     if backend == "claude":
         return generate_claude(prompt, schema,
                                model=kw.get("claude_model", CLAUDE_MODEL),
+                               effort=kw.get("claude_effort", CLAUDE_EFFORT),
                                verbose=kw.get("verbose", True))
     return generate(prompt, schema,
                     **{k: v for k, v in kw.items() if k != "claude_model"})

@@ -573,6 +573,7 @@ def main():
     parser.add_argument("--writer", choices=writer.BACKENDS, default=cfg.get("writer", writer.DEFAULT_BACKEND), help="Who writes the captions, commentary and descriptions. 'claude' calls the Anthropic API (needs the anthropic package and credentials); 'ollama' uses a model running on this machine. (default: %(default)s)")
     parser.add_argument("--writer-cli", default=cfg.get("writer_cli", writer.DEFAULT_CLI), help="Path to the Claude Code binary for --writer claude-code, if it is not on PATH. Also looked for at ~/.local/bin/claude and ~/.claude/local/claude. (default: %(default)s)")
     parser.add_argument("--claude-model", default=cfg.get("claude_model", writer.CLAUDE_MODEL), help="Claude model for --writer claude. (default: %(default)s)")
+    parser.add_argument("--claude-effort", choices=("low", "medium", "high", "xhigh", "max"), default=cfg.get("claude_effort", writer.CLAUDE_EFFORT), help="How hard the Claude model works: low, medium, high, xhigh or max. Lower spends fewer tokens. Writing captions is not intelligence-sensitive, so the default is a step below the API's own. (default: %(default)s)")
     parser.add_argument("--writer-model", default=cfg.get("writer_model", writer.DEFAULT_MODEL), help="Ollama model for --writer ollama. See writer.py for what fits a 24GB card. (default: %(default)s)")
     parser.add_argument("--writer-host", default=cfg.get("writer_host", writer.DEFAULT_HOST), help="Where Ollama is listening. (default: %(default)s)")
     parser.add_argument("--list-writer-models", action="store_true", help="Show which Ollama models are installed, with notes on what suits a 24GB card, then exit")
@@ -791,11 +792,12 @@ def main():
     # what guarantees that rather than trusting the server's default.
     seed = random.randrange(1 << 31)
     ai = dict(backend=args.writer, model=args.writer_model,
-              claude_model=args.claude_model, host=args.writer_host,
-              cli=args.writer_cli, seed=seed)
-    in_use = {"claude": args.claude_model,
-              "claude-code": "claude-code (subscription)"}.get(
-        args.writer, args.writer_model)
+              claude_model=args.claude_model, claude_effort=args.claude_effort,
+              host=args.writer_host, cli=args.writer_cli, seed=seed)
+    in_use = {
+        "claude": "%s, effort %s" % (args.claude_model, args.claude_effort),
+        "claude-code": "%s via subscription" % args.claude_model,
+    }.get(args.writer, args.writer_model)
     print(f"Writing with {in_use} (seed {seed}) ...")
 
     ctx = dict(game=pretty_game(args.game), level=args.level, duration_s=duration,

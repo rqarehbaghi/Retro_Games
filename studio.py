@@ -61,6 +61,7 @@ import sys
 import time
 from datetime import datetime
 
+import tts
 import writer
 
 from overlays import (DEFAULT_FONT, DEFAULT_STYLE, TRANSITIONS,
@@ -585,6 +586,9 @@ def main():
     parser.add_argument("--writer-model", default=cfg.get("writer_model", writer.DEFAULT_MODEL), help="Ollama model for --writer ollama. See writer.py for what fits a 24GB card. (default: %(default)s)")
     parser.add_argument("--writer-host", default=cfg.get("writer_host", writer.DEFAULT_HOST), help="Where Ollama is listening. (default: %(default)s)")
     parser.add_argument("--list-writer-models", action="store_true", help="Show which Ollama models are installed, with notes on what suits a 24GB card, then exit")
+    parser.add_argument("--voice", action="store_true", help="Speak the narration and lay it over the videos, ducking the game audio under it. Needs qwen-tts (pip install -U qwen-tts soundfile) and a GPU. Without it narration.txt is written but nothing is spoken.")
+    parser.add_argument("--voice-model", default=cfg.get("voice_model", tts.DEFAULT_MODEL), help="Qwen3-TTS model for --voice. (default: %(default)s)")
+    parser.add_argument("--voice-describe", default=cfg.get("voice_describe", tts.DEFAULT_VOICE), help="How the commentator should sound, in plain words -- Qwen3-TTS designs the voice from this rather than picking a preset. Set it once as voice_describe in studio.json.")
     parser.add_argument("--paste-block", metavar="DIR", default=None, help="Print the copy-paste block for an already staged folder (or a metadata.json) and exit. A normal run also writes it to paste.txt.")
     parser.add_argument("--print-upload-plan", action="store_true", help="Explain what can and cannot be automated per platform, then exit")
     args = parser.parse_args()
@@ -652,6 +656,11 @@ def main():
             f"Ollama is running but {args.writer_model!r} is not pulled.\n"
             f"  ollama pull {args.writer_model}\n"
             f"  python studio.py --list-writer-models")
+
+    if args.voice and not tts.available():
+        sys.exit("--voice needs Qwen3-TTS:\n"
+                 "  pip install -U qwen-tts soundfile\n"
+                 "  (about 4GB of weights download on first use)")
 
     bk2_path = None
 
@@ -853,6 +862,25 @@ def main():
             handle.write("[%s] %s\n" % (stamp(int(item["at"] * FPS)), item["text"]))
     if not written_narr:
         print("  WARNING: the model returned no commentary; narration.txt is empty.")
+
+    if args.voice and written_narr:
+        # After the videos are rendered, not before: the speech is laid over
+        # finished files, so a TTS failure costs the commentary track and
+        # nothing else.
+        print(f"Speaking {len(written_narr)} lines with {os.path.basename(args.voice_model)} ...")
+        try:
+            clips = tts.speak_lines(written_narr, os.path.join(folder, "voice"),
+                                    model_name=args.voice_model,
+                                    voice=args.voice_describe)
+            track = tts.build_track(clips, duration,
+                                    os.path.join(folder, "narration.wav"))
+            for source in (wide, tall):
+                stem, ext = os.path.splitext(source)
+                spoken = tts.mux(source, track, stem + "_narrated" + ext)
+                print(f"  {os.path.basename(spoken)}")
+        except Exception as exc:                              # noqa: BLE001
+            print(f"  WARNING: voice failed ({exc.__class__.__name__}: {exc})")
+            print( "           the videos and narration.txt are unaffected.")
     with open(os.path.join(folder, "captions.txt"), "w") as handle:
         for at, text in lines:
             handle.write("%s  %s\n" % (stamp(int(at * FPS)), text))

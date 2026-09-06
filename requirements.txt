@@ -11,3 +11,10 @@ opencv-python-headless
 # API write the captions, commentary and descriptions. The `ollama` backend
 # needs nothing beyond the standard library.
 anthropic
+
+# Optional -- only for `studio.py --voice`, which speaks the narration with
+# Qwen3-TTS. Apache 2.0, about 4GB of weights, needs a CUDA GPU. It pulls its
+# own torch, so install it in a separate venv if it disturbs the pinned one
+# training depends on.
+# qwen-tts
+# soundfile

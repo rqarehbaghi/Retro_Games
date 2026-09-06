@@ -801,8 +801,13 @@ def main():
         args.writer, args.writer_model)
     print(f"Writing with {in_use} (seed {seed}) ...")
 
+    # event_lead in studio.json tunes how far before its logged frame each kind
+    # of moment is captioned. Only kinds whose RAM value lags what is on screen
+    # need one; everything else changes on the exact frame.
+    leads = dict(writer.EVENT_LEAD)
+    leads.update({k: float(v) for k, v in (cfg.get("event_lead") or {}).items()})
     ctx = dict(game=pretty_game(args.game), level=args.level, duration_s=duration,
-               players=args.players, events=events, fps=FPS)
+               players=args.players, events=events, fps=FPS, leads=leads)
 
     lines = []
     if not args.no_captions:

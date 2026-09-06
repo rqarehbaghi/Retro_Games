@@ -297,15 +297,28 @@ def _timeline(events, fps):
     return "\n".join(out) or "  (nothing notable happened)"
 
 
-# How far BEFORE the logged frame each kind of moment starts on screen. Values
-# are logged when the underlying RAM value changes, and some change long after
-# the thing worth watching: SMB3's `lives` only decrements at the END of the
-# death sequence, roughly three seconds after the hit that caused it.
-EVENT_LEAD = {"death": 3.0, "clear": 3.0, "powerdown": 1.5, "shrink": 1.5,
-              "1up": 1.0, "powerup": 0.8, "pipe": 1.0, "coin": 0.5}
+# How far BEFORE the logged frame each kind of moment starts on screen.
+#
+# ZERO for almost everything, because almost every value changes on the exact
+# frame the thing happens: the coin counter ticks as you touch the coin, the
+# power byte changes as the mushroom is taken. A caption is a reaction, so
+# landing it ON the frame is right and landing it early spoils the moment.
+#
+# Two exceptions, and only two, both with evidence behind them. SMB3's `lives`
+# decrements at the END of the death sequence -- the death-jump animation then
+# the fade -- roughly three seconds after the hit, so a death caption has to
+# start three seconds early to appear while the kill is on screen. A level
+# clear is detected from the position collapse at the transition, which is a
+# beat after the goal card is actually hit.
+#
+# An earlier version gave every kind a lead of 0.5 to 1.5 seconds. Those
+# numbers were invented rather than measured, and they put every caption about
+# a second early -- which is exactly how it looked.
+EVENT_LEAD = {"death": 3.0, "clear": 2.0}
+DEFAULT_LEAD = 0.0
 
 
-def event_time(events, index, fps, duration_s):
+def event_time(events, index, fps, duration_s, leads=None):
     """Screen time of an event, or None if the index is not a real one.
 
     Times come from HERE, never from the model. Asking a model for timestamps
@@ -320,7 +333,8 @@ def event_time(events, index, fps, duration_s):
     if not 0 <= index < len(events):
         return None
     frame, kind, _detail = events[index]
-    at = frame / fps - EVENT_LEAD.get(kind, 1.0)
+    table = EVENT_LEAD if leads is None else leads
+    at = frame / fps - table.get(kind, DEFAULT_LEAD)
     return max(0.0, min(at, max(0.0, duration_s - 1.0)))
 
 
@@ -357,7 +371,7 @@ CAPTION_GAP = 6.0        # clear seconds between one caption and the next
 
 
 def captions(game, level, duration_s, players, events, fps, max_chars=40,
-             **kw):
+             leads=None, **kw):
     """Timed on-screen captions. Returns [{at, text}] or None.
 
     The model chooses WHICH moments to caption and what to say; the timeline
@@ -396,7 +410,7 @@ def captions(game, level, duration_s, players, events, fps, max_chars=40,
     for item in data.get("captions", []):
         text = str(item.get("text", "")).strip()
         index = item.get("event")
-        at = event_time(events, index, fps, duration_s)
+        at = event_time(events, index, fps, duration_s, leads)
         if text and at is not None:
             # The event is kept so the caller can SHOW what each line was
             # pinned to. Two very different faults look identical on screen --
@@ -456,7 +470,7 @@ def uncovered(filled, duration_s, spoken, limit=15.0):
     return False
 
 
-def narration(game, level, duration_s, players, events, fps, wpm=150, **kw):
+def narration(game, level, duration_s, players, events, fps, wpm=150, leads=None, **kw):
     """A spoken commentary script. Returns [{at, text}] or None.
 
     Split deliberately: the model writes lines ABOUT events, plus loose filler
@@ -497,7 +511,7 @@ def narration(game, level, duration_s, players, events, fps, wpm=150, **kw):
         script.append((0.4, opening))
     for item in data.get("events", []):
         text = str(item.get("text", "")).strip()
-        at = event_time(events, item.get("event"), fps, duration_s)
+        at = event_time(events, item.get("event"), fps, duration_s, leads)
         if text and at is not None:
             script.append((at, text))
     script.sort()

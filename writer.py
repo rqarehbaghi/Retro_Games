@@ -502,11 +502,22 @@ NARRATION_SCHEMA = {
                 "properties": {
                     "event": {"type": "integer"},
                     "text": {"type": "string"},
+                    "tone": {"type": "string"},
                 },
-                "required": ["event", "text"],
+                "required": ["event", "text", "tone"],
             },
         },
-        "filler": {"type": "array", "items": {"type": "string"}},
+        "filler": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string"},
+                    "tone": {"type": "string"},
+                },
+                "required": ["text", "tone"],
+            },
+        },
         "closing": {"type": "string"},
     },
     "required": ["opening", "events", "filler", "closing"],
@@ -553,6 +564,12 @@ def narration(game, level, duration_s, players, events, fps, wpm=150, **kw):
         "  watching, what the player should be doing, what is coming up. Each\n"
         "  must stand alone and make sense in any order.\n"
         "- 'closing' signs off and says how the run went.\n"
+        "- 'tone' is how each line is SPOKEN, one of: deadpan, amused,\n"
+        "  exasperated, surprised, delighted, sarcastic, excited, wistful,\n"
+        "  annoyed. VARY IT. The commentator is reacting live, not reading a\n"
+        "  script, and a track delivered at one pitch throughout sounds\n"
+        "  robotic however good the words are. Match the moment: groan at a\n"
+        "  death, sound genuinely surprised when something goes right.\n"
         "- About %d words in total, read aloud at %d words per minute to fill\n"
         "  %.0f seconds. Full sentences -- this is spoken, not captions.\n"
         "Return JSON with keys: opening, events, filler, closing."
@@ -567,35 +584,37 @@ def narration(game, level, duration_s, players, events, fps, wpm=150, **kw):
     script = []
     opening = str(data.get("opening", "")).strip()
     if opening:
-        script.append((0.4, opening))
+        script.append((0.4, opening, "amused"))
     for item in data.get("events", []):
         text = str(item.get("text", "")).strip()
         at = event_time(events, item.get("event"), fps, duration_s)
         if text and at is not None:
-            script.append((at, text))
+            script.append((at, text, str(item.get("tone", ""))))
     script.sort()
 
-    filler = [str(f).strip() for f in data.get("filler", []) if str(f).strip()]
+    filler = [(str(f.get("text", "")).strip(), str(f.get("tone", "")))
+              for f in data.get("filler", []) if str(f.get("text", "")).strip()]
     closing = str(data.get("closing", "")).strip()
 
     filled, pool = [], list(filler)
-    for i, (at, text) in enumerate(script):
-        filled.append((at, text))
+    for i, (at, text, tone) in enumerate(script):
+        filled.append((at, text, tone))
         cursor = at + spoken(text)
         end = script[i + 1][0] if i + 1 < len(script) else duration_s
         while pool and end - cursor > NARRATION_GAP:
-            line = pool.pop(0)
-            filled.append((cursor + 0.8, line))
+            line, line_tone = pool.pop(0)
+            filled.append((cursor + 0.8, line, line_tone))
             cursor += 0.8 + spoken(line)
-    if uncovered(filled, duration_s, spoken):
+    if uncovered([(a, t) for a, t, _n in filled], duration_s, spoken):
         print("  (writer: too little filler came back -- part of the run has "
               "no commentary over it)")
     if closing:
-        last = max((a + spoken(t) for a, t in filled), default=0.0)
+        last = max((a + spoken(t) for a, t, _n in filled), default=0.0)
         filled.append((min(max(last + 0.5, duration_s - spoken(closing) - 0.5),
-                           max(0.0, duration_s - 0.5)), closing))
+                           max(0.0, duration_s - 0.5)), closing, "amused"))
     filled.sort()
-    return [{"at": round(a, 2), "text": t} for a, t in filled] or None
+    return [{"at": round(a, 2), "text": t, "tone": n}
+            for a, t, n in filled] or None
 
 
 # ------------------------------------------------------------------- copy --

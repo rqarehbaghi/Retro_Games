@@ -35,10 +35,33 @@ DEFAULT_MODEL = "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign"
 # The commentator, described rather than picked. Keep it in step with VOICE in
 # writer.py -- the words and the delivery should be the same person.
 DEFAULT_VOICE = (
-    "A dry, unimpressed male sports commentator in his forties. British. "
-    "Measured pace, deadpan delivery, a little weary. He is amused but never "
-    "excitable, and lands his punchlines flat rather than selling them."
+    "A woman in her thirties with a warm, expressive voice, commentating live "
+    "on a game she is watching someone play badly. She is genuinely reacting, "
+    "not reading: she laughs at her own jokes, groans at mistakes, sounds "
+    "surprised when something goes right, and lets exasperation into her voice "
+    "when it goes wrong again. Natural conversational pace with real variation "
+    "in pitch and energy. Never flat, never a newsreader, never robotic."
 )
+
+# Delivery per line, appended to the description above. Qwen3-TTS designs the
+# voice from words, so the emotion can change line by line -- a track read at
+# one pitch throughout is what makes synthesised speech sound synthesised, and
+# the difference between reading and reacting is the whole point.
+#
+# The writer picks one of these names per line; anything unrecognised falls
+# back to the base voice, so a model inventing a tone cannot break the render.
+TONES = {
+    "deadpan": "Say this flatly, completely unimpressed.",
+    "amused": "Say this with a laugh in your voice, like you find it funny.",
+    "exasperated": "Say this with a groan, exasperated, as if this keeps happening.",
+    "surprised": "Say this genuinely surprised, pitch rising, caught off guard.",
+    "delighted": "Say this warmly and brightly, actually pleased.",
+    "sarcastic": "Say this dripping with sarcasm.",
+    "excited": "Say this fast and energetic, carried away by the moment.",
+    "wistful": "Say this softly and fondly, remembering something.",
+    "annoyed": "Say this sharply, genuinely irritated.",
+}
+
 
 # How far the game audio drops while a line is being spoken. Full silence loses
 # the music, which is half of why anyone watches retro footage; leaving it at
@@ -63,6 +86,12 @@ def load(model_name=DEFAULT_MODEL, device="cuda:0"):
         model_name, device_map=device, dtype=torch.bfloat16)
 
 
+def instruct_for(voice, tone):
+    """The voice description plus this line's delivery."""
+    hint = TONES.get((tone or "").strip().lower())
+    return voice + " " + hint if hint else voice
+
+
 def speak_lines(lines, out_dir, model=None, model_name=DEFAULT_MODEL,
                 voice=DEFAULT_VOICE, language="English", verbose=True):
     """Render each narration line to its own wav. Returns [(at, path)].
@@ -79,13 +108,15 @@ def speak_lines(lines, out_dir, model=None, model_name=DEFAULT_MODEL,
         if not text:
             continue
         path = os.path.join(out_dir, "line_%03d.wav" % i)
+        tone = item.get("tone", "")
         wavs, sr = model.generate_voice_design(
-            text=text, language=language, instruct=voice)
+            text=text, language=language, instruct=instruct_for(voice, tone))
         sf.write(path, wavs[0], sr)
         out.append((float(item["at"]), path))
         if verbose:
-            print("    [%2d/%2d] %5.1fs  %s" % (i + 1, len(lines), item["at"],
-                                                text[:52]))
+            print("    [%2d/%2d] %5.1fs  %-11s %s"
+                  % (i + 1, len(lines), item["at"],
+                     tone if tone in TONES else "-", text[:46]))
     return out
 
 

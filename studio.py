@@ -899,10 +899,14 @@ def main():
                                     voice=args.voice_describe)
             track = tts.build_track(clips, duration,
                                     os.path.join(folder, "narration.wav"))
+            # The bare voice track is kept as well as the mixes. It is the one
+            # thing that cannot be recovered from the finished videos, and it
+            # is what you re-cut against if the mix needs redoing.
+            print(f"  narration.wav      the voice alone, {len(clips)} lines")
             for source in (wide, tall):
                 stem, ext = os.path.splitext(source)
                 spoken = tts.mux(source, track, stem + "_narrated" + ext)
-                print(f"  {os.path.basename(spoken)}")
+                print(f"  {os.path.basename(spoken)}   voice over the game, music ducked")
         except Exception as exc:                              # noqa: BLE001
             print(f"  WARNING: voice failed ({exc.__class__.__name__}: {exc})")
             print( "           the videos and narration.txt are unaffected.")
@@ -930,6 +934,10 @@ def main():
             if segments else "[full length]")
     print(f"  {os.path.basename(tall)} {span}  -> TikTok / Reels / Shorts")
     print(f"  {os.path.basename(clean)}   <- HD, no text, for re-edits and thumbnails")
+    if args.voice:
+        print(f"  {slug}_16x9_narrated.mp4 / _9x16_narrated.mp4   <- with commentary")
+        print( "  narration.wav      <- the spoken track on its own")
+        print( "  voice/             <- one wav per line, before mixing")
     print(f"  {os.path.basename(native)}   <- the capture everything is rendered from")
     if bk2_path:
         print(f"  {os.path.basename(bk2_path)}   <- the raw replay, a few KB")

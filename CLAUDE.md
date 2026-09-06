@@ -19,11 +19,11 @@ self-contained folder under `studio_out/`:
 | `*_16x9.mp4` | 1920×1080 with captions — YouTube |
 | `*_9x16.mp4` | 1080×1920 with captions — TikTok / Reels / Shorts |
 | `*_16x9_clean.mp4` | HD, no text, for thumbnails and re-edits |
-| `*_narrated.mp4` | the two captioned cuts with spoken commentary over them |
+| `*_narrated.mp4` | only with `--voice` — the captioned cuts with commentary over them |
 | `*_source.mp4` | the raw capture everything is rendered from |
 | `*.bk2` | the replay — the folder is self-contained because of this |
 | `overlays.json` | every word and style rule, editable, re-renderable |
-| `narration.wav` | the spoken track |
+| `narration.wav` | only with `--voice` — the spoken track on its own |
 | `paste.txt` | the three upload forms, ready to copy |
 | `metadata.json` `captions.txt` `narration.txt` `events.csv` | |
 
@@ -103,6 +103,8 @@ new voice from the description on every call, so rendering line by line made
 every sentence sound like a different person. Use `CustomVoice` with a named
 preset (`voice_speaker`) — it keeps one speaker identity and still accepts a
 per-line `instruct`, so the delivery varies while the person does not.
+
+**The spoken commentary is OFF by default.** It is the least finished part of the pipeline and the owner has parked it; `--voice` turns it on. Without it no script is even requested, which saves one of the three model calls a run makes. Everything below still applies when it is on.
 
 **The spoken track is one continuous monologue WITH the lines that name a
 moment held back to it.** Both extremes failed: pinning every line to an event

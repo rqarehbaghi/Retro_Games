@@ -24,13 +24,13 @@
     }
   },
   "claude_model": "claude-opus-4-8",
-  "_voice": "Produced by default; --no-voice skips it. voice_speaker is a FIXED preset -- Vivian, Serena, Ono_Anna and Sohee are female, Ryan, Eric, Dylan, Aiden and Uncle_Fu male -- and must stay fixed, because the VoiceDesign model invents a new voice per call and made every sentence a different person. The script is ONE continuous monologue laid down end to end, not remarks pinned to moments, and the game music is turned down a measured 12 dB underneath it for the whole video.",
+  "_voice": "OFF by default -- pass --voice, or set voice true here. Without it no commentary script is written at all, which saves one of the three model calls a run makes. With it you get narration.txt, narration.wav, voice/ and *_narrated.mp4. voice_speaker is a FIXED preset (Vivian, Serena, Ono_Anna, Sohee are female; Ryan, Eric, Dylan, Aiden, Uncle_Fu male) and must stay fixed, because the VoiceDesign model invents a new voice per call and made every sentence a different person.",
   "voice_model": "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
   "voice_describe": "Commentate live, reacting to what you are watching rather than reading. Warm and conversational, with real variation in pitch and energy. Never flat, never a newsreader.",
   "_timing": "Captions land on the exact frame their event was logged -- every value the event scan reads changes as the thing happens. caption_offset shifts all of them by a fixed number of seconds if a whole run reads late or early; it is 0 by default and nothing is adjusted unless you set it.",
   "caption_offset": 0.0,
   "claude_effort": "medium",
   "_cost": "claude_model and claude_effort apply to both Claude backends (claude_effort only to the API one). Effort is how much the model spends thinking and answering: low | medium | high | xhigh | max, where the API's own default is high. Writing captions is not intelligence-sensitive, so medium is a deliberate step down. Drop to low if the bill still bites; raise it if the writing goes flat.",
-  "voice": true,
+  "voice": false,
   "voice_speaker": "Vivian"
 }

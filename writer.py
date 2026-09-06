@@ -229,11 +229,38 @@ def _timeline(events, fps):
         "pipe": "went down a pipe", "score": "scored points",
     }
     out = []
-    for frame, kind, detail in events:
+    for i, (frame, kind, detail) in enumerate(events):
         secs = frame / fps
-        out.append("  %d:%05.2f  %s (%s)" % (secs // 60, secs % 60,
-                                             label.get(kind, kind), detail))
+        out.append("  [%d] %d:%05.2f  %s (%s)" % (i, secs // 60, secs % 60,
+                                                  label.get(kind, kind), detail))
     return "\n".join(out) or "  (nothing notable happened)"
+
+
+# How far BEFORE the logged frame each kind of moment starts on screen. Values
+# are logged when the underlying RAM value changes, and some change long after
+# the thing worth watching: SMB3's `lives` only decrements at the END of the
+# death sequence, roughly three seconds after the hit that caused it.
+EVENT_LEAD = {"death": 3.0, "clear": 3.0, "powerdown": 1.5, "shrink": 1.5,
+              "1up": 1.0, "powerup": 0.8, "pipe": 1.0, "coin": 0.5}
+
+
+def event_time(events, index, fps, duration_s):
+    """Screen time of an event, or None if the index is not a real one.
+
+    Times come from HERE, never from the model. Asking a model for timestamps
+    and trusting them is what put captions on the wrong moments: it has no way
+    to know when anything happened beyond the numbers in the prompt, and it
+    approximates them. The frame numbers are exact, so the model writes the
+    words and the timeline places them."""
+    try:
+        index = int(index)
+    except (TypeError, ValueError):
+        return None
+    if not 0 <= index < len(events):
+        return None
+    frame, kind, _detail = events[index]
+    at = frame / fps - EVENT_LEAD.get(kind, 1.0)
+    return max(0.0, min(at, max(0.0, duration_s - 1.0)))
 
 
 def _context(game, level, duration_s, players, events, fps):
@@ -249,25 +276,31 @@ def _context(game, level, duration_s, players, events, fps):
 CAPTION_SCHEMA = {
     "type": "object",
     "properties": {
+        "opening": {"type": "string"},
         "captions": {
             "type": "array",
             "items": {
                 "type": "object",
                 "properties": {
-                    "at": {"type": "number"},
+                    "event": {"type": "integer"},
                     "text": {"type": "string"},
                 },
-                "required": ["at", "text"],
+                "required": ["event", "text"],
             },
-        }
+        },
     },
-    "required": ["captions"],
+    "required": ["opening", "captions"],
 }
+
+CAPTION_GAP = 6.0        # clear seconds between one caption and the next
 
 
 def captions(game, level, duration_s, players, events, fps, max_chars=40,
              **kw):
-    """Timed on-screen captions. Returns [{at, text}] or None."""
+    """Timed on-screen captions. Returns [{at, text}] or None.
+
+    The model chooses WHICH moments to caption and what to say; the timeline
+    decides WHEN each lands."""
     prompt = (
         _context(game, level, duration_s, players, events, fps) +
         "\nWrite on-screen captions for this run.\n\n"
@@ -277,80 +310,151 @@ def captions(game, level, duration_s, players, events, fps, max_chars=40,
         "RULES:\n"
         "- At most %d CHARACTERS each. Aim for five to eight words. A caption\n"
         "  that runs long gets shrunk until it fits and stops being readable.\n"
-        "- One caption per interesting moment above. Skip the dull ones.\n"
-        "- Open with a caption at 0.6 seconds setting up the run.\n"
-        "- 'at' is the timestamp in SECONDS as a number.\n"
-        "- Leave at least 6 seconds between captions.\n"
+        "- 'event' is the [N] NUMBER of the moment the caption is about, from\n"
+        "  the list above. Do NOT write timestamps -- they are worked out from\n"
+        "  the event you name.\n"
+        "- Caption the interesting moments only. Skip the dull ones, and skip\n"
+        "  most coins.\n"
+        "- 'opening' is one caption shown at the very start, setting up the run.\n"
         "- Every caption must be different. No repeated jokes.\n"
         "- Praise the good moments as well as mocking the bad ones.\n\n"
         "Good: \"He walked into it. Fully aware.\"\n"
         "Good: \"A mushroom. Do not get attached.\"\n"
         "Too long: \"That enemy has stood there since 1988 waiting for this.\"\n\n"
-        "Return JSON: {\"captions\": [{\"at\": 0.6, \"text\": \"...\"}]}"
+        "Return JSON: {\"opening\": \"...\", \"captions\": "
+        "[{\"event\": 3, \"text\": \"...\"}]}"
         % max_chars)
     data = write(prompt, CAPTION_SCHEMA, **kw)
     if not data:
         return None
+
     out = []
+    opening = str(data.get("opening", "")).strip()
+    if opening:
+        out.append({"at": 0.6, "text": opening[:max_chars]})
     for item in data.get("captions", []):
         text = str(item.get("text", "")).strip()
-        # Trust nothing about length: the limit is what keeps the text legible,
-        # and models treat character counts as a suggestion.
-        if text and 0 <= float(item.get("at", -1)) < duration_s:
-            out.append({"at": round(float(item["at"]), 2), "text": text[:max_chars]})
+        at = event_time(events, item.get("event"), fps, duration_s)
+        if text and at is not None:
+            out.append({"at": round(at, 2), "text": text[:max_chars]})
     out.sort(key=lambda c: c["at"])
-    return out or None
+
+    # Two captions on top of each other are unreadable, and a model asked for
+    # "the interesting moments" will happily pick three in a row.
+    spaced = []
+    for cap in out:
+        if spaced and cap["at"] - spaced[-1]["at"] < CAPTION_GAP:
+            continue
+        spaced.append(cap)
+    return spaced or None
 
 
 # -------------------------------------------------------------- narration --
 NARRATION_SCHEMA = {
     "type": "object",
     "properties": {
-        "lines": {
+        "opening": {"type": "string"},
+        "events": {
             "type": "array",
             "items": {
                 "type": "object",
                 "properties": {
-                    "at": {"type": "number"},
+                    "event": {"type": "integer"},
                     "text": {"type": "string"},
                 },
-                "required": ["at", "text"],
+                "required": ["event", "text"],
             },
-        }
+        },
+        "filler": {"type": "array", "items": {"type": "string"}},
+        "closing": {"type": "string"},
     },
-    "required": ["lines"],
+    "required": ["opening", "events", "filler", "closing"],
 }
+
+NARRATION_GAP = 5.0      # fill any silence longer than this
+
+
+def uncovered(filled, duration_s, spoken, limit=15.0):
+    """True when some stretch longer than `limit` has nothing spoken over it.
+
+    Worth saying out loud: a short filler pool leaves the back half of the run
+    silent, and silence in a commentary track looks like a bug in the renderer
+    rather than a model that wrote too little."""
+    ordered = sorted(filled)
+    for i, (at, text) in enumerate(ordered):
+        end = ordered[i + 1][0] if i + 1 < len(ordered) else duration_s
+        if end - (at + spoken(text)) > limit:
+            return True
+    return False
 
 
 def narration(game, level, duration_s, players, events, fps, wpm=150, **kw):
-    """A spoken commentary script. Returns [{at, text}] or None."""
+    """A spoken commentary script. Returns [{at, text}] or None.
+
+    Split deliberately: the model writes lines ABOUT events, plus loose filler
+    with no timing at all. Event lines land on their real timestamps and the
+    filler goes into whatever silence is left, so the track both syncs and
+    covers the whole run -- neither of which survives asking a model to place
+    its own lines across ninety seconds."""
     words = int(duration_s / 60.0 * wpm)
     prompt = (
         _context(game, level, duration_s, players, events, fps) +
         "\nWrite a spoken commentary track covering the WHOLE run.\n\n"
         "RULES:\n"
-        "- About %d words total. It is read aloud at roughly %d words per\n"
-        "  minute and must fill %.0f seconds, so do not stop after the\n"
-        "  highlights -- keep talking between them.\n"
-        "- Between events, talk about the game itself: how old it is, what it\n"
-        "  meant to the people watching, what the player should be doing.\n"
-        "- Open by naming the game and section. Close with a sign-off that\n"
-        "  mentions how the run went.\n"
-        "- 'at' is when the line is SPOKEN, in seconds, increasing, starting\n"
-        "  near 0. Leave room for each line to be read before the next.\n"
-        "- Full sentences. This is spoken, not captions.\n"
-        "Return JSON: {\"lines\": [{\"at\": 0.4, \"text\": \"...\"}]}"
-        % (words, wpm, duration_s))
+        "- 'opening' names the game and section and sets the run up.\n"
+        "- 'events' are lines about specific moments. 'event' is the [N] NUMBER\n"
+        "  from the list above. Do NOT write timestamps -- each line is placed\n"
+        "  on the moment it names.\n"
+        "- 'filler' is AT LEAST %d loose lines with no particular moment\n"
+        "  attached, used to fill the silences between events. Too few and the\n"
+        "  track runs out partway, leaving the rest of the video silent.\n"
+        "  Talk about the game: how old it is, what it meant to the people\n"
+        "  watching, what the player should be doing, what is coming up. Each\n"
+        "  must stand alone and make sense in any order.\n"
+        "- 'closing' signs off and says how the run went.\n"
+        "- About %d words in total, read aloud at %d words per minute to fill\n"
+        "  %.0f seconds. Full sentences -- this is spoken, not captions.\n"
+        "Return JSON with keys: opening, events, filler, closing."
+        % (max(8, int(duration_s / 5)), words, wpm, duration_s))
     data = write(prompt, NARRATION_SCHEMA, **kw)
     if not data:
         return None
-    out = []
-    for item in data.get("lines", []):
+
+    def spoken(text):
+        return len(text.split()) / wpm * 60.0
+
+    script = []
+    opening = str(data.get("opening", "")).strip()
+    if opening:
+        script.append((0.4, opening))
+    for item in data.get("events", []):
         text = str(item.get("text", "")).strip()
-        if text and float(item.get("at", -1)) >= 0:
-            out.append({"at": round(float(item["at"]), 2), "text": text})
-    out.sort(key=lambda l: l["at"])
-    return out or None
+        at = event_time(events, item.get("event"), fps, duration_s)
+        if text and at is not None:
+            script.append((at, text))
+    script.sort()
+
+    filler = [str(f).strip() for f in data.get("filler", []) if str(f).strip()]
+    closing = str(data.get("closing", "")).strip()
+
+    filled, pool = [], list(filler)
+    for i, (at, text) in enumerate(script):
+        filled.append((at, text))
+        cursor = at + spoken(text)
+        end = script[i + 1][0] if i + 1 < len(script) else duration_s
+        while pool and end - cursor > NARRATION_GAP:
+            line = pool.pop(0)
+            filled.append((cursor + 0.8, line))
+            cursor += 0.8 + spoken(line)
+    if uncovered(filled, duration_s, spoken):
+        print("  (writer: too little filler came back -- part of the run has "
+              "no commentary over it)")
+    if closing:
+        last = max((a + spoken(t) for a, t in filled), default=0.0)
+        filled.append((min(max(last + 0.5, duration_s - spoken(closing) - 0.5),
+                           max(0.0, duration_s - 0.5)), closing))
+    filled.sort()
+    return [{"at": round(a, 2), "text": t} for a, t in filled] or None
 
 
 # ------------------------------------------------------------------- copy --

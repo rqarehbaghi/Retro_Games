@@ -760,6 +760,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--game", help="stable-retro game id (see list_games.py). Required unless --brief, --paste-block or --print-upload-plan.")
     parser.add_argument("--players", type=int, choices=[1, 2], default=1, help="1 = you alone. 2 = you plus an AI player, via play_human_vs_ai. (default: %(default)s)")
+    parser.add_argument("--boot-screen", action="store_true", help="Start from the power-on title screen (state=NONE) instead of a mid-level save state, so you can pick 1P/2P and the game mode yourself. Passed through to the play window.")
     parser.add_argument("--gamepad", action="store_true", help="Play single-player through the pygame window, which reads a USB gamepad as well as the keyboard. Without it --players 1 uses stable-retro's own interactive tool, which is KEYBOARD ONLY and will ignore a pad.")
     parser.add_argument("--mode", choices=["versus", "coop", "race"], default="versus", help="Two-player match type, ignored when --players 1. (default: %(default)s)")
     parser.add_argument("--model", default=None, help="Checkpoint driving the AI player when --players 2. Without one the AI plays randomly, which makes for a much weaker video.")
@@ -956,17 +957,20 @@ def main():
             # the pygame path -- which reads both.
             from play_human_vs_ai import play_match
             print(f"Starting {args.game} -- close the window when you are done.\n")
-            play_match(args.game, args.state, None, record_dir, players=1)
+            play_match(args.game, args.state, None, record_dir, players=1,
+                       boot_screen=args.boot_screen)
         elif args.players == 1:
             from play_and_record import play_human_episode
             print(f"Starting {args.game} -- close the window when you are done.\n")
-            play_human_episode(args.game, args.state, record_dir)
+            play_human_episode(args.game, args.state, record_dir,
+                               boot_screen=args.boot_screen)
         else:
             from play_human_vs_ai import play_match
             if not args.model:
                 print("WARNING: --players 2 with no --model means the AI player is "
                       "picking random buttons. Fine for a pipeline test, weak as content.\n")
-            play_match(args.game, args.state, args.model, record_dir, mode=args.mode)
+            play_match(args.game, args.state, args.model, record_dir, mode=args.mode,
+                       boot_screen=args.boot_screen)
 
         from play_and_record import find_new_bk2, render_to_mp4
         bk2_path = find_new_bk2(record_dir, before, started_at=started)

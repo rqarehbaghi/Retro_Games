@@ -86,8 +86,12 @@ ACTION_TABLE = [
     (["A"], 20),                # full-height jump, in place
     (["RIGHT", "A"], 6),        # short forward hop
     (["RIGHT", "A"], 20),       # full forward jump
+    (["RIGHT", "A", "B"], 6),   # short running jump right
+    (["RIGHT", "A", "B"], 20),  # full running jump right (sprint jump)
     (["LEFT", "A"], 6),
     (["LEFT", "A"], 20),
+    (["LEFT", "A", "B"], 6),    # short running jump left
+    (["LEFT", "A", "B"], 20),   # full running jump left
     (["DOWN"], 4),
     (["UP"], 4),
 ]

@@ -12,6 +12,7 @@ export const MatchArena: React.FC = () => {
   const [mode, setMode] = useState<GameMode>('versus');
   const [selectedPresetIdx, setSelectedPresetIdx] = useState<number>(2); // default iter 500
   const [copiedCmd, setCopiedCmd] = useState<boolean>(false);
+  const [bootScreen, setBootScreen] = useState<boolean>(true);
   const [activeKeys, setActiveKeys] = useState<Record<string, boolean>>({});
 
   // Match State
@@ -342,7 +343,7 @@ export const MatchArena: React.FC = () => {
   // CLI Command Generator
   const generatedCommand = `python play_human_vs_ai.py --game ${selectedGame.id} \\
     --model ./checkpoints/${selectedGame.id}/iter_${preset.iter}.zip \\
-    --mode ${mode} --scale 4 --fps 60`;
+    --mode ${mode} --scale 4 --fps 60${bootScreen ? ' \\\n    --boot-screen' : ''}`;
 
   const copyCommand = () => {
     navigator.clipboard.writeText(generatedCommand.replace(/\\\s+/g, ' '));
@@ -426,6 +427,25 @@ export const MatchArena: React.FC = () => {
                   </option>
                 ))}
               </select>
+            </div>
+
+            <div>
+              <label className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-2 block flex items-center gap-1.5">
+                <Terminal className="w-4 h-4 text-amber-400" />
+                Boot Screen (Title Menu)
+              </label>
+              <button
+                type="button"
+                onClick={() => setBootScreen(prev => !prev)}
+                className={`px-3 py-2.5 rounded-xl text-xs sm:text-sm font-semibold border transition-all flex items-center gap-2 ${
+                  bootScreen
+                    ? 'bg-amber-500/20 text-amber-300 border-amber-500 shadow-md shadow-amber-500/10'
+                    : 'bg-slate-950 border-slate-700 text-slate-400 hover:text-slate-200'
+                }`}
+                title="Start from power-on boot screen so you can choose 1P vs 2P on the title screen"
+              >
+                <span>{bootScreen ? '✓ Show Boot Screen (1P vs 2P)' : 'Direct Level Spawn'}</span>
+              </button>
             </div>
           </div>
         </div>

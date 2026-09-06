@@ -27,13 +27,28 @@ class JumpIncentiveWrapper(Wrapper):
     the discrete index, so that check silently never matched and the jump
     bonus was dead. This is the same fix applied in train.py.)
     """
-    def __init__(self, env, jump_bonus=0.2, stuck_penalty=0.05):
+    def __init__(self, env, jump_bonus=0.2, stuck_penalty=0.05, jump_action_indices=None, combos=None, jump_button="A"):
         super().__init__(env)
         self.jump_bonus = jump_bonus
         self.stuck_penalty = stuck_penalty
-        # The set of discrete action indices that press the jump button,
-        # provided by the discretizer this wrapper sits on top of.
-        self.jump_action_indices = getattr(env, "jump_action_indices", set())
+        self.jump_button = jump_button
+
+        # Resolve jump action indices from direct argument, combos, or by walking wrapper stack
+        if jump_action_indices is not None:
+            self.jump_action_indices = set(jump_action_indices)
+        elif combos is not None:
+            self.jump_action_indices = {i for i, c in enumerate(combos) if jump_button in (c if isinstance(c, (list, tuple, set)) else [c])}
+        else:
+            # Walk down the wrapper stack if needed
+            indices = None
+            curr = env
+            while curr is not None:
+                if hasattr(curr, "jump_action_indices"):
+                    indices = curr.jump_action_indices
+                    break
+                curr = getattr(curr, "env", None)
+            self.jump_action_indices = set(indices) if indices is not None else set()
+
         self.prev_x = 0
         self.stalled_frames = 0
         self.prev_y = None
@@ -51,9 +66,15 @@ class JumpIncentiveWrapper(Wrapper):
         current_x = info.get("x", info.get("x_pos", None))
         current_y = info.get("y", info.get("y_pos", None))
 
-        # Detect a jump attempt directly from the discrete action index.
-        if action in self.jump_action_indices:
+        # Detect a jump attempt directly from discrete index or raw button array
+        if isinstance(action, (int, np.integer)) and action in self.jump_action_indices:
             reward += self.jump_bonus
+        elif isinstance(action, (list, np.ndarray)):
+            buttons = getattr(self.env.unwrapped, "buttons", [])
+            if self.jump_button in buttons:
+                j_idx = buttons.index(self.jump_button)
+                if j_idx < len(action) and action[j_idx]:
+                    reward += self.jump_bonus
 
         # Detect if horizontal progress is stalled (wall/obstacle collision)
         if current_x is not None and self.prev_x is not None:

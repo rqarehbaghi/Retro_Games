@@ -40,15 +40,23 @@ class RetroDemoDataset(Dataset):
 
 def map_binary_to_combo(button_array, env_buttons, combos=DEFAULT_COMBOS):
     active_buttons = {env_buttons[i] for i, pressed in enumerate(button_array) if pressed}
-    best_idx, best_match_score = 0, -1
+    if not active_buttons:
+        return 0
+    for idx, combo in enumerate(combos):
+        if set(combo) == active_buttons:
+            return idx
+    best_idx, best_score = 0, -1.0
     for idx, combo in enumerate(combos):
         combo_set = set(combo)
-        if combo_set == active_buttons:
-            return idx
+        if not combo_set:
+            continue
         intersection = len(combo_set & active_buttons)
-        if intersection > best_match_score:
-            best_match_score = intersection
-            best_idx = idx
+        union = len(combo_set | active_buttons)
+        score = (intersection / union) if union > 0 else 0.0
+        if "A" in active_buttons and "A" in combo_set:
+            score += 0.5  # Prioritize Jump preservation
+        if score > best_score:
+            best_score, best_idx = score, idx
     return best_idx
 
 def extract_demos_from_bk2(game, bk2_paths, combos=DEFAULT_COMBOS, frame_skip=4):
@@ -57,25 +65,20 @@ def extract_demos_from_bk2(game, bk2_paths, combos=DEFAULT_COMBOS, frame_skip=4)
     for bk2_file in bk2_paths:
         try:
             movie = retro.Movie(bk2_file)
-            movie.step()
             env = retro.make(game=game, state=retro.State.NONE, use_restricted_actions=retro.Actions.ALL)
             env.initial_state = movie.get_state()
             env.reset()
             buttons = env.unwrapped.buttons
             frame_queue = deque(maxlen=4)
-            step_count = 0
-            frame_counter = 0
+            step_count, frame_counter = 0, 0
+            window_keys = np.zeros(env.num_buttons, dtype=bool)
 
             while movie.step():
                 frame_counter += 1
-                keys = []
-                for p in range(movie.players):
-                    for i in range(env.num_buttons):
-                        keys.append(movie.get_key(i, p))
+                current_keys = np.array([movie.get_key(i, 0) for i in range(env.num_buttons)], dtype=bool)
+                window_keys = np.logical_or(window_keys, current_keys)
 
-                obs, _, term, trunc, _ = env.step(keys)
-                
-                # Align with training FrameSkip
+                obs, _, term, trunc, _ = env.step(current_keys)
                 if frame_counter % frame_skip != 0:
                     continue
 
@@ -88,10 +91,11 @@ def extract_demos_from_bk2(game, bk2_paths, combos=DEFAULT_COMBOS, frame_skip=4)
                 else:
                     frame_queue.append(resized)
 
-                combo_idx = map_binary_to_combo(keys, buttons, combos)
+                combo_idx = map_binary_to_combo(window_keys, buttons, combos)
                 stacked_frames = np.array(frame_queue, dtype=np.uint8)
                 samples.append((stacked_frames, combo_idx))
                 step_count += 1
+                window_keys = np.zeros(env.num_buttons, dtype=bool)
 
             env.close()
             print(f"  ✓ Processed {bk2_file}: extracted {step_count} demonstration steps")
@@ -201,8 +205,10 @@ from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.vec_env import SubprocVecEnv, VecFrameStack
 
 DEFAULT_COMBOS = [
-    [], ["RIGHT"], ["LEFT"], ["RIGHT", "B"], ["RIGHT", "A", "B"],
-    ["LEFT", "A", "B"], ["A"], ["B"], ["DOWN"], ["UP"],
+    [], ["RIGHT"], ["LEFT"],
+    ["RIGHT", "B"], ["RIGHT", "A"], ["RIGHT", "A", "B"],
+    ["LEFT", "A"], ["LEFT", "A", "B"],
+    ["A"], ["B"], ["DOWN"], ["UP"],
 ]
 
 class SaveCheckpointCallback(BaseCallback):
@@ -293,6 +299,10 @@ def make_p1_action(env_buttons, pressed_keys):
         if pressed_keys[key] and button_name in env_buttons:
             action[env_buttons.index(button_name)] = True
     return action
+
+# Player 1 and Player 2 actions concatenated into 1D boolean array for stable-retro
+# joint_action = np.concatenate([p1_action, p2_action]) if num_players == 2 else p1_action
+# Launch with --boot-screen to access title menu and choose 1P vs 2P mode!
 `
     },
     play_and_record: {
@@ -394,11 +404,12 @@ class JumpIncentiveWrapper(Wrapper):
     2. Penalizes being stuck against an obstacle without jumping.
     3. Rewards gaining vertical airtime while progressing horizontally.
     """
-    def __init__(self, env, jump_bonus=0.2, stuck_penalty=0.05, jump_button="A"):
+    def __init__(self, env, jump_bonus=0.2, stuck_penalty=0.05, jump_button="A", combos=None):
         super().__init__(env)
         self.jump_bonus = jump_bonus
         self.stuck_penalty = stuck_penalty
         self.jump_button = jump_button
+        self.combos = combos
         self.prev_x = 0
         self.stalled_frames = 0
         self.prev_y = None
@@ -418,10 +429,17 @@ class JumpIncentiveWrapper(Wrapper):
         buttons = getattr(self.env.unwrapped, "buttons", [])
         jump_idx = buttons.index(self.jump_button) if self.jump_button in buttons else None
 
-        # 1. Action exploration incentive for jumping
-        if jump_idx is not None and isinstance(action, (list, np.ndarray)) and len(action) > jump_idx:
-            if action[jump_idx]:
-                reward += self.jump_bonus
+        # 1. Action exploration incentive (detects both discrete integer action and boolean array)
+        is_jump = False
+        if isinstance(action, (int, np.integer)):
+            if self.combos and 0 <= int(action) < len(self.combos):
+                is_jump = self.jump_button in self.combos[int(action)]
+        elif isinstance(action, (list, np.ndarray)):
+            if jump_idx is not None and len(action) > jump_idx:
+                is_jump = bool(action[jump_idx])
+
+        if is_jump:
+            reward += self.jump_bonus
 
         # 2. Discourage bumping into walls without jumping
         if current_x is not None and self.prev_x is not None:
@@ -433,9 +451,9 @@ class JumpIncentiveWrapper(Wrapper):
                 self.stalled_frames = 0
             self.prev_x = current_x
 
-        # 3. Vertical airtime bonus
+        # 3. Vertical clearing movement bonus
         if current_y is not None and self.prev_y is not None:
-            if current_y > self.prev_y:
+            if is_jump and current_y != self.prev_y:
                 reward += self.jump_bonus * 0.5
             self.prev_y = current_y
 

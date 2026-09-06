@@ -29,8 +29,23 @@ import tempfile
 from play_and_record import find_new_bk2, play_agent_episode, render_to_mp4
 from train import safe_name
 
-# Ships with the fonts-dejavu-core apt package -- see README.
-FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+def find_font():
+    """Finds an available TrueType font for drawtext filter."""
+    candidates = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+        "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
+        "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
+        "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",
+        "/System/Library/Fonts/Helvetica.ttc",
+        "C:\\Windows\\Fonts\\arial.ttf",
+    ]
+    for p in candidates:
+        if os.path.exists(p):
+            return p
+    return None
+
+DEFAULT_FONT = find_font()
 
 
 def make_clip(game, state, checkpoint_path, max_steps, work_dir, label):
@@ -49,16 +64,19 @@ def make_clip(game, state, checkpoint_path, max_steps, work_dir, label):
     return render_to_mp4(bk2_path)
 
 
-def build_segment(src_mp4, label_text, width, height, clip_seconds, out_path):
+def build_segment(src_mp4, label_text, width, height, clip_seconds, out_path, font_file=None):
     """Fits src_mp4 into a width x height canvas (letterboxed/pillarboxed
     as needed, since NES footage isn't the same shape as either target),
     stamps the iteration label on top, and caps it at clip_seconds."""
+    font = font_file or DEFAULT_FONT
+    drawtext_filter = f"drawtext=text='{label_text}':fontcolor=white:fontsize={max(24, width // 20)}:x=(w-text_w)/2:y=40:box=1:boxcolor=black@0.5:boxborderw=10"
+    if font and os.path.exists(font):
+        drawtext_filter = f"drawtext=fontfile='{font}':text='{label_text}':fontcolor=white:fontsize={max(24, width // 20)}:x=(w-text_w)/2:y=40:box=1:boxcolor=black@0.5:boxborderw=10"
+
     vf = (
         f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
         f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black,"
-        f"drawtext=fontfile={FONT}:text='{label_text}':fontcolor=white:"
-        f"fontsize={max(24, width // 20)}:x=(w-text_w)/2:y=40:"
-        f"box=1:boxcolor=black@0.5:boxborderw=10"
+        f"{drawtext_filter}"
     )
     subprocess.run(
         [
@@ -94,6 +112,7 @@ def main():
     parser.add_argument("--iterations", type=int, nargs="+", default=[1, 100], help="Must match checkpoints train.py actually saved for this game (default: %(default)s, matching train.py's own default run length)")
     parser.add_argument("--clip-seconds", type=int, default=8, help="Gameplay seconds per checkpoint in the YouTube version (default: %(default)s)")
     parser.add_argument("--clip-seconds-short", type=int, default=4, help="Gameplay seconds per checkpoint in the IG/TikTok version (default: %(default)s)")
+    parser.add_argument("--font", default=None, help="Path to TTF font file for iteration overlay text (auto-detected if omitted)")
     parser.add_argument("--out-dir", default="./progress_reels")
     args = parser.parse_args()
 
@@ -134,7 +153,7 @@ def main():
         for it in sorted(clips):
             label = f"Iteration {it:,}"
             seg_path = os.path.join(work_dir, f"{name}_{it}.mp4")
-            build_segment(clips[it], label, width, height, seconds, seg_path)
+            build_segment(clips[it], label, width, height, seconds, seg_path, font_file=args.font)
             segments.append(seg_path)
         out_path = os.path.join(args.out_dir, filename)
         concat_segments(segments, out_path, work_dir)

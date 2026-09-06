@@ -51,7 +51,7 @@ def build_policy(model_path, action_space):
 
 def play_agent_episode(game, state, model_path, max_steps, record_dir, render,
                        on_death="continue", stochastic=False, max_attempts=5,
-                       oam_base=0x0200):
+                       oam_base=0x0200, boot_screen=False):
     """Plays one session and records it.
 
     on_death="continue" (default): the game plays itself through deaths. The
@@ -80,9 +80,13 @@ def play_agent_episode(game, state, model_path, max_steps, record_dir, render,
     # headless WSL2/EC2 box doesn't have. Only ask for 'human' when --render was
     # explicitly passed; otherwise stay fully headless ('rgb_array').
     render_mode = "human" if render else "rgb_array"
+    if boot_screen or (isinstance(state, str) and state.upper() == "NONE"):
+        state_val = retro.State.NONE
+    else:
+        state_val = state or retro.State.DEFAULT
     base_env = retro.make(
         game=game,
-        state=state or retro.State.DEFAULT,
+        state=state_val,
         record=record_dir,
         render_mode=render_mode,
     )
@@ -319,7 +323,7 @@ def play_agent_episode(game, state, model_path, max_steps, record_dir, render,
     )
 
 
-def play_human_episode(game, state, record_dir):
+def play_human_episode(game, state, record_dir, boot_screen=False):
     """Hands off to stable-retro's own interactive tool for the actual
     keyboard-to-controller mapping (console-aware, already correct for
     every system stable-retro supports) rather than reimplementing it."""
@@ -328,7 +332,9 @@ def play_human_episode(game, state, record_dir):
         "--game", game,
         "--record", record_dir,
     ]
-    if state:
+    if boot_screen or (isinstance(state, str) and state.upper() == "NONE"):
+        cmd += ["--state", "NONE"]
+    elif state:
         cmd += ["--state", state]
 
     print("Launching interactive play window -- close it (or reach game over) when you're done.")
@@ -448,7 +454,8 @@ def main():
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument("--game", required=True, help="stable-retro game id, e.g. SuperMarioBros-Nes (see list_games.py)")
-    parser.add_argument("--state", default=None, help="Save state to start from (default state if omitted)")
+    parser.add_argument("--state", default=None, help="Save state to start from (default state if omitted, or NONE for cold boot)")
+    parser.add_argument("--boot-screen", action="store_true", help="Start from cold boot / title screen (state=retro.State.NONE) to select 1P vs 2P, etc.")
     parser.add_argument("--human", action="store_true", help="You play with a keyboard (opens a window) instead of an agent. Needs a display.")
     parser.add_argument("--model", default=None, help="Path to a trained Stable-Baselines3 PPO model (.zip). Ignored with --human. Omit for random play.")
     parser.add_argument("--max-steps", type=int, default=10800, help="Safety cap in emulator frames for agent play (60fps NES -> 10800 = ~3 min). Ignored with --human -- that runs until you close the window. (default: %(default)s)")
@@ -467,7 +474,7 @@ def main():
     session_start = time.time()
 
     if args.human:
-        play_human_episode(game=args.game, state=args.state, record_dir=args.record_dir)
+        play_human_episode(game=args.game, state=args.state, record_dir=args.record_dir, boot_screen=args.boot_screen)
     else:
         play_agent_episode(
             game=args.game,
@@ -480,6 +487,7 @@ def main():
             stochastic=args.stochastic,
             max_attempts=args.max_attempts,
             oam_base=args.oam_base,
+            boot_screen=args.boot_screen,
         )
 
     # --on-death restart resets the env per attempt, and stable-retro starts a

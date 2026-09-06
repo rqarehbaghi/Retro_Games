@@ -185,16 +185,21 @@ def process_frame(rgb_frame, target_size=84):
 
 
 def play_match(game, state, model_path, record_dir, scale=3, fps_cap=60,
-               mode="versus", players=2):
+               mode="versus", players=2, boot_screen=False):
     os.makedirs(record_dir, exist_ok=True)
     before_bk2s = set(glob.glob(os.path.join(record_dir, "*.bk2")))
     session_start = time.time()
+
+    if boot_screen or (isinstance(state, str) and state.upper() == "NONE"):
+        state_val = retro.State.NONE
+    else:
+        state_val = state or retro.State.DEFAULT
 
     # 1. Initialize stable-retro with 2 players
     try:
         env = retro.make(
             game=game,
-            state=state or retro.State.DEFAULT,
+            state=state_val,
             players=players,
             record=record_dir,
             render_mode="rgb_array",
@@ -204,7 +209,7 @@ def play_match(game, state, model_path, record_dir, scale=3, fps_cap=60,
         print("Falling back to standard 1-player environment...")
         env = retro.make(
             game=game,
-            state=state or retro.State.DEFAULT,
+            state=state_val,
             record=record_dir,
             render_mode="rgb_array",
         )
@@ -355,7 +360,8 @@ def play_match(game, state, model_path, record_dir, scale=3, fps_cap=60,
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--game", required=True, help="stable-retro game id, e.g. MortalKombatII-Genesis or StreetFighterIISNES")
-    parser.add_argument("--state", default=None, help="Save state name")
+    parser.add_argument("--state", default=None, help="Save state name (or NONE for cold boot)")
+    parser.add_argument("--boot-screen", action="store_true", help="Start from cold boot / title screen (state=retro.State.NONE)")
     parser.add_argument("--model", default=None, help="Path to trained PPO checkpoint .zip for Player 2")
     parser.add_argument("--mode", choices=["versus", "coop", "race"], default="versus", help="Match mode")
     parser.add_argument("--scale", type=int, default=3, help="Window display scale factor (default: 3)")
@@ -371,6 +377,7 @@ def main():
         scale=args.scale,
         fps_cap=args.fps,
         mode=args.mode,
+        boot_screen=args.boot_screen,
     )
 
 

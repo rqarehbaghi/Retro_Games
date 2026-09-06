@@ -182,12 +182,18 @@ def space_clips(clips, duration_s, min_gap=MIN_GAP, verbose=True):
 
 
 def build_track(clips, duration_s, out_path, sample_rate=SAMPLE_RATE):
-    """One wav the length of the video, each clip starting at its timestamp.
+    """Returns (path, placed) -- the track, and where each line actually landed.
+
+    The placements come back because they are not knowable until the speech is
+    rendered, and narration.txt should show the real times rather than what was
+    asked for.
+
+    One wav the length of the video, each clip starting at its timestamp.
 
     Built against a silent bed of the right length so the track lines up with
     the footage on its own, without relying on the mux to position anything."""
     if not clips:
-        return None
+        return None, []
     clips = space_clips(clips, duration_s)
     inputs, chains, labels = [], [], []
     for i, (at, path) in enumerate(clips):
@@ -208,7 +214,7 @@ def build_track(clips, duration_s, out_path, sample_rate=SAMPLE_RATE):
          *inputs, "-filter_complex", graph, "-map", "[out]",
          "-t", "%.3f" % duration_s, out_path],
         check=True, capture_output=True)
-    return out_path
+    return out_path, clips
 
 
 def mux(video, narration_wav, out_path, duck_to=DUCK_TO):

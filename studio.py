@@ -880,14 +880,31 @@ def main():
     wide, tall, clean = written[0], written[1], written[2]
 
     written_narr = writer.narration(**ctx, **ai) or []
-    with open(os.path.join(folder, "narration.txt"), "w") as handle:
-        handle.write("# Commentary for %s%s, written by %s (seed %d).\n"
-                     % (pretty_game(args.game),
-                        ", " + args.level if args.level else "",
-                        in_use, seed))
-        handle.write("# Timestamps are when each line should START.\n\n")
-        for item in written_narr:
-            handle.write("[%s] %s\n" % (stamp(int(item["at"] * FPS)), item["text"]))
+
+    def write_narration(placed=None):
+        """The script on disk. Real times once the speech exists, order before.
+
+        Narration lines carry an ANCHOR, not a timestamp -- when a line is
+        spoken is decided by how long the ones before it turned out to be, and
+        that is only known after synthesis. Writing a made-up time here was
+        what raised KeyError: 'at' once the anchor replaced it."""
+        with open(os.path.join(folder, "narration.txt"), "w") as handle:
+            handle.write("# Commentary for %s%s, written by %s (seed %d).\n"
+                         % (pretty_game(args.game),
+                            ", " + args.level if args.level else "",
+                            in_use, seed))
+            if placed:
+                handle.write("# Times are where each line was actually spoken.\n\n")
+                for (at, _path), item in zip(placed, written_narr):
+                    handle.write("[%s] %s\n" % (stamp(int(at * FPS)), item["text"]))
+            else:
+                handle.write("# In order. A line marked (@) waits for that moment;\n"
+                             "# the rest run on continuously.\n\n")
+                for item in written_narr:
+                    anchor = item.get("anchor")
+                    mark = ("(@ %s)" % stamp(int(anchor * FPS))) if anchor is not None else "       "
+                    handle.write("%s %s\n" % (mark, item["text"]))
+    write_narration()
     if not written_narr:
         print("  WARNING: the model returned no commentary; narration.txt is empty.")
 
@@ -901,12 +918,10 @@ def main():
                                     model_name=args.voice_model,
                                     voice=args.voice_describe,
                                     speaker=args.voice_speaker)
-            track = tts.build_track(clips, duration,
-                                    os.path.join(folder, "narration.wav"))
-            # The bare voice track is kept as well as the mixes. It is the one
-            # thing that cannot be recovered from the finished videos, and it
-            # is what you re-cut against if the mix needs redoing.
-            print(f"  narration.wav      the voice alone, {len(clips)} lines")
+            track, placed = tts.build_track(
+                clips, duration, os.path.join(folder, "narration.wav"))
+            write_narration(placed)
+            print(f"  narration.wav      the voice alone, {len(placed)} lines")
             for source in (wide, tall):
                 stem, ext = os.path.splitext(source)
                 spoken = tts.mux(source, track, stem + "_narrated" + ext)
@@ -914,6 +929,7 @@ def main():
         except Exception as exc:                              # noqa: BLE001
             print(f"  WARNING: voice failed ({exc.__class__.__name__}: {exc})")
             print( "           the videos and narration.txt are unaffected.")
+
     with open(os.path.join(folder, "captions.txt"), "w") as handle:
         for at, text in lines:
             handle.write("%s  %s\n" % (stamp(int(at * FPS)), text))

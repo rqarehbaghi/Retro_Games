@@ -52,6 +52,7 @@ inventing a run.
 """
 import json
 import os
+import re
 import shutil
 import urllib.error
 import urllib.request
@@ -408,6 +409,22 @@ CAPTION_SCHEMA = {
     "required": ["opening", "closing", "captions"],
 }
 
+def trim_words(text, limit):
+    """Shorten to at most `limit` characters WITHOUT cutting a word in half.
+
+    A hard slice produced "Which level should he try to actually fi" on screen.
+    The renderer already wraps to two lines and shrinks to fit, so a little
+    overshoot costs a couple of points of size and nothing else -- only a wild
+    overshoot needs cutting, and then at a space."""
+    text = text.strip()
+    if len(text) <= limit:
+        return text
+    cut = text[:limit + 1]
+    space = cut.rfind(" ")
+    out = (cut[:space] if space > limit * 0.5 else text[:limit]).rstrip()
+    return out.rstrip(",;:-").rstrip()
+
+
 CAPTION_GAP = 6.0        # clear seconds between one caption and the next
 
 
@@ -452,7 +469,8 @@ def captions(game, level, duration_s, players, events, fps, max_chars=40,
     out = []
     opening = str(data.get("opening", "")).strip()
     if opening:
-        out.append({"at": 0.6, "text": opening[:max_chars], "event": None})
+        out.append({"at": 0.6, "text": trim_words(opening, max_chars * 3 // 2),
+                    "event": None})
     for item in data.get("captions", []):
         text = str(item.get("text", "")).strip()
         index = item.get("event")
@@ -463,7 +481,8 @@ def captions(game, level, duration_s, players, events, fps, max_chars=40,
             # a line landing at the wrong second, and a line landing correctly
             # on an event it is not actually about -- and only the mapping
             # tells them apart.
-            out.append({"at": round(at, 2), "text": text[:max_chars],
+            out.append({"at": round(at, 2),
+                        "text": trim_words(text, max_chars * 3 // 2),
                         "event": int(index), "kind": events[int(index)][1]})
     out.sort(key=lambda c: c["at"])
 
@@ -474,7 +493,8 @@ def captions(game, level, duration_s, players, events, fps, max_chars=40,
     closing = str(data.get("closing", "")).strip()
     if closing and duration_s > 8:
         out.append({"at": round(max(0.0, duration_s - 5.0), 2),
-                    "text": closing[:max_chars], "event": None, "closing": True})
+                    "text": trim_words(closing, max_chars * 3 // 2),
+                    "event": None, "closing": True})
 
     # Two captions on top of each other are unreadable, and a model asked for
     # "the interesting moments" will happily pick three in a row.
@@ -494,134 +514,104 @@ def captions(game, level, duration_s, players, events, fps, max_chars=40,
 NARRATION_SCHEMA = {
     "type": "object",
     "properties": {
-        "opening": {"type": "string"},
-        "events": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "event": {"type": "integer"},
-                    "text": {"type": "string"},
-                    "tone": {"type": "string"},
-                },
-                "required": ["event", "text", "tone"],
-            },
-        },
-        "filler": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "text": {"type": "string"},
-                    "tone": {"type": "string"},
-                },
-                "required": ["text", "tone"],
-            },
-        },
+        "script": {"type": "array", "items": {"type": "string"}},
         "closing": {"type": "string"},
     },
-    "required": ["opening", "events", "filler", "closing"],
+    "required": ["script", "closing"],
 }
 
-NARRATION_GAP = 5.0      # fill any silence longer than this
+# Built from chr() so no quote character sits inside a pattern literal.
+_Q = "[" + chr(34) + chr(39) + "]"
+# Field names a backend without constrained decoding sometimes hands back
+# alongside the value it was asked for.
+_KEYS = "(text|tone|line|script|closing|narration)"
+_LEAD = "^" + _Q + "?" + _KEYS + _Q + "?" + r"\s*[:=]\s*" + _Q + "?"
+_TRAIL = (_Q + "?[,;]" + r"\s*" + _Q + "?" + _KEYS + _Q + "?" +
+          r"\s*[:=]\s*" + _Q + r"?[\w -]*" + _Q + "?$")
+_OPEN = r"^[\s{\[" + chr(34) + chr(39) + "]+"
+_CLOSE = r"[\s}\]" + chr(34) + chr(39) + "]+$"
 
 
-def uncovered(filled, duration_s, spoken, limit=15.0):
-    """True when some stretch longer than `limit` has nothing spoken over it.
+def clean_spoken(text):
+    """Strip anything structural that leaked into a line.
 
-    Worth saying out loud: a short filler pool leaves the back half of the run
-    silent, and silence in a commentary track looks like a bug in the renderer
-    rather than a model that wrote too little."""
-    ordered = sorted(filled)
-    for i, (at, text) in enumerate(ordered):
-        end = ordered[i + 1][0] if i + 1 < len(ordered) else duration_s
-        if end - (at + spoken(text)) > limit:
-            return True
-    return False
+    A backend with no schema enforcement occasionally returns a field name
+    along with its value, and the result was the voice reading "text" and
+    "tone amused" out loud. Nothing shaped like JSON should reach the
+    synthesiser, so it is stripped here rather than trusted upstream."""
+    out = re.sub(_CLOSE, "", re.sub(_OPEN, "", str(text).strip()))
+    # Repeatedly, because a whole object handed back leaves {"text": "..." and
+    # each pass peels one layer.
+    for _ in range(3):
+        stripped = re.sub(_LEAD, "", out, flags=re.I)
+        if stripped == out:
+            break
+        out = stripped
+    out = re.sub(_TRAIL, "", out, flags=re.I)
+    return out.strip().strip(chr(34)).strip(chr(39)).strip()
 
 
 def narration(game, level, duration_s, players, events, fps, wpm=125, **kw):
-    """A spoken commentary script. Returns [{at, text}] or None.
+    """A continuous spoken script. Returns [{at, text, closing}] or None.
 
-    Split deliberately: the model writes lines ABOUT events, plus loose filler
-    with no timing at all. Event lines land on their real timestamps and the
-    filler goes into whatever silence is left, so the track both syncs and
-    covers the whole run -- neither of which survives asking a model to place
-    its own lines across ninety seconds."""
+    ONE MONOLOGUE, not lines pinned to moments. Anchoring commentary to events
+    produced disconnected sentences dropped into gaps, which does not sound
+    like a person talking -- it sounds like captions read aloud. A podcaster
+    talking over footage is continuous, so the script is written as continuous
+    speech and laid down end to end; the events are context for WHAT to say,
+    never instructions for WHEN to say it.
+
+    Timing comes from the speech itself, in tts.space_clips, which knows how
+    long each line actually rendered to."""
     words = int(duration_s / 60.0 * wpm)
     prompt = (
         _context(game, level, duration_s, players, events, fps) +
-        "\nWrite a spoken commentary track covering the WHOLE run.\n\n"
+        "\nWrite what a podcaster says over this footage, start to finish.\n\n"
+        "It has to sound like ONE PERSON TALKING CONTINUOUSLY, not a list of\n"
+        "remarks. Each entry in 'script' is the next sentence or two of the\n"
+        "same monologue, read straight through with no gap between them, so\n"
+        "they must flow into each other -- use the connective tissue real\n"
+        "speech has: 'and honestly', 'which is mad when you think about it',\n"
+        "'anyway', 'now watch this bit'.\n\n"
+        "MOSTLY FACTS AND JOKES ABOUT THE GAME, not description of the screen.\n"
+        "The viewer can see the screen. What they cannot see is how this game\n"
+        "was made, what got cut, what this level is famous for, what everyone\n"
+        "got stuck on as a child, how old it all is now. Weave the run in\n"
+        "where it fits -- a death is worth a laugh -- but the trivia carries\n"
+        "it. Say only what you are confident is TRUE; a wrong fact about a\n"
+        "game this audience grew up with is worse than no fact at all.\n\n"
         "RULES:\n"
-        "- 'opening' names the game and section and sets the run up.\n"
-        "- 'events' are lines about specific moments. 'event' is the [N] NUMBER\n"
-        "  from the list above. Do NOT write timestamps -- each line is placed\n"
-        "  on the moment it names.\n"
-        "- 'filler' is AT LEAST %d loose lines with no particular moment\n"
-        "  attached. This is the BULK of the track and it is what makes it\n"
-        "  worth listening to: real facts, trivia and jokes about THIS game\n"
-        "  and THIS level. How it was made, what was cut, what the level is\n"
-        "  famous for, what everyone got stuck on, where the secrets are, how\n"
-        "  old it all is now. Play-by-play of what is on screen is the boring\n"
-        "  option -- the viewer can see the screen. Each line must stand alone\n"
-        "  and make sense in any order, because they are placed into whatever\n"
-        "  silences the run leaves.\n"
-        "  Say only things you are confident are true. A wrong 'fact' about a\n"
-        "  game this audience grew up with is worse than no fact.\n"
-        "- 'closing' signs off and says how the run went.\n"
-        "- 'tone' is how each line is SPOKEN, one of: deadpan, amused,\n"
-        "  exasperated, surprised, delighted, sarcastic, excited, wistful,\n"
-        "  annoyed. VARY IT. The commentator is reacting live, not reading a\n"
-        "  script, and a track delivered at one pitch throughout sounds\n"
-        "  robotic however good the words are. Match the moment: groan at a\n"
-        "  death, sound genuinely surprised when something goes right.\n"
-        "- About %d words in TOTAL across every line. Synthesised speech runs\n"
-        "  slower than people expect, and anything past %.0f seconds is cut,\n"
-        "  so going over loses the end of the script rather than making a\n"
-        "  longer video. Full sentences -- this is spoken, not captions.\n"
-        "Return JSON with keys: opening, events, filler, closing."
-        % (max(8, int(duration_s / 6)), words, duration_s))
+        "- About %d words TOTAL. Synthesised speech runs slower than you\n"
+        "  expect, and anything past %.0f seconds is cut, so going over loses\n"
+        "  the end rather than making a longer video.\n"
+        "- Plain spoken prose. No stage directions, no speaker labels, no\n"
+        "  field names, no markdown, no emoji, no timestamps. Every string is\n"
+        "  read aloud EXACTLY as written.\n"
+        "- 'closing' is the last thing said: ask which level or which game to\n"
+        "  play next. A question, never 'like and subscribe'.\n"
+        "Return JSON: {\"script\": [\"...\", \"...\"], \"closing\": \"...\"}"
+        % (words, duration_s))
     data = write(prompt, NARRATION_SCHEMA, **kw)
     if not data:
         return None
 
-    def spoken(text):
-        return len(text.split()) / wpm * 60.0
-
-    script = []
-    opening = str(data.get("opening", "")).strip()
-    if opening:
-        script.append((0.4, opening, "amused"))
-    for item in data.get("events", []):
-        text = str(item.get("text", "")).strip()
-        at = event_time(events, item.get("event"), fps, duration_s)
-        if text and at is not None:
-            script.append((at, text, str(item.get("tone", ""))))
-    script.sort()
-
-    filler = [(str(f.get("text", "")).strip(), str(f.get("tone", "")))
-              for f in data.get("filler", []) if str(f.get("text", "")).strip()]
-    closing = str(data.get("closing", "")).strip()
-
-    filled, pool = [], list(filler)
-    for i, (at, text, tone) in enumerate(script):
-        filled.append((at, text, tone))
-        cursor = at + spoken(text)
-        end = script[i + 1][0] if i + 1 < len(script) else duration_s
-        while pool and end - cursor > NARRATION_GAP:
-            line, line_tone = pool.pop(0)
-            filled.append((cursor + 0.8, line, line_tone))
-            cursor += 0.8 + spoken(line)
-    if uncovered([(a, t) for a, t, _n in filled], duration_s, spoken):
-        print("  (writer: too little filler came back -- part of the run has "
-              "no commentary over it)")
+    lines = []
+    for item in data.get("script", []):
+        text = clean_spoken(item)
+        if text:
+            lines.append({"text": text, "closing": False})
+    closing = clean_spoken(data.get("closing", ""))
     if closing:
-        last = max((a + spoken(t) for a, t, _n in filled), default=0.0)
-        filled.append((min(max(last + 0.5, duration_s - spoken(closing) - 0.5),
-                           max(0.0, duration_s - 0.5)), closing, "amused"))
-    filled.sort()
-    return [{"at": round(a, 2), "text": t, "tone": n,
-             "closing": t == closing} for a, t, n in filled] or None
+        lines.append({"text": closing, "closing": True})
+    if not lines:
+        return None
+
+    # Placeholder times only. tts.space_clips lays the speech end to end from
+    # what each line actually renders to; nothing here pretends to know that.
+    step = duration_s / max(1, len(lines))
+    for i, line in enumerate(lines):
+        line["at"] = round(min(i * step, max(0.0, duration_s - 1.0)), 2)
+    return lines
 
 
 # ------------------------------------------------------------------- copy --

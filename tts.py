@@ -51,24 +51,10 @@ DEFAULT_VOICE = (
     "flat, never a newsreader."
 )
 
-# Delivery per line, appended to the description above. Qwen3-TTS designs the
-# voice from words, so the emotion can change line by line -- a track read at
-# one pitch throughout is what makes synthesised speech sound synthesised, and
-# the difference between reading and reacting is the whole point.
-#
-# The writer picks one of these names per line; anything unrecognised falls
-# back to the base voice, so a model inventing a tone cannot break the render.
-TONES = {
-    "deadpan": "Say this flatly, completely unimpressed.",
-    "amused": "Say this with a laugh in your voice, like you find it funny.",
-    "exasperated": "Say this with a groan, exasperated, as if this keeps happening.",
-    "surprised": "Say this genuinely surprised, pitch rising, caught off guard.",
-    "delighted": "Say this warmly and brightly, actually pleased.",
-    "sarcastic": "Say this dripping with sarcasm.",
-    "excited": "Say this fast and energetic, carried away by the moment.",
-    "wistful": "Say this softly and fondly, remembering something.",
-    "annoyed": "Say this sharply, genuinely irritated.",
-}
+# Per-line tone hints were removed. They gave a different instruct on every
+# call, and a model handing back the hint alongside the text meant the voice
+# read "tone amused" out loud. One instruction for the whole run is both more
+# consistent and has nothing to leak.
 
 
 # How far the game audio drops while a line is being spoken. Full silence loses
@@ -94,12 +80,6 @@ def load(model_name=DEFAULT_MODEL, device="cuda:0"):
         model_name, device_map=device, dtype=torch.bfloat16)
 
 
-def instruct_for(voice, tone):
-    """The voice description plus this line's delivery."""
-    hint = TONES.get((tone or "").strip().lower())
-    return voice + " " + hint if hint else voice
-
-
 def speak_lines(lines, out_dir, model=None, model_name=DEFAULT_MODEL,
                 voice=DEFAULT_VOICE, speaker=DEFAULT_SPEAKER,
                 language="English", verbose=True):
@@ -117,16 +97,12 @@ def speak_lines(lines, out_dir, model=None, model_name=DEFAULT_MODEL,
         if not text:
             continue
         path = os.path.join(out_dir, "line_%03d.wav" % i)
-        tone = item.get("tone", "")
         wavs, sr = model.generate_custom_voice(
-            text=text, language=language, speaker=speaker,
-            instruct=instruct_for(voice, tone))
+            text=text, language=language, speaker=speaker, instruct=voice)
         sf.write(path, wavs[0], sr)
         out.append((float(item["at"]), path, bool(item.get("closing"))))
         if verbose:
-            print("    [%2d/%2d] %5.1fs  %-11s %s"
-                  % (i + 1, len(lines), item["at"],
-                     tone if tone in TONES else "-", text[:46]))
+            print("    [%2d/%2d] %s" % (i + 1, len(lines), text[:64]))
     return out
 
 
@@ -171,16 +147,17 @@ def space_clips(clips, duration_s, min_gap=MIN_GAP, verbose=True):
     reserved = (lengths[closing[0][1]] + min_gap) if closing else 0.0
     ceiling = max(0.0, duration_s - reserved)
 
-    placed, cursor, worst, dropped = [], 0.0, 0.0, 0
-    for item in sorted(body):
-        at, path = item[0], item[1]
-        start = max(at, cursor)
-        if start + lengths[path] > ceiling:
+    # END TO END from the top, in order, because this is one monologue rather
+    # than remarks pinned to moments. The requested times were placeholders;
+    # what governs is how long each line actually renders to.
+    placed, cursor, dropped = [], 0.6, 0
+    for item in body:
+        path = item[1]
+        if cursor + lengths[path] > ceiling:
             dropped += 1
             continue
-        worst = max(worst, start - at)
-        placed.append((start, path))
-        cursor = start + lengths[path] + min_gap
+        placed.append((cursor, path))
+        cursor += lengths[path] + min_gap
 
     if closing:
         path = closing[0][1]
@@ -188,9 +165,6 @@ def space_clips(clips, duration_s, min_gap=MIN_GAP, verbose=True):
         placed.append((max(0.0, min(start, duration_s - lengths[path])), path))
 
     if verbose:
-        if worst > 1.0:
-            print("  (voice: lines pushed back by up to %.1fs so they do not "
-                  "overlap)" % worst)
         if dropped:
             print("  (voice: %d line%s dropped -- the spoken script was longer "
                   "than the footage)" % (dropped, "" if dropped == 1 else "s"))
@@ -228,18 +202,19 @@ def build_track(clips, duration_s, out_path, sample_rate=SAMPLE_RATE):
 
 
 def mux(video, narration_wav, out_path, duck_to=DUCK_TO):
-    """Lay the narration over the video, ducking the game audio under it.
+    """Lay the narration over the video with the game audio turned down.
 
-    sidechaincompress drives the duck from the narration itself, so the music
-    drops only while a line is actually being spoken and comes back up in the
-    gaps -- rather than sitting low for the whole video."""
+    A FIXED reduction, not a sidechain compressor. The compressor was keyed off
+    the narration and did not open -- the game audio stayed at full volume,
+    which was reported. With the commentary now continuous there is nothing for
+    a compressor to do anyway: the music should sit under the whole thing, and
+    a plain gain is something that can be measured afterwards rather than
+    tuned by ear."""
     graph = (
-        "[0:a]aresample=%d[game];"
-        "[1:a]aresample=%d,asplit=2[voice][key];"
-        "[game][key]sidechaincompress=threshold=0.02:ratio=%.1f:attack=20:"
-        "release=400[ducked];"
-        "[ducked][voice]amix=inputs=2:normalize=0:dropout_transition=0[out]"
-        % (SAMPLE_RATE, SAMPLE_RATE, max(1.0, 1.0 / max(duck_to, 0.01))))
+        "[0:a]aresample=%d,volume=%.3f[game];"
+        "[1:a]aresample=%d,volume=1.6[voice];"
+        "[game][voice]amix=inputs=2:normalize=0:dropout_transition=0[out]"
+        % (SAMPLE_RATE, duck_to, SAMPLE_RATE))
     subprocess.run(
         ["ffmpeg", "-nostdin", "-y", "-i", video, "-i", narration_wav,
          "-filter_complex", graph, "-map", "0:v", "-map", "[out]",

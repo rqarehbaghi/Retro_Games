@@ -104,21 +104,30 @@ every sentence sound like a different person. Use `CustomVoice` with a named
 preset (`voice_speaker`) — it keeps one speaker identity and still accepts a
 per-line `instruct`, so the delivery varies while the person does not.
 
-**The spoken track is fitted to the footage, and that needs both halves.**
-Lines are spaced in the script by estimated reading time, which is never exact,
-so two of them talk over each other and both become unintelligible. And
-synthesised speech is reliably slower than the estimate, so the track ran past
-the end of the video. `space_clips` pushes overlapping lines back AND drops any
-line that cannot finish before the footage does — pushing alone fixes the first
-problem and worsens the second. Room is reserved for the closing ask so it
-always lands.
+**The spoken track is ONE CONTINUOUS MONOLOGUE laid end to end.** Pinning
+commentary lines to event timestamps produced disconnected sentences dropped
+into gaps — captions read aloud, not a person talking. `writer.narration` now
+writes flowing prose and `tts.space_clips` lays it down sequentially from the
+length each line actually rendered to. Events are context for WHAT to say,
+never instructions for WHEN.
 
-**The commentary is mostly trivia, not play-by-play.** The viewer can see the
-screen; what they cannot see is how the game was made, what got cut, what
-everyone got stuck on. The prompt asks for facts and jokes about the specific
-game and level, with reactions to events as the smaller part — and tells the
-model to say only what it is confident is true, because a wrong fact about a
-game this audience grew up with is worse than no fact.
+**Speech is measured, never estimated, and never allowed to outlast the
+footage.** Synthesised speech is reliably slower than words-per-minute
+arithmetic, so a line that cannot finish before the video ends is dropped.
+Room is reserved for the closing ask so it always lands.
+
+**Duck the game audio with a plain gain, not a compressor.** A
+`sidechaincompress` keyed off the narration never opened and the music stayed
+at full volume. A fixed `volume=0.25` is measurable after the fact — verified
+at −12.1 dB against an expected −12.0.
+
+**Never hard-slice text to a character limit.** `text[:40]` put "Which level
+should he try to actually fi" on screen. `trim_words` cuts at a space, and the
+cap is generous because the renderer already wraps and shrinks to fit.
+
+**Sanitise anything a model returns before it is spoken or drawn.** Backends
+without constrained decoding hand back field names alongside values, and the
+voice read "tone amused" out loud. `clean_spoken` strips it.
 
 ## The three writer backends, and what they bill
 

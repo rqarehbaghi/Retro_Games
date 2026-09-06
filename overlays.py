@@ -65,7 +65,7 @@ DEFAULT_STYLE = {
         "border_color": "black@0.92",
         "shadow": True,
         "hold": 2.6,
-        "max_lines": 3,
+        "max_lines": 2,
         "y_frac_vertical": 0.80,   # into the blurred band, clear of the game
         "y_frac_wide": HUD_TOP - 0.08,   # lower third, above the status bar
         # "sentence" capitalises the first letter of each sentence; "upper",

@@ -43,8 +43,12 @@ import os
 import urllib.error
 import urllib.request
 
+BACKENDS = ("claude", "ollama")
+DEFAULT_BACKEND = "claude"
+
 DEFAULT_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
 DEFAULT_MODEL = "qwen3:30b-a3b"
+CLAUDE_MODEL = "claude-opus-5"
 TIMEOUT = 600      # a 14B writing a full commentary track is not quick
 
 MODEL_NOTES = """\
@@ -158,6 +162,64 @@ def generate(prompt, schema, model=DEFAULT_MODEL, host=DEFAULT_HOST,
     return None
 
 
+def claude_available():
+    """Is the anthropic SDK importable? Credentials are resolved by the SDK."""
+    try:
+        import anthropic                                       # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+def generate_claude(prompt, schema, model=CLAUDE_MODEL, verbose=True, **_kw):
+    """One structured generation through the Anthropic API. Parsed object or None.
+
+    output_config.format is the API's structured-output mode: it constrains the
+    response to the schema, so the first text block is valid JSON against it.
+    The same guarantee Ollama's `format` gives locally.
+
+    Credentials come from the SDK's own resolution -- ANTHROPIC_API_KEY, or a
+    profile from `ant auth login` -- so nothing here handles a key."""
+    try:
+        import anthropic
+    except ImportError:
+        if verbose:
+            print("  (writer: the anthropic SDK is not installed -- pip install anthropic)")
+        return None
+
+    strict = dict(schema)
+    strict.setdefault("additionalProperties", False)
+    try:
+        client = anthropic.Anthropic()
+        response = client.messages.create(
+            model=model,
+            max_tokens=16000,
+            system=VOICE,
+            messages=[{"role": "user", "content": prompt}],
+            output_config={"format": {"type": "json_schema", "schema": strict}},
+        )
+        if response.stop_reason == "refusal":
+            if verbose:
+                print("  (writer: the request was declined)")
+            return None
+        text = next(b.text for b in response.content if b.type == "text")
+        return json.loads(text)
+    except Exception as exc:                                   # noqa: BLE001
+        if verbose:
+            print(f"  (writer: {exc.__class__.__name__}: {exc})")
+    return None
+
+
+def write(prompt, schema, backend=DEFAULT_BACKEND, **kw):
+    """Dispatch to whichever backend was asked for."""
+    if backend == "claude":
+        return generate_claude(prompt, schema,
+                               model=kw.get("claude_model", CLAUDE_MODEL),
+                               verbose=kw.get("verbose", True))
+    return generate(prompt, schema,
+                    **{k: v for k, v in kw.items() if k != "claude_model"})
+
+
 def _timeline(events, fps):
     """The run, as something a model can read."""
     label = {
@@ -203,24 +265,30 @@ CAPTION_SCHEMA = {
 }
 
 
-def captions(game, level, duration_s, players, events, fps, max_chars=70,
+def captions(game, level, duration_s, players, events, fps, max_chars=40,
              **kw):
     """Timed on-screen captions. Returns [{at, text}] or None."""
     prompt = (
         _context(game, level, duration_s, players, events, fps) +
         "\nWrite on-screen captions for this run.\n\n"
+        "These are READ IN PASSING while the game is playing, so they are the\n"
+        "short form -- a punchline, not a paragraph. The long commentary goes\n"
+        "in the narration track, not here.\n\n"
         "RULES:\n"
+        "- At most %d CHARACTERS each. Aim for five to eight words. A caption\n"
+        "  that runs long gets shrunk until it fits and stops being readable.\n"
         "- One caption per interesting moment above. Skip the dull ones.\n"
-        "- At most %d characters each. This is a hard limit: longer lines are\n"
-        "  shrunk until they fit and become unreadable.\n"
         "- Open with a caption at 0.6 seconds setting up the run.\n"
         "- 'at' is the timestamp in SECONDS as a number.\n"
         "- Leave at least 6 seconds between captions.\n"
         "- Every caption must be different. No repeated jokes.\n"
-        "- Praise the good moments as well as mocking the bad ones.\n"
+        "- Praise the good moments as well as mocking the bad ones.\n\n"
+        "Good: \"He walked into it. Fully aware.\"\n"
+        "Good: \"A mushroom. Do not get attached.\"\n"
+        "Too long: \"That enemy has stood there since 1988 waiting for this.\"\n\n"
         "Return JSON: {\"captions\": [{\"at\": 0.6, \"text\": \"...\"}]}"
         % max_chars)
-    data = generate(prompt, CAPTION_SCHEMA, **kw)
+    data = write(prompt, CAPTION_SCHEMA, **kw)
     if not data:
         return None
     out = []
@@ -273,7 +341,7 @@ def narration(game, level, duration_s, players, events, fps, wpm=150, **kw):
         "- Full sentences. This is spoken, not captions.\n"
         "Return JSON: {\"lines\": [{\"at\": 0.4, \"text\": \"...\"}]}"
         % (words, wpm, duration_s))
-    data = generate(prompt, NARRATION_SCHEMA, **kw)
+    data = write(prompt, NARRATION_SCHEMA, **kw)
     if not data:
         return None
     out = []
@@ -317,7 +385,7 @@ def copy(game, level, duration_s, players, events, fps, watermark="", **kw):
         "%s"
         "Return JSON with keys: description, tiktok, instagram, tags."
         % ("- Sign off with %s.\n" % watermark if watermark else ""))
-    data = generate(prompt, COPY_SCHEMA, **kw)
+    data = write(prompt, COPY_SCHEMA, **kw)
     if not data:
         return None
     if not str(data.get("description", "")).strip():

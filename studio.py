@@ -580,6 +580,8 @@ def main():
     parser.add_argument("--transition-seconds", type=float, default=0.25, help="Length of each transition in seconds. (default: %(default)s)")
     parser.add_argument("--no-captions", action="store_true", help="Turn off the timed commentary captions. They are written from the event log, so they land on the thing they are about.")
     parser.add_argument("--level", default=cfg.get("level"), help="Where in the game this run is, e.g. World 1-1. Shown after the game name in the title. Set it once as the level key in studio.json.")
+    parser.add_argument("--writer", choices=writer.BACKENDS, default=cfg.get("writer", writer.DEFAULT_BACKEND), help="Who writes the captions, commentary and descriptions. 'claude' calls the Anthropic API (needs the anthropic package and credentials); 'ollama' uses a model running on this machine. (default: %(default)s)")
+    parser.add_argument("--claude-model", default=cfg.get("claude_model", writer.CLAUDE_MODEL), help="Claude model for --writer claude. (default: %(default)s)")
     parser.add_argument("--writer-model", default=cfg.get("writer_model", writer.DEFAULT_MODEL), help="Ollama model for --writer ollama. See writer.py for what fits a 24GB card. (default: %(default)s)")
     parser.add_argument("--writer-host", default=cfg.get("writer_host", writer.DEFAULT_HOST), help="Where Ollama is listening. (default: %(default)s)")
     parser.add_argument("--list-writer-models", action="store_true", help="Show which Ollama models are installed, with notes on what suits a 24GB card, then exit")
@@ -630,17 +632,22 @@ def main():
         sys.exit("ffmpeg is not on PATH -- see README step 1.")
 
     # Checked HERE, before a single frame is played. Every word on the video is
-    # written by the model now, so a missing server means an unusable run --
+    # written by a model now, so an unreachable one means an unusable run --
     # and finding that out after playing a level would cost the recording.
-    if not writer.available(args.writer_host):
+    if args.writer == "claude":
+        if not writer.claude_available():
+            sys.exit("--writer claude needs the Anthropic SDK:\n"
+                     "  pip install anthropic\n"
+                     "  then set ANTHROPIC_API_KEY, or run: ant auth login")
+    elif not writer.available(args.writer_host):
         sys.exit(
             f"No Ollama server at {args.writer_host}.\n"
             f"  All captions, commentary and descriptions are written by a\n"
-            f"  local model -- there are no built-in phrases to fall back on.\n\n"
+            f"  model -- there are no built-in phrases to fall back on.\n\n"
             f"  Start one:   ollama serve\n"
             f"  Get a model: ollama pull {args.writer_model}\n"
-            f"  Check:       python studio.py --list-writer-models")
-    if args.writer_model not in writer.installed_models(args.writer_host):
+            f"  Or use the API instead:  --writer claude")
+    elif args.writer_model not in writer.installed_models(args.writer_host):
         sys.exit(
             f"Ollama is running but {args.writer_model!r} is not pulled.\n"
             f"  ollama pull {args.writer_model}\n"
@@ -738,8 +745,10 @@ def main():
     # twice must not produce the same script twice, and an explicit seed is
     # what guarantees that rather than trusting the server's default.
     seed = random.randrange(1 << 31)
-    ai = dict(model=args.writer_model, host=args.writer_host, seed=seed)
-    print(f"Writing with {args.writer_model} (seed {seed}) ...")
+    ai = dict(backend=args.writer, model=args.writer_model,
+              claude_model=args.claude_model, host=args.writer_host, seed=seed)
+    in_use = args.claude_model if args.writer == "claude" else args.writer_model
+    print(f"Writing with {in_use} (seed {seed}) ...")
 
     ctx = dict(game=pretty_game(args.game), level=args.level, duration_s=duration,
                players=args.players, events=events, fps=FPS)
@@ -803,7 +812,7 @@ def main():
         handle.write("# Commentary for %s%s, written by %s (seed %d).\n"
                      % (pretty_game(args.game),
                         ", " + args.level if args.level else "",
-                        args.writer_model, seed))
+                        in_use, seed))
         handle.write("# Timestamps are when each line should START.\n\n")
         for item in written_narr:
             handle.write("[%s] %s\n" % (stamp(int(item["at"] * FPS)), item["text"]))
@@ -817,7 +826,7 @@ def main():
         print("  WARNING: the model returned no description; metadata is bare.")
     meta = build_metadata(args.game, args.players, events, title, args.watermark,
                           written_copy, level=args.level, duration_s=duration,
-                          model=args.writer_model)
+                          model=in_use)
     with open(os.path.join(folder, "metadata.json"), "w") as handle:
         json.dump(meta, handle, indent=2)
     with open(os.path.join(folder, "UPLOAD.txt"), "w") as handle:

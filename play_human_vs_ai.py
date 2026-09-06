@@ -109,6 +109,11 @@ PAD_DEADZONE = 0.5
 def find_pads():
     """Every gamepad SDL can see. Empty is the normal result under WSL."""
     import pygame
+    # Joysticks can only be enumerated once pygame is initialised. play_match
+    # called this BEFORE its pygame.init(), so get_count() returned 0 and the
+    # pad was silently dropped ("Gamepad: none detected" with a pad attached).
+    # pygame.init() is idempotent, so calling it here is safe.
+    pygame.init()
     pygame.joystick.init()
     pads = []
     for i in range(pygame.joystick.get_count()):
@@ -150,11 +155,17 @@ def apply_pad(action, env_buttons, pad):
     return action
 
 
-def make_p1_action(env_buttons, pressed_keys, pad=None):
-    """Converts currently pressed pygame keys into a boolean array matching env.buttons."""
+def make_p1_action(env_buttons, held_keys, pad=None):
+    """Currently pressed keys -> a boolean array matching env.buttons.
+
+    held_keys is a SET of pygame key codes that are down. It used to be the
+    sequence from pygame.key.get_pressed(), but that returns nothing while the
+    window lacks focus and was unreliable under WSLg -- so the caller now also
+    tracks KEYDOWN/KEYUP and passes the union, and membership is tested with
+    `in` rather than by indexing."""
     action = np.array([False] * len(env_buttons), dtype=bool)
     for key, button_name in KEY_MAPPING.items():
-        if pressed_keys[key]:
+        if key in held_keys:
             if button_name in env_buttons:
                 action[env_buttons.index(button_name)] = True
     # Both at once, so a pad can be picked up mid-session without the keyboard
@@ -277,16 +288,30 @@ def play_match(game, state, model_path, record_dir, scale=3, fps_cap=60,
     p1_wins, p2_wins = 0, 0
     match_start_time = time.time()
 
+    # Keys currently held, tracked from KEYDOWN/KEYUP events. get_pressed()
+    # alone was the whole "input not recognized" bug: with no window focus it
+    # returns all-False, so keyboard AND (through the same dead action) the
+    # whole window felt unresponsive. Events are the robust path; the two are
+    # unioned so whichever the platform actually delivers gets through.
+    held_keys = set()
+
     while running:
         # Check Pygame events
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
-            elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
-                running = False
+            elif event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    running = False
+                else:
+                    held_keys.add(event.key)
+            elif event.type == pygame.KEYUP:
+                held_keys.discard(event.key)
 
-        pressed = pygame.key.get_pressed()
-        p1_action = make_p1_action(buttons, pressed, pad)
+        polled = pygame.key.get_pressed()
+        combined = set(held_keys)
+        combined.update(k for k in KEY_MAPPING if polled[k])
+        p1_action = make_p1_action(buttons, combined, pad)
 
         # AI (Player 2) Action Prediction
         if model is not None:

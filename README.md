@@ -1,5 +1,11 @@
 # NES Play & Record
 
+> **Making videos?** `studio.py` is the whole pipeline — play a level, get
+> captioned 16:9 and 9:16 cuts, a clean HD master, spoken commentary and the
+> upload copy, in one self-contained folder. See [CLAUDE.md](CLAUDE.md) for how
+> it fits together and what not to break. The training half below is on hold.
+
+
 Plays an NES game (or anything else stable-retro supports) with an agent,
 then automatically exports a finished MP4 with video and audio.
 

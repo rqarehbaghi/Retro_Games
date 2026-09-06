@@ -128,17 +128,6 @@ EVENT_WEIGHTS = {"clear": 5.0, "1up": 5.0, "death": 4.5, "powerup": 4.0,
                  "powerdown": 2.0, "shrink": 2.5, "pipe": 2.0, "coin": 1.0,
                  "score": 0.25}
 
-# How far BEFORE the logged frame each kind of moment actually starts.
-#
-# Events are logged when the underlying value changes, and some values change
-# long after the thing you want to watch. A death is the worst case: `lives`
-# only decrements at the END of the death sequence, after the death-jump
-# animation and the screen fade -- roughly three seconds after the hit that
-# caused it. A 1.5s lead there starts the clip on the aftermath and misses
-# the kill entirely, which is exactly what it looked like. Coins are the other
-# extreme: the counter moves on the frame you touch them.
-EVENT_LEAD = {"death": 4.0, "clear": 4.0, "powerdown": 2.5, "shrink": 2.5, "pipe": 1.5, "1up": 2.0,
-              "powerup": 1.5, "coin": 1.0, "score": 1.0}
 
 
 def best_window(events, total_s, want_s):
@@ -176,11 +165,11 @@ def highlight_segments(events, total_s, budget_s, seg_s=4.0, lead=None):
         return [(best_window(events, total_s, budget_s), budget_s)]
 
     chosen, used = [], 0.0
-    for frame, kind, _detail in sorted(
+    for frame, _kind, _detail in sorted(
             events, key=lambda e: -EVENT_WEIGHTS.get(e[1], 0.5)):
         # A lead given on the command line applies to everything; otherwise
         # each kind gets the run-up it actually needs.
-        ahead = lead if lead is not None else EVENT_LEAD.get(kind, 1.5)
+        ahead = lead if lead is not None else 0.0
         start = max(0.0, min(frame / FPS - ahead, total_s - seg_s))
         end = min(total_s, start + seg_s)
         for i, (existing_start, existing_end) in enumerate(chosen):
@@ -576,7 +565,7 @@ def main():
     parser.add_argument("--no-events", action="store_true", help="Skip the replay scan that builds the event timeline (faster, but narration.txt becomes generic)")
     parser.add_argument("--short-seconds", type=float, default=cfg.get("short_seconds", 15.0), help="Total length budget for the 9x16 short. The 16x9 master is always the full run. 0 keeps the short full length too. (default: %(default)s)")
     parser.add_argument("--clip-seconds", type=float, default=4.0, help="Seconds kept around each highlight. Smaller means more separate moments in the same budget, larger means fewer but with more room to breathe. (default: %(default)s)")
-    parser.add_argument("--clip-lead", type=float, default=-1.0, help="Seconds of run-up kept before each event. The default of -1 means per-event: a death starts 4s early because the lives counter only moves at the END of the death sequence, while a coin starts 1s early. Any value >= 0 overrides that for every kind. (default: %(default)s)")
+    parser.add_argument("--clip-lead", type=float, default=0.0, help="Seconds of run-up kept before each event when the short is a highlight cut, so a moment has a little context before it. (default: %(default)s)")
     parser.add_argument("--transition", choices=TRANSITIONS, default=cfg.get("transition", "fade"), help="How cuts are joined in the short. fade goes through black and is the safest; dissolve and pixelize cross-fade the pair and cost overlap at every join; none hard-cuts. (default: %(default)s)")
     parser.add_argument("--transition-seconds", type=float, default=0.25, help="Length of each transition in seconds. (default: %(default)s)")
     parser.add_argument("--no-captions", action="store_true", help="Turn off the timed commentary captions. They are written from the event log, so they land on the thing they are about.")
@@ -786,7 +775,7 @@ def main():
     if args.short_seconds and duration:
         segments = highlight_segments(events, duration, args.short_seconds,
                                       seg_s=args.clip_seconds,
-                                      lead=(args.clip_lead if args.clip_lead >= 0 else None))
+                                      lead=max(0.0, args.clip_lead))
 
     title = args.title or auto_title(args.game, args.level)
 
@@ -801,13 +790,8 @@ def main():
         args.writer, args.writer_model)
     print(f"Writing with {in_use} (seed {seed}) ...")
 
-    # event_lead in studio.json tunes how far before its logged frame each kind
-    # of moment is captioned. Only kinds whose RAM value lags what is on screen
-    # need one; everything else changes on the exact frame.
-    leads = dict(writer.EVENT_LEAD)
-    leads.update({k: float(v) for k, v in (cfg.get("event_lead") or {}).items()})
     ctx = dict(game=pretty_game(args.game), level=args.level, duration_s=duration,
-               players=args.players, events=events, fps=FPS, leads=leads)
+               players=args.players, events=events, fps=FPS)
 
     lines = []
     if not args.no_captions:

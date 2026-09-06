@@ -27,10 +27,6 @@
   "_voice": "--voice speaks narration.txt with Qwen3-TTS and lays it over the videos, ducking the game audio under each line. Apache 2.0, ~4GB, runs on the same GPU. voice_describe is a plain-words description rather than a preset name -- keep it in step with the writing voice. Without --voice, narration.txt is written but nothing is spoken.",
   "voice_model": "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
   "voice_describe": "A dry, unimpressed male sports commentator in his forties. British. Measured pace, deadpan delivery, a little weary. He is amused but never excitable, and lands his punchlines flat rather than selling them.",
-  "_timing": "event_lead tunes how many seconds BEFORE its logged frame each kind of moment gets captioned. Almost every value changes on the exact frame the thing happens, so the default is 0 -- the exceptions are death (SMB3's lives counter only decrements at the END of the death sequence, ~3s after the hit) and clear. caption_offset shifts everything by a fixed amount if a whole run reads late or early.",
-  "event_lead": {
-    "death": 3.0,
-    "clear": 2.0
-  },
+  "_timing": "Captions land on the exact frame their event was logged -- every value the event scan reads changes as the thing happens. caption_offset shifts all of them by a fixed number of seconds if a whole run reads late or early; it is 0 by default and nothing is adjusted unless you set it.",
   "caption_offset": 0.0
 }

@@ -297,31 +297,22 @@ def _timeline(events, fps):
     return "\n".join(out) or "  (nothing notable happened)"
 
 
-# How far BEFORE the logged frame each kind of moment starts on screen.
+# NO LEAD. Every value is logged on the frame the thing happens -- including
+# `lives`, which decrements as Mario dies, not at the end of the death
+# animation. An earlier version subtracted 0.5 to 3 seconds per kind on the
+# theory that some values lagged the picture; that theory came from a note
+# about a DIFFERENT byte (0x0749) and was never checked against video, and the
+# result was every caption arriving about a second before the thing it was
+# about. A caption is a reaction: it belongs on the frame, not ahead of it.
 #
-# ZERO for almost everything, because almost every value changes on the exact
-# frame the thing happens: the coin counter ticks as you touch the coin, the
-# power byte changes as the mushroom is taken. A caption is a reaction, so
-# landing it ON the frame is right and landing it early spoils the moment.
-#
-# Two exceptions, and only two, both with evidence behind them. SMB3's `lives`
-# decrements at the END of the death sequence -- the death-jump animation then
-# the fade -- roughly three seconds after the hit, so a death caption has to
-# start three seconds early to appear while the kill is on screen. A level
-# clear is detected from the position collapse at the transition, which is a
-# beat after the goal card is actually hit.
-#
-# An earlier version gave every kind a lead of 0.5 to 1.5 seconds. Those
-# numbers were invented rather than measured, and they put every caption about
-# a second early -- which is exactly how it looked.
-EVENT_LEAD = {"death": 3.0, "clear": 2.0}
-DEFAULT_LEAD = 0.0
+# caption_offset in studio.json is the remaining knob, and it is 0 unless set.
 
 
-def event_time(events, index, fps, duration_s, leads=None):
+def event_time(events, index, fps, duration_s):
     """Screen time of an event, or None if the index is not a real one.
 
-    Times come from HERE, never from the model. Asking a model for timestamps
+    The time IS the event's own frame -- no adjustment. Times come from HERE,
+    never from the model. Asking a model for timestamps
     and trusting them is what put captions on the wrong moments: it has no way
     to know when anything happened beyond the numbers in the prompt, and it
     approximates them. The frame numbers are exact, so the model writes the
@@ -332,10 +323,8 @@ def event_time(events, index, fps, duration_s, leads=None):
         return None
     if not 0 <= index < len(events):
         return None
-    frame, kind, _detail = events[index]
-    table = EVENT_LEAD if leads is None else leads
-    at = frame / fps - table.get(kind, DEFAULT_LEAD)
-    return max(0.0, min(at, max(0.0, duration_s - 1.0)))
+    frame, _kind, _detail = events[index]
+    return max(0.0, min(frame / fps, max(0.0, duration_s - 1.0)))
 
 
 def _context(game, level, duration_s, players, events, fps):
@@ -371,7 +360,7 @@ CAPTION_GAP = 6.0        # clear seconds between one caption and the next
 
 
 def captions(game, level, duration_s, players, events, fps, max_chars=40,
-             leads=None, **kw):
+             **kw):
     """Timed on-screen captions. Returns [{at, text}] or None.
 
     The model chooses WHICH moments to caption and what to say; the timeline
@@ -410,7 +399,7 @@ def captions(game, level, duration_s, players, events, fps, max_chars=40,
     for item in data.get("captions", []):
         text = str(item.get("text", "")).strip()
         index = item.get("event")
-        at = event_time(events, index, fps, duration_s, leads)
+        at = event_time(events, index, fps, duration_s)
         if text and at is not None:
             # The event is kept so the caller can SHOW what each line was
             # pinned to. Two very different faults look identical on screen --
@@ -470,7 +459,7 @@ def uncovered(filled, duration_s, spoken, limit=15.0):
     return False
 
 
-def narration(game, level, duration_s, players, events, fps, wpm=150, leads=None, **kw):
+def narration(game, level, duration_s, players, events, fps, wpm=150, **kw):
     """A spoken commentary script. Returns [{at, text}] or None.
 
     Split deliberately: the model writes lines ABOUT events, plus loose filler
@@ -511,7 +500,7 @@ def narration(game, level, duration_s, players, events, fps, wpm=150, leads=None
         script.append((0.4, opening))
     for item in data.get("events", []):
         text = str(item.get("text", "")).strip()
-        at = event_time(events, item.get("event"), fps, duration_s, leads)
+        at = event_time(events, item.get("event"), fps, duration_s)
         if text and at is not None:
             script.append((at, text))
     script.sort()

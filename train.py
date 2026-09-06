@@ -1114,7 +1114,11 @@ def load_game_config(path, game):
         "playstate_address": addr("playstate"),
         "coin_address": addr("coins"),
         "speed_address": addr("pmeter"),
+        "clear_address": addr("course_clear"),
     }
+    clear = variables.get("course_clear") or {}
+    if clear.get("clear_value") is not None:
+        mapped["clear_value"] = int(str(clear["clear_value"]), 0)
     progress = variables.get("progress") or {}
     if progress.get("address_high") is not None:
         mapped["progress_address_high"] = int(str(progress["address_high"]), 0)
@@ -1147,6 +1151,13 @@ VERIFIED_ADDRESSES = {
                             "hpos and down on 2/2 backward ones, changing only 16 times "
                             "in 4971 frames. Range 0..32 pages == ~8192px. "
                             "position = hpos + (0x0075 << 8)"),
+        "course_clear": (0x00C4, "0 normally, 255 for the ~5.5s a course-clear "
+                            "sequence runs. Rose at the exact frame Mario touches "
+                            "the end-of-course card in four separate recordings, "
+                            "1.6-2.0s BEFORE the COURSE CLEAR banner is drawn. "
+                            "Silent at all four pipe entries in those recordings "
+                            "and through a long raccoon flight. See games.json "
+                            "for the frame numbers"),
         "speed":   (0x03DD, "P-meter. Value == number of bars filled (0..6), then "
                             "jumps to 127 when the P indicator lights == full == "
                             "raccoon flight available. Found by correlating with "

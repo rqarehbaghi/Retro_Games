@@ -66,8 +66,7 @@ DEFAULT_STYLE = {
     "caption": {
         "size_div": 29,
         "color": "black",
-        "border_color": "white@0.92",
-        "shadow": True,
+        "border_color": "white",
         # How long a caption stays up, from reading speed rather than a flat
         # number. Published standards assume the subtitle is what you are
         # LOOKING AT: Netflix allows up to 20 characters per second, the BBC
@@ -87,17 +86,20 @@ DEFAULT_STYLE = {
         # "sentence" capitalises the first letter of each sentence; "upper",
         # "lower" and "none" are the alternatives.
         "case": "sentence",
-        # Depth comes from an outline plus a drop shadow rather than a plate:
-        # a box covers a rectangle of the frame for as long as the line is up,
-        # while these cover only the glyphs. box stays available for a heavier
-        # look but is off.
-        "shadow": True,
+        # A solid white plate behind black text. A white DROP SHADOW was the
+        # previous look and it failed on this game: the sky in World 1-1 is
+        # near-white, so the shadow vanished into it and the letters were
+        # black-on-pale with nothing separating them. A plate is legible over
+        # any frame, which is the whole job. borderw goes to 0 because a white
+        # outline on a white plate only eats into the glyphs.
+        "box": True,
+        "box_color": "white@0.88",
+        "box_pad": 14,
+        "border_w": 0,
+        "shadow": False,
         "shadow_color": "white@0.75",
         "shadow_x": 3,
         "shadow_y": 3,
-        "box": False,
-        "box_color": "black@0.5",
-        "box_pad": 14,
     },
     "watermark": {
         "size_div": 58,
@@ -476,10 +478,14 @@ def build_filter(spec, width, height, src_label="[0:v]", overlays=True):
         size = cap.get("size") or text_size(cfg, width, height, floor=16)
         size, wrapped = layout_text(text, font, size, int(width * 0.92), ratio,
                                     max_lines=cfg.get("max_lines", 3))
-        hold = cap.get("hold") or min(
-            cfg.get("max_hold", 7.0),
-            max(cfg.get("min_hold", 3.0),
-                len(text) / float(cfg.get("cps", 10.0))))
+        # hold_bonus is extra seconds ON TOP of the reading-speed figure, for
+        # a caption that is asking the viewer for something rather than
+        # landing a joke.
+        hold = cap.get("hold") or (
+            min(cfg.get("max_hold", 7.0),
+                max(cfg.get("min_hold", 3.0),
+                    len(text) / float(cfg.get("cps", 10.0))))
+            + float(cap.get("hold_bonus", 0.0)))
         line_h = int(size * 1.35)
         # The block grows UPWARD from its anchor, so a three-line caption does
         # not push down into the status bar the anchor was chosen to clear.
@@ -494,6 +500,7 @@ def build_filter(spec, width, height, src_label="[0:v]", overlays=True):
                                                cfg.get("shadow_color", "black@0.75")),
                           shadow_x=cap.get("shadow_x", cfg.get("shadow_x", 3)),
                           shadow_y=cap.get("shadow_y", cfg.get("shadow_y", 3)),
+                          border_w=cap.get("border_w", cfg.get("border_w")),
                           box=cap.get("box", cfg.get("box", False)),
                           box_color=cap.get("box_color", cfg.get("box_color", "black@0.5")),
                           box_pad=cap.get("box_pad", cfg.get("box_pad", 14)),

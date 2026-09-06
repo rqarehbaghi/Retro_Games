@@ -12,13 +12,22 @@ black -- chosen because cross-dissolving pixel art into pixel art muddies
 both frames and pixelize on already-pixelated content reads as an encoding
 fault. Every one of those is still overridable, but none has to be decided.
 
-It produces, in a dated folder:
+It produces one self-contained folder, and prints two paths: the folder, and
+the brief. Nothing else is printed, because everything else is IN the folder:
 
-    <slug>_16x9.mp4    1920x1080 landscape master (YouTube)
-    <slug>_9x16.mp4    1080x1920 short, cut to highlights (Shorts / Reels / TikTok)
-    metadata.json      title, description and per-platform hashtags
-    narration.txt      a timestamped script of what actually happened
-    events.csv         the raw event timeline the script was built from
+    UPLOAD_BRIEF.md      paste it into Claude and it can walk the upload
+    <slug>_16x9.mp4      1920x1080 master, captioned (YouTube)
+    <slug>_9x16.mp4      1080x1920, captioned (Shorts / Reels / TikTok)
+    <slug>_16x9_clean.mp4  the same master with no text, for thumbnails
+    <slug>_source.mp4    the capture everything above is rendered from
+    <slug>.bk2           the replay, which is what makes the folder standalone
+    paste.txt            the same copy as three upload forms, to retype by hand
+    overlays.json        every word and style rule -- edit, then restyle.py
+    metadata.json        title, description and per-platform hashtags
+    captions.txt         the on-screen text with timecodes
+    events.csv           the raw event timeline the writing was built from
+
+With --voice it also writes narration.txt, narration.wav and _narrated cuts.
 
 THE SHORT IS CUT, NOT TRUNCATED. --short-seconds (default 15) is a budget, not
 a stop point: the run is cut down to the moments that earned their place and
@@ -203,6 +212,12 @@ POWER_TIERS = {0: "small", 1: "big", 2: "fire", 3: "raccoon"}
 # frames) expired before the clear was logged and the caption survived anyway.
 POWER_NOISE_WINDOW = 900          # 15s, long enough to span the whole outro
 END_OF_RUN_WINDOW = 900           # a drop this close to the end of the tape
+# A clear is now logged at the moment the card is touched (games.json,
+# course_clear), and the power byte is not wiped until the course finishes
+# unloading about six seconds later. Anchoring 2s after the mark, which was
+# enough when the mark WAS the unload, would let that wipe through as "back to
+# small mario".
+CLEAR_OUTRO_WINDOW = 600
 
 
 def filter_power_noise(events, total_frames=None):
@@ -217,18 +232,20 @@ def filter_power_noise(events, total_frames=None):
     animation, so nothing at the moment of the drop can say which it was. Hence
     a second pass rather than an inline test.
 
-    Second, a run that ENDS at the level end never logs a clear at all -- the
-    recording stops before the position collapses -- so anchoring only on a
-    following event misses exactly the case that kept being reported. A drop
-    within END_OF_RUN_WINDOW of the last frame is therefore treated as the
-    outro as well: nothing happening with fifteen seconds left and no play
-    afterwards is a hit worth captioning."""
-    marks = [f for f, kind, _d in events if kind in ("death", "clear")]
+    Second, for a game with no course_clear address the ending is inferred
+    from position, and a run that stops AT the end never collapses position at
+    all -- so anchoring only on a following event misses exactly the case that
+    kept being reported. A drop within END_OF_RUN_WINDOW of the last frame is
+    therefore treated as the outro as well: nothing happening with fifteen
+    seconds left and no play afterwards is a hit worth captioning."""
+    marks = [(f, kind) for f, kind, _d in events if kind in ("death", "clear")]
     kept = []
     for frame, kind, detail in events:
         if kind in ("shrink", "powerdown"):
             if any(0 <= mark - frame <= POWER_NOISE_WINDOW or
-                   0 <= frame - mark <= 120 for mark in marks):
+                   0 <= frame - mark <= (CLEAR_OUTRO_WINDOW if mkind == "clear"
+                                         else 120)
+                   for mark, mkind in marks):
                 continue
             if total_frames is not None and total_frames - frame <= END_OF_RUN_WINDOW:
                 continue
@@ -244,13 +261,17 @@ def filter_power_noise(events, total_frames=None):
 # running down, because it is the same level.
 CLEAR_CONFIRM_WINDOW = 600        # frames to wait for the timer to reset
 END_OF_TAPE_WINDOW = 600          # a collapse this close to the end
+CLEAR_TAIL = 180                  # how late the unload may follow the flag
 
 
 def classify_collapses(collapses, timeline, total_frames):
     """Turn position collapses into 'clear' or 'pipe' events.
 
-    Without this every pipe in the level was captioned as a level completion,
-    because nothing at the moment of the collapse distinguishes them."""
+    THE FALLBACK, used only for a game games.json has no course_clear address
+    for. It is guesswork and it was measurably wrong: checked against rendered
+    frames on four SuperMarioBros3 recordings it called a pipe entry a clear,
+    and logged nothing at all for three courses that were genuinely cleared.
+    Where a clear flag exists, split_collapses uses it instead."""
     out = []
     for frame in collapses:
         window = [t for t in timeline[frame:frame + CLEAR_CONFIRM_WINDOW] if t is not None]
@@ -262,6 +283,21 @@ def classify_collapses(collapses, timeline, total_frames):
         else:
             out.append((frame, "pipe", "went down a pipe"))
     return out
+
+
+def split_collapses(collapses, clear_windows):
+    """Collapses, given a real clear flag to compare them against.
+
+    A collapse inside a clear window is that course unloading and is already
+    covered by the clear event; anything else is a pipe. CLEAR_TAIL allows for
+    the unload landing just after the flag drops."""
+    inside = []
+    for frame in collapses:
+        if any(start - 60 <= frame <= end + CLEAR_TAIL
+               for start, end in clear_windows):
+            continue
+        inside.append((frame, "pipe", "went down a pipe"))
+    return inside
 
 
 def read_events(bk2_path, game):
@@ -297,8 +333,13 @@ def read_events(bk2_path, game):
         prog_hi = prog[1]
 
     timer_addr = defaults.get("timer_address")
+    # The one honest signal that a course ended. Absent for a game that has no
+    # course_clear entry, in which case the position heuristic is all there is.
+    clear_addr = defaults.get("clear_address")
+    clear_val = defaults.get("clear_value")
 
     events, frame = [], 0
+    clear_windows, clear_since = [], None
     prev = {}
     last_pos = None
     collapses = []
@@ -335,6 +376,15 @@ def read_events(bk2_path, game):
         else:
             timeline.append(None)
 
+        if clear_addr is not None:
+            byte = int(ram[clear_addr])
+            lit = byte == clear_val if clear_val is not None else byte != 0
+            if lit and clear_since is None:
+                clear_since = frame
+            elif not lit and clear_since is not None:
+                clear_windows.append((clear_since, frame))
+                clear_since = None
+
         current = {
             "score": info.get("score"),
             "lives": info.get("lives"),
@@ -369,7 +419,15 @@ def read_events(bk2_path, game):
         if term or trunc:
             break
     env.close()
-    events.extend(classify_collapses(collapses, timeline, frame))
+    if clear_since is not None:
+        # Still lit when the tape stopped -- the run ended on the clear.
+        clear_windows.append((clear_since, frame))
+    if clear_addr is not None:
+        events.extend((start, "clear", "course cleared")
+                      for start, _end in clear_windows)
+        events.extend(split_collapses(collapses, clear_windows))
+    else:
+        events.extend(classify_collapses(collapses, timeline, frame))
     events.sort(key=lambda e: e[0])
     return filter_power_noise(events, total_frames=frame)
 
@@ -385,6 +443,26 @@ def _tally(events):
         if n:
             bits.append("%d %s%s" % (n, word, "" if n == 1 else "s"))
     return ("Final count: " + ", ".join(bits) + ".") if bits else ""
+
+
+# Per-caption keys the renderer understands and the writer may set. Anything
+# not listed stays out of overlays.json, which is a file a person edits.
+CAPTION_KEYS = ("hold", "hold_bonus", "closing", "color", "box", "box_color",
+                "border_w", "case", "size", "font", "y")
+
+
+def spec_captions(written, lines):
+    """The caption list as overlays.json carries it.
+
+    `lines` holds the times with --caption-offset already applied; `written`
+    holds everything else the writer decided, which used to be dropped here --
+    so the ask's longer hold never reached the renderer."""
+    out = []
+    for cap, (at, text) in zip(written, lines):
+        entry = {"at": round(at, 2), "text": text}
+        entry.update({k: cap[k] for k in CAPTION_KEYS if k in cap})
+        out.append(entry)
+    return out
 
 
 def build_metadata(game, players, events, title, watermark, written,
@@ -492,6 +570,134 @@ def paste_block(meta):
     return "\n".join(out) + "\n"
 
 
+def win_path(path):
+    """The Windows spelling of a path made inside WSL, or None.
+
+    The videos are produced in WSL and then attached in a Windows browser's
+    file dialog, which cannot open /home/... or /mnt/g/... at all. A drive
+    mount maps back to its letter; everything else lives on the distro's own
+    filesystem, which Windows reaches through the wsl.localhost share."""
+    distro = os.environ.get("WSL_DISTRO_NAME")
+    if not distro:
+        return None
+    path = os.path.abspath(path)
+    mount = re.match(r"^/mnt/([a-z])(/.*)?$", path)
+    if mount:
+        return mount.group(1).upper() + ":" + (mount.group(2) or "/").replace("/", "\\")
+    return "\\\\wsl.localhost\\" + distro + path.replace("/", "\\")
+
+
+def _field(label, text, limit=None):
+    """One form field, fenced so a paste survives newlines and punctuation."""
+    head = "**%s**" % label
+    if limit:
+        over = " -- OVER THE %d LIMIT" % limit if len(text) > limit else ""
+        head += " (%d / %d characters%s)" % (len(text), limit, over)
+    # Four backticks: the copy is model-written and may itself contain three.
+    return "%s\n\n````\n%s\n````\n" % (head, text.strip())
+
+
+def staged_videos(folder):
+    """The rendered cuts in a staged folder, each with where it is posted.
+
+    Found rather than passed, so a brief can be rebuilt for a folder made by
+    an earlier run. The suffixes are the ones render_spec writes."""
+    found = []
+    for suffix, role in (("_16x9.mp4", "YouTube"),
+                         ("_9x16.mp4", "TikTok / Reels / Shorts")):
+        hits = [f for f in sorted(glob.glob(os.path.join(folder, "*" + suffix)))
+                if "_clean" not in f and "_narrated" not in f]
+        if hits:
+            found.append((role, hits[0]))
+    return found
+
+
+def upload_brief(meta, folder, files):
+    """One self-contained file to hand to Claude in a browser.
+
+    Everything the upload needs is inline -- the instructions, the rules and
+    the full copy -- because the reader is a chat window that cannot open this
+    folder. The paths are there so the human knows what to attach."""
+    title = meta.get("title", "")
+    description = meta.get("description", "")
+    tags = ", ".join(meta.get("tags", []))
+    captions = meta.get("captions", {})
+    tiktok = captions.get("tiktok", "")
+    instagram = captions.get("instagram", "")
+
+    rows, native_rows, translated = [], [], False
+    for role, path in files:
+        if not path:
+            continue
+        native = os.path.abspath(path)
+        win = win_path(native)
+        translated = translated or bool(win)
+        rows.append("| %s | `%s` |" % (role, win or native))
+        native_rows.append("- `%s`" % native)
+    paths = "\n".join(rows)
+    # Only worth a second listing when the first one is a translation. Off
+    # WSL the two are the same text and repeating it is noise.
+    other = ("""
+<details><summary>The same files, as the shell that made them sees them</summary>
+
+%s
+
+</details>
+""" % "\n".join(native_rows)) if translated else ""
+
+    return """# Upload brief -- %s
+
+Paste this whole file into Claude. Everything needed is below; it was written
+by the studio pipeline into `%s`.
+
+## What I want
+
+This is my own gameplay -- one human, one sitting, no save states. Help me put
+it on YouTube, TikTok and Instagram.
+
+Rules, and they are not negotiable:
+
+- **Private or unlisted first, every time.** I review the post and make it
+  public myself. Never press publish, post or "make public" for me.
+- **I attach the video.** A file picker is mine to click, even if you can drive
+  my browser. Fill the text fields, then stop and tell me what to attach.
+- **One platform at a time.** Give me a field, wait, then the next one.
+- **Do not invent anything.** No stats about the run, no achievements, no extra
+  hashtags. The copy below is all there is. If a line reads badly, say so and
+  offer a rewrite -- do not quietly change it.
+- If a field is over its limit, tell me and offer a shorter version.
+
+## The files to attach
+
+| Goes to | File |
+|---|---|
+%s
+%s
+## YouTube -- studio.youtube.com
+
+Upload the 16x9 file. Visibility **Private**, or Schedule.
+
+%s
+%s
+%s
+## TikTok -- tiktok.com/upload
+
+Upload the 9x16 file. Set it to **Only me** before posting.
+
+%s
+## Instagram -- Reels
+
+Upload the 9x16 file. Save to **Drafts** rather than sharing.
+
+%s
+""" % (title or "this run", os.path.abspath(folder), paths, other,
+       _field("Title", title, LIMITS["youtube_title"]),
+       _field("Description", description, LIMITS["youtube_description"]),
+       _field("Tags (comma separated)", tags, LIMITS["youtube_tags_total"]),
+       _field("Caption", tiktok, LIMITS["caption"]),
+       _field("Caption", instagram, LIMITS["caption"]))
+
+
 UPLOAD_PLAN = """\
 UPLOAD PLAN -- what is safe to automate today, and what is not.
 
@@ -552,7 +758,7 @@ def main():
             style_cfg.setdefault(key, cfg[key])
     style = merge_style(style_cfg)
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--game", help="stable-retro game id (see list_games.py). Required unless --paste-block or --print-upload-plan.")
+    parser.add_argument("--game", help="stable-retro game id (see list_games.py). Required unless --brief, --paste-block or --print-upload-plan.")
     parser.add_argument("--players", type=int, choices=[1, 2], default=1, help="1 = you alone. 2 = you plus an AI player, via play_human_vs_ai. (default: %(default)s)")
     parser.add_argument("--gamepad", action="store_true", help="Play single-player through the pygame window, which reads a USB gamepad as well as the keyboard. Without it --players 1 uses stable-retro's own interactive tool, which is KEYBOARD ONLY and will ignore a pad.")
     parser.add_argument("--mode", choices=["versus", "coop", "race"], default="versus", help="Two-player match type, ignored when --players 1. (default: %(default)s)")
@@ -585,6 +791,8 @@ def main():
     parser.add_argument("--voice-speaker", default=cfg.get("voice_speaker", tts.DEFAULT_SPEAKER), help="Which preset voice speaks. It must stay FIXED across a run -- Vivian, Serena, Ono_Anna and Sohee are female, Ryan, Eric, Dylan, Aiden and Uncle_Fu male. (default: %(default)s)")
     parser.add_argument("--voice-describe", default=cfg.get("voice_describe", tts.DEFAULT_VOICE), help="How the commentator should sound, in plain words -- Qwen3-TTS designs the voice from this rather than picking a preset. Set it once as voice_describe in studio.json.")
     parser.add_argument("--caption-offset", type=float, default=cfg.get("caption_offset", 0.0), help="Shift every caption by this many seconds. Use it only for a SYSTEMATIC lag -- if one caption is on the wrong moment the model picked the wrong event and this will not help. (default: %(default)s)")
+    parser.add_argument("--brief", metavar="DIR", default=None,
+                        help="Rebuild UPLOAD_BRIEF.md for an already staged folder and exit. A normal run writes it too.")
     parser.add_argument("--paste-block", metavar="DIR", default=None, help="Print the copy-paste block for an already staged folder (or a metadata.json) and exit. A normal run also writes it to paste.txt.")
     parser.add_argument("--print-upload-plan", action="store_true", help="Explain what can and cannot be automated per platform, then exit")
     args = parser.parse_args()
@@ -603,6 +811,19 @@ def main():
                 print("  " + name)
         print()
         print(writer.MODEL_NOTES)
+        return
+
+    if args.brief:
+        folder = args.brief
+        meta_path = os.path.join(folder, "metadata.json")
+        if not os.path.exists(meta_path):
+            sys.exit(f"No metadata.json in {folder}")
+        with open(meta_path) as handle:
+            meta = json.load(handle)
+        out = os.path.join(folder, "UPLOAD_BRIEF.md")
+        with open(out, "w") as handle:
+            handle.write(upload_brief(meta, folder, staged_videos(folder)))
+        print(out)
         return
 
     if args.paste_block:
@@ -819,7 +1040,7 @@ def main():
     ctx = dict(game=pretty_game(args.game), level=args.level, duration_s=duration,
                players=args.players, events=events, fps=FPS)
 
-    lines = []
+    lines, written_caps = [], []
     if not args.no_captions:
         written_caps = writer.captions(**ctx, **ai)
         if written_caps is None:
@@ -839,7 +1060,9 @@ def main():
         # be told from a wrong-event one without guessing at the video.
         print("Captions (anchored to the event log):")
         for cap, (at, text) in zip(written_caps, lines):
-            if cap.get("event") is None:
+            if cap.get("closing"):
+                print("    %s  [the ask]        %s" % (stamp(int(at * FPS)), text))
+            elif cap.get("event") is None:
                 print("    %s  [opening]        %s" % (stamp(int(at * FPS)), text))
             else:
                 logged = events[cap["event"]][0] / FPS
@@ -877,7 +1100,7 @@ def main():
         ],
         "title": title,
         "watermark": args.watermark,
-        "captions": [{"at": round(at, 2), "text": text} for at, text in lines],
+        "captions": spec_captions(written_caps, lines),
         "style": style,
     }
     if segments:
@@ -960,30 +1183,20 @@ def main():
         json.dump(meta, handle, indent=2)
     with open(os.path.join(folder, "UPLOAD.txt"), "w") as handle:
         handle.write(UPLOAD_PLAN)
-    block = paste_block(meta)
     with open(os.path.join(folder, "paste.txt"), "w") as handle:
-        handle.write(block)
+        handle.write(paste_block(meta))
+    brief = os.path.join(folder, "UPLOAD_BRIEF.md")
+    with open(brief, "w") as handle:
+        handle.write(upload_brief(meta, folder, [
+            ("YouTube", wide), ("TikTok / Reels / Shorts", tall)]))
 
-    print("\n" + "=" * 66)
-    print(f"Staged for review: {folder}")
-    print(f"  {os.path.basename(wide)}   -> YouTube (upload by hand until audited)")
-    span = ("[%d highlights, %.1fs]" % (len(segments), sum(d for _s, d in segments))
-            if segments else "[full length]")
-    print(f"  {os.path.basename(tall)} {span}  -> TikTok / Reels / Shorts")
-    print(f"  {os.path.basename(clean)}   <- HD, no text, for re-edits and thumbnails")
-    if args.voice:
-        print(f"  {slug}_16x9_narrated.mp4 / _9x16_narrated.mp4   <- with commentary")
-        print( "  narration.wav      <- the spoken track on its own")
-        print( "  voice/             <- one wav per line, before mixing")
-    print(f"  {os.path.basename(native)}   <- the capture everything is rendered from")
-    if bk2_path:
-        print(f"  {os.path.basename(bk2_path)}   <- the raw replay, a few KB")
-    print("  paste.txt        <- the three upload forms, ready to copy")
-    print(f"  overlays.json, metadata.json, events.csv ({len(events)} events)"
-          + (", narration.txt" if args.voice else ""))
-    print(f"\nEdit overlays.json and re-render in seconds:")
-    print(f"  python restyle.py {folder}")
-    print("\n" + block)
+    # Two paths, nothing else. Everything that used to be printed here is in
+    # the folder: paste.txt holds the three upload forms, UPLOAD_BRIEF.md the
+    # same copy written as instructions for a chat window, and --paste-block
+    # prints the long version on demand.
+    print()
+    print(folder)
+    print(brief)
 
 
 if __name__ == "__main__":

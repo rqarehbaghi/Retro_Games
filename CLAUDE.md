@@ -12,7 +12,9 @@ python studio.py --game SuperMarioBros3-Nes-v0
 ```
 
 Play until the window closes. Everything after is automatic and lands in one
-self-contained folder under `studio_out/`:
+self-contained folder under `studio_out/`. The run prints TWO paths and
+nothing else -- the folder, and `UPLOAD_BRIEF.md` inside it -- because
+everything it used to dump on the terminal is in the folder:
 
 | File | What |
 |---|---|
@@ -24,13 +26,20 @@ self-contained folder under `studio_out/`:
 | `*.bk2` | the replay — the folder is self-contained because of this |
 | `overlays.json` | every word and style rule, editable, re-renderable |
 | `narration.wav` | only with `--voice` — the spoken track on its own |
-| `paste.txt` | the three upload forms, ready to copy |
+| `UPLOAD_BRIEF.md` | paste into Claude and it walks the upload -- the copy, the rules, and Windows-side paths for the files to attach |
+| `paste.txt` | the same copy as three upload forms, to retype by hand |
 | `metadata.json` `captions.txt` `narration.txt` `events.csv` | |
 
 Retry the writing without replaying — it renders **into the same folder**:
 
 ```bash
 python studio.py --game <id> --from-mp4 ./studio_out/<folder>/<slug>_source.mp4
+```
+
+Rebuild just the brief for a folder from an earlier run:
+
+```bash
+python studio.py --brief ./studio_out/<folder>
 ```
 
 Re-render after editing wording or style, in seconds, no emulator:
@@ -74,12 +83,38 @@ reintroduce:**
 
 - The power byte `0x00ED` is cleared on a hit, on death, AND on level exit.
   `filter_power_noise` discards drops near a death or a clear, and near the end
-  of the tape, because a run that ENDS at the level end never logs a clear.
-- A position collapse means either a level ending or going down a pipe. The
+  of the tape. The clear is now logged at the card grab, and the power byte is
+  not wiped until the course finishes unloading ~6s later, so the clear's
+  window there is wider (`CLEAR_OUTRO_WINDOW`) than a death's.
+- **A course clear is READ from `0x00C4`, not inferred from position.** The
+  byte is 0 all level and 255 for the ~5.5s a clear sequence runs. It was
+  verified on FOUR recordings: it rose at the exact frame Mario touches the
+  end-of-course card, 1.6-2.0s BEFORE the COURSE CLEAR banner is drawn — the
+  earliest honest moment. `games.json` records the frame numbers. Inferring a
+  clear from a position collapse was measurably WRONG: on those same
+  recordings it called a pipe entry a clear and logged nothing for three
+  genuine clears. `split_collapses` now uses the flag; the SMB3 ROM's victory
+  routine at CPU `$8FE3` is what sets bytes like this.
+- The old position heuristic is the FALLBACK only, for a game with no
+  `course_clear` address. A collapse means a level ending or a pipe, and the
   level TIMER separates them: it only counts down during play and resets UP
-  when a new level starts. `classify_collapses` does this.
+  when a new level starts. `classify_collapses` does this, and it is guesswork
+  — see above for how wrong it was on SMB3.
 - A power drop to tier 0 is not the same as raccoon → big. `shrink` vs
   `powerdown`.
+
+**Captions are a solid white plate, not a white drop shadow.** A white shadow
+was tried and failed on this exact game: World 1-1's sky is near-white, the
+shadow vanished into it, and black glyphs were left with nothing separating
+them from the background. The plate (`box` on, `box_color` white, `borderw` 0)
+is legible over any frame. Change it in `overlays.py` `DEFAULT_STYLE`.
+
+**The closing ASK lands on the moment the course is cleared**, held ~2.5s
+longer than a joke (`CLOSING_BONUS`), and is written to be plain and literally
+a question — not a pun. It used to appear five seconds before the tape ended,
+which put it in the score tally or on the world map, seconds after anything
+worth watching had stopped. `writer.closing_time` places it; a run with no
+clear falls back to `duration - CLOSING_ROOM`.
 
 **Text is sized off the SHORT edge of the frame**, not the width — for 9:16 the
 short edge is the width, for 16:9 it is the height. Sizing off width made one

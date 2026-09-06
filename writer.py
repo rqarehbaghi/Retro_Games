@@ -467,6 +467,26 @@ def trim_words(text, limit):
 
 
 CAPTION_GAP = 6.0        # clear seconds between one caption and the next
+# The ask stays up longer than an ordinary caption -- it is asking for
+# something, so it has to survive being read twice.
+CLOSING_BONUS = 2.5
+# ...and never starts with less than this much tape left, or the question
+# leaves the screen before it can be answered.
+CLOSING_ROOM = 8.0
+
+
+def closing_time(events, fps, duration_s):
+    """When to put the ask on screen.
+
+    ON the moment the course is cleared, when the run has just paid off and
+    the viewer is still looking. The old placement -- five seconds before the
+    tape stops -- put it in the score tally or on the world map, seconds after
+    anything interesting had finished happening. Falls back to the end of the
+    tape when nothing was cleared, and is pulled earlier if the clear itself
+    lands too near the end to be read."""
+    cleared = [frame / fps for frame, kind, _d in events if kind == "clear"]
+    fallback = max(0.0, duration_s - CLOSING_ROOM)
+    return min(cleared[-1], fallback) if cleared else fallback
 
 
 def captions(game, level, duration_s, players, events, fps, max_chars=32,
@@ -492,11 +512,20 @@ def captions(game, level, duration_s, players, events, fps, max_chars=32,
         "- Caption the interesting moments only. Skip the dull ones, and skip\n"
         "  most coins.\n"
         "- 'opening' is one caption shown at the very start, setting up the run.\n"
-        "- 'closing' is one caption shown at the END, asking the viewer something\n"
-        "  they can actually answer in a comment -- which level next, which game\n"
-        "  next, whether to play one to the finish. A QUESTION, not a demand:\n"
-        "  never 'like and subscribe', never 'smash that button'. Under %d\n"
-        "  characters like the rest, and in the same voice.\n"
+        "- 'closing' is the one caption that has a job. It goes up the moment\n"
+        "  the course is cleared, and it asks the viewer something they can\n"
+        "  actually answer in a comment -- which level next, which game next,\n"
+        "  whether to play one all the way to the finish.\n"
+        "  It must be PLAIN and it must be a QUESTION. Ordinary words, one\n"
+        "  sentence, ending in a question mark, understandable at a glance by\n"
+        "  someone who has read nothing else on screen. No wordplay, no\n"
+        "  callback to earlier captions, no in-joke -- those make a funny line\n"
+        "  and an unanswerable one. Never 'like and subscribe', never 'smash\n"
+        "  that button'. It gets more room than the others: up to %d\n"
+        "  characters.\n"
+        "  Good: \"Which level should he try next?\"\n"
+        "  Good: \"Worth playing this one to the end? Say so.\"\n"
+        "  Bad: \"Raccoon or bust?\"  (cute, but what is the question?)\n"
         "- Every caption must be different. No repeated jokes.\n"
         "- Praise the good moments as well as mocking the bad ones.\n\n"
         "Good: \"Walked straight into it.\"\n"
@@ -505,7 +534,7 @@ def captions(game, level, duration_s, players, events, fps, max_chars=32,
         "Too long: \"He walked into that one completely aware of what it was.\"\n\n"
         "Return JSON: {\"opening\": \"...\", \"closing\": \"...\", \"captions\": "
         "[{\"event\": 3, \"text\": \"...\"}]}"
-        % (max_chars, max_chars))
+        % (max_chars, max_chars * 2))
     data = write(prompt, CAPTION_SCHEMA, **kw)
     if not data:
         return None
@@ -530,21 +559,29 @@ def captions(game, level, duration_s, players, events, fps, max_chars=32,
                         "event": int(index), "kind": events[int(index)][1]})
     out.sort(key=lambda c: c["at"])
 
-    # The ask goes LAST, after the run has earned it. Asking up front reads as
-    # a demand; the same question after ninety seconds of watching reads as a
-    # conversation, and a question someone can answer gets replies where
-    # "comment below" does not.
+    # The ask goes on the clear, after the run has earned it. Asking up front
+    # reads as a demand; the same question the moment a course is finished
+    # reads as a conversation, and a question someone can answer gets replies
+    # where "comment below" does not. It is deliberately allowed to be longer
+    # and to sit on screen longer than the jokes.
     closing = str(data.get("closing", "")).strip()
     if closing and duration_s > 8:
-        out.append({"at": round(max(0.0, duration_s - 5.0), 2),
-                    "text": trim_words(closing, max_chars * 3 // 2),
-                    "event": None, "closing": True})
+        out.append({"at": round(closing_time(events, fps, duration_s), 2),
+                    "text": trim_words(closing, max_chars * 2),
+                    "event": None, "closing": True,
+                    "hold_bonus": CLOSING_BONUS})
+    # Sorted AFTER the ask is added, because it no longer goes at the end.
+    out.sort(key=lambda c: c["at"])
 
     # Two captions on top of each other are unreadable, and a model asked for
     # "the interesting moments" will happily pick three in a row.
     spaced = []
     for cap in out:
-        if spaced and cap["at"] - spaced[-1]["at"] < CAPTION_GAP:
+        # The ask holds longer than the rest, so it needs more clear air after
+        # it than an ordinary caption does.
+        gap = CAPTION_GAP + (CLOSING_BONUS if spaced and spaced[-1].get("closing")
+                             else 0.0)
+        if spaced and cap["at"] - spaced[-1]["at"] < gap:
             # Never thin out the closing ask -- push whatever crowds it aside
             # instead. It is the one caption with a job beyond being funny.
             if not cap.get("closing"):

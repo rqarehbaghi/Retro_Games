@@ -64,6 +64,13 @@
           "verified": true,
           "evidence": "three digit bytes at 0x05EE/0x05EF/0x05F0 = *100 + *10 + *1. Range exactly 0..299 with ZERO increases across a whole demo. The integration's own `time` info key reads something unrelated (constant 299, then 43) and must not be used."
         },
+        "course_clear": {
+          "source": "ram",
+          "address": "0x00C4",
+          "verified": true,
+          "clear_value": 255,
+          "evidence": "0 for a whole run, 255 only while a course is ending. VERIFIED ON FOUR RECORDINGS: it rose at frames 5827, 7036, 5267 and 4205, and a frame rendered from the replay at each of those shows Mario touching the end-of-course card panel -- the exact moment the course is cleared. The COURSE CLEAR banner is drawn 98-118 frames (1.6-2.0s) LATER, so this is the earliest honest moment rather than the announcement. It returns to 0 when the world map loads, about 5.5s after it rises. It did NOT fire at any of the four pipe entries in those same recordings (frames 3063, 838, 4249, 3334), and did not fire through 175 frames of raccoon flight (5582-5757) that a rejected candidate mistook for an ending. 0x0559 (also 0/255) and 0x05F3 (0/129) mark the identical block to within one frame and corroborate it. REJECTED: 0x0687, a 0/1 flag that is set on every clear but was also set through that flight. Reading this instead of inferring a clear from position is not a refinement -- inference got it wrong in every recording checked: a pipe at frame 3063 was logged as a clear, and three genuine clears were logged as nothing at all."
+        },
         "progress": {
           "source": "info16",
           "key": "hpos",

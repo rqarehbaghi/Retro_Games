@@ -68,7 +68,19 @@ DEFAULT_STYLE = {
         "color": "black",
         "border_color": "white@0.92",
         "shadow": True,
-        "hold": 2.6,
+        # How long a caption stays up, from reading speed rather than a flat
+        # number. Published standards assume the subtitle is what you are
+        # LOOKING AT: Netflix allows up to 20 characters per second, the BBC
+        # targets 160-180 wpm which is about 15. Here the viewer is reading and
+        # watching a game at the same time, so 10 is deliberately slower than
+        # either. Floor is well above Netflix's 5/6 second minimum, because a
+        # caption that flashes is worse than one that lingers -- the floor is
+        # what a short caption actually gets, so it sets the real minimum;
+        # ceiling is
+        # Netflix's 7 seconds.
+        "cps": 10.0,
+        "min_hold": 3.0,
+        "max_hold": 7.0,
         "max_lines": 2,
         "y_frac_vertical": 0.80,   # into the blurred band, clear of the game
         "y_frac_wide": HUD_TOP - 0.08,   # lower third, above the status bar
@@ -464,9 +476,10 @@ def build_filter(spec, width, height, src_label="[0:v]", overlays=True):
         size = cap.get("size") or text_size(cfg, width, height, floor=16)
         size, wrapped = layout_text(text, font, size, int(width * 0.92), ratio,
                                     max_lines=cfg.get("max_lines", 3))
-        # Longer lines need longer on screen, or a three-line joke flashes past
-        # before it can be read.
-        hold = cap.get("hold") or max(cfg["hold"], len(text) / 13.0)
+        hold = cap.get("hold") or min(
+            cfg.get("max_hold", 7.0),
+            max(cfg.get("min_hold", 3.0),
+                len(text) / float(cfg.get("cps", 10.0))))
         line_h = int(size * 1.35)
         # The block grows UPWARD from its anchor, so a three-line caption does
         # not push down into the status bar the anchor was chosen to clear.

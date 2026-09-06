@@ -469,7 +469,7 @@ def trim_words(text, limit):
 CAPTION_GAP = 6.0        # clear seconds between one caption and the next
 
 
-def captions(game, level, duration_s, players, events, fps, max_chars=40,
+def captions(game, level, duration_s, players, events, fps, max_chars=32,
              **kw):
     """Timed on-screen captions. Returns [{at, text}] or None.
 
@@ -482,8 +482,10 @@ def captions(game, level, duration_s, players, events, fps, max_chars=40,
         "short form -- a punchline, not a paragraph. The long commentary goes\n"
         "in the narration track, not here.\n\n"
         "RULES:\n"
-        "- At most %d CHARACTERS each. Aim for five to eight words. A caption\n"
-        "  that runs long gets shrunk until it fits and stops being readable.\n"
+        "- At most %d CHARACTERS each, and shorter is better. Four to six\n"
+        "  words. The viewer is reading this WHILE watching a game, so a\n"
+        "  caption they have to study is a caption they miss -- cut every word\n"
+        "  that is not carrying the joke.\n"
         "- 'event' is the [N] NUMBER of the moment the caption is about, from\n"
         "  the list above. Do NOT write timestamps -- they are worked out from\n"
         "  the event you name.\n"
@@ -497,9 +499,10 @@ def captions(game, level, duration_s, players, events, fps, max_chars=40,
         "  characters like the rest, and in the same voice.\n"
         "- Every caption must be different. No repeated jokes.\n"
         "- Praise the good moments as well as mocking the bad ones.\n\n"
-        "Good: \"He walked into it. Fully aware.\"\n"
+        "Good: \"Walked straight into it.\"\n"
         "Good: \"A mushroom. Do not get attached.\"\n"
-        "Too long: \"That enemy has stood there since 1988 waiting for this.\"\n\n"
+        "Good: \"Thirty years of practice.\"\n"
+        "Too long: \"He walked into that one completely aware of what it was.\"\n\n"
         "Return JSON: {\"opening\": \"...\", \"closing\": \"...\", \"captions\": "
         "[{\"event\": 3, \"text\": \"...\"}]}"
         % (max_chars, max_chars))

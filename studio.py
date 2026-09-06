@@ -580,6 +580,7 @@ def main():
     parser.add_argument("--no-voice", action="store_true", help="Skip the spoken commentary. It is produced by default; narration.txt is still written either way.")
     parser.add_argument("--voice", action="store_true", help="Speak the narration and lay it over the videos, ducking the game audio under it. Needs qwen-tts (pip install -U qwen-tts soundfile) and a GPU. Without it narration.txt is written but nothing is spoken.")
     parser.add_argument("--voice-model", default=cfg.get("voice_model", tts.DEFAULT_MODEL), help="Qwen3-TTS model for --voice. (default: %(default)s)")
+    parser.add_argument("--voice-speaker", default=cfg.get("voice_speaker", tts.DEFAULT_SPEAKER), help="Which preset voice speaks. It must stay FIXED across a run -- Vivian, Serena, Ono_Anna and Sohee are female, Ryan, Eric, Dylan, Aiden and Uncle_Fu male. (default: %(default)s)")
     parser.add_argument("--voice-describe", default=cfg.get("voice_describe", tts.DEFAULT_VOICE), help="How the commentator should sound, in plain words -- Qwen3-TTS designs the voice from this rather than picking a preset. Set it once as voice_describe in studio.json.")
     parser.add_argument("--caption-offset", type=float, default=cfg.get("caption_offset", 0.0), help="Shift every caption by this many seconds. Use it only for a SYSTEMATIC lag -- if one caption is on the wrong moment the model picked the wrong event and this will not help. (default: %(default)s)")
     parser.add_argument("--paste-block", metavar="DIR", default=None, help="Print the copy-paste block for an already staged folder (or a metadata.json) and exit. A normal run also writes it to paste.txt.")
@@ -892,11 +893,12 @@ def main():
         # After the videos are rendered, not before: the speech is laid over
         # finished files, so a TTS failure costs the commentary track and
         # nothing else.
-        print(f"Speaking {len(written_narr)} lines with {os.path.basename(args.voice_model)} ...")
+        print(f"Speaking {len(written_narr)} lines as {args.voice_speaker} ...")
         try:
             clips = tts.speak_lines(written_narr, os.path.join(folder, "voice"),
                                     model_name=args.voice_model,
-                                    voice=args.voice_describe)
+                                    voice=args.voice_describe,
+                                    speaker=args.voice_speaker)
             track = tts.build_track(clips, duration,
                                     os.path.join(folder, "narration.wav"))
             # The bare voice track is kept as well as the mixes. It is the one

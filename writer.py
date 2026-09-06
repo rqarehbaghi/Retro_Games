@@ -175,12 +175,39 @@ def generate(prompt, schema, model=DEFAULT_MODEL, host=DEFAULT_HOST,
     return None
 
 
-def claude_code_available():
-    """Is the Claude Code CLI installed and usable?"""
-    return shutil.which("claude") is not None
+DEFAULT_CLI = "claude"
+
+# Where the native installer puts it, and the usual reason it is not found: on
+# Ubuntu and WSL ~/.local/bin is frequently missing from PATH.
+CLI_HINTS = (
+    "~/.local/bin/claude",
+    "~/.claude/local/claude",
+    "/usr/local/bin/claude",
+)
 
 
-def generate_claude_code(prompt, schema, verbose=True, timeout=300, **_kw):
+def find_cli(name=DEFAULT_CLI):
+    """The Claude Code binary, by PATH lookup or at a known install location."""
+    found = shutil.which(name)
+    if found:
+        return found
+    if os.sep in name or "/" in name:
+        expanded = os.path.expanduser(name)
+        return expanded if os.path.exists(expanded) else None
+    for hint in CLI_HINTS:
+        expanded = os.path.expanduser(hint)
+        if os.path.exists(expanded):
+            return expanded
+    return None
+
+
+def claude_code_available(name=DEFAULT_CLI):
+    """Is the Claude Code CLI reachable?"""
+    return find_cli(name) is not None
+
+
+def generate_claude_code(prompt, schema, verbose=True, timeout=300,
+                         cli=DEFAULT_CLI, **_kw):
     """One generation through the Claude Code CLI. Parsed object, or None.
 
     This is the path that costs nothing extra: `claude -p` runs against a
@@ -193,12 +220,17 @@ def generate_claude_code(prompt, schema, verbose=True, timeout=300, **_kw):
     the schema goes in the prompt and the answer is dug out of whatever comes
     back. _strip_thinking already handles prose either side of the JSON."""
     import subprocess
+    binary = find_cli(cli)
+    if binary is None:
+        if verbose:
+            print(f"  (writer: no Claude Code CLI found as {cli!r})")
+        return None
     ask = (VOICE + "\n\n" + prompt +
            "\n\nRespond with ONLY the JSON object described above. No preamble,"
            "\nno explanation, no markdown fence. It is parsed by a program.")
     try:
         result = subprocess.run(
-            ["claude", "-p", ask, "--output-format", "json"],
+            [binary, "-p", ask, "--output-format", "json"],
             capture_output=True, text=True, timeout=timeout)
         if result.returncode != 0:
             if verbose:
@@ -272,7 +304,9 @@ def generate_claude(prompt, schema, model=CLAUDE_MODEL, verbose=True, **_kw):
 def write(prompt, schema, backend=DEFAULT_BACKEND, **kw):
     """Dispatch to whichever backend was asked for."""
     if backend == "claude-code":
-        return generate_claude_code(prompt, schema, verbose=kw.get("verbose", True))
+        return generate_claude_code(prompt, schema,
+                                    verbose=kw.get("verbose", True),
+                                    cli=kw.get("cli", DEFAULT_CLI))
     if backend == "claude":
         return generate_claude(prompt, schema,
                                model=kw.get("claude_model", CLAUDE_MODEL),

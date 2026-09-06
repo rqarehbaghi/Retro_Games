@@ -571,6 +571,7 @@ def main():
     parser.add_argument("--no-captions", action="store_true", help="Turn off the timed commentary captions. They are written from the event log, so they land on the thing they are about.")
     parser.add_argument("--level", default=cfg.get("level"), help="Where in the game this run is, e.g. World 1-1. Shown after the game name in the title. Set it once as the level key in studio.json.")
     parser.add_argument("--writer", choices=writer.BACKENDS, default=cfg.get("writer", writer.DEFAULT_BACKEND), help="Who writes the captions, commentary and descriptions. 'claude' calls the Anthropic API (needs the anthropic package and credentials); 'ollama' uses a model running on this machine. (default: %(default)s)")
+    parser.add_argument("--writer-cli", default=cfg.get("writer_cli", writer.DEFAULT_CLI), help="Path to the Claude Code binary for --writer claude-code, if it is not on PATH. Also looked for at ~/.local/bin/claude and ~/.claude/local/claude. (default: %(default)s)")
     parser.add_argument("--claude-model", default=cfg.get("claude_model", writer.CLAUDE_MODEL), help="Claude model for --writer claude. (default: %(default)s)")
     parser.add_argument("--writer-model", default=cfg.get("writer_model", writer.DEFAULT_MODEL), help="Ollama model for --writer ollama. See writer.py for what fits a 24GB card. (default: %(default)s)")
     parser.add_argument("--writer-host", default=cfg.get("writer_host", writer.DEFAULT_HOST), help="Where Ollama is listening. (default: %(default)s)")
@@ -629,12 +630,18 @@ def main():
     # written by a model now, so an unreachable one means an unusable run --
     # and finding that out after playing a level would cost the recording.
     if args.writer == "claude-code":
-        if not writer.claude_code_available():
-            sys.exit("--writer claude-code needs the Claude Code CLI on PATH.\n"
-                     "  It runs against a Claude Pro/Max subscription rather than\n"
-                     "  API credits, so there is nothing to buy -- but `claude`\n"
-                     "  has to be installed and logged in.\n"
-                     "  Otherwise: --writer ollama (local) or --writer claude (API).")
+        if not writer.claude_code_available(args.writer_cli):
+            sys.exit(
+                f"No Claude Code CLI found as {args.writer_cli!r}.\n\n"
+                "  It runs against a Claude Pro/Max subscription rather than API\n"
+                "  credits, so there is nothing to buy -- but the binary has to be\n"
+                "  reachable from THIS shell. A Claude Code installed on Windows is\n"
+                "  not on the WSL PATH; WSL needs its own.\n\n"
+                "    curl -fsSL https://claude.ai/install.sh | bash\n"
+                "    export PATH=" + chr(34) + "$HOME/.local/bin:$PATH" + chr(34) + "   # the usual WSL omission\n"
+                "    claude   # log in once\n\n"
+                "  Already installed somewhere else?  --writer-cli /path/to/claude\n"
+                "  Or skip it:  --writer ollama (local, free) / --writer claude (API).")
     elif args.writer == "claude":
         if not writer.claude_available():
             sys.exit("--writer claude needs the Anthropic SDK:\n"
@@ -784,7 +791,8 @@ def main():
     # what guarantees that rather than trusting the server's default.
     seed = random.randrange(1 << 31)
     ai = dict(backend=args.writer, model=args.writer_model,
-              claude_model=args.claude_model, host=args.writer_host, seed=seed)
+              claude_model=args.claude_model, host=args.writer_host,
+              cli=args.writer_cli, seed=seed)
     in_use = {"claude": args.claude_model,
               "claude-code": "claude-code (subscription)"}.get(
         args.writer, args.writer_model)

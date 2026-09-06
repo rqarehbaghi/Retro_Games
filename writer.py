@@ -145,7 +145,7 @@ def _strip_thinking(text):
 
 def generate(prompt, schema, model=DEFAULT_MODEL, host=DEFAULT_HOST,
              timeout=TIMEOUT, temperature=1.0, verbose=True, seed=None,
-             **_kw):
+             think=True, **_kw):
     """One constrained generation. Returns the parsed object, or None.
 
     `schema` is a JSON schema passed as `format`, which makes Ollama restrict
@@ -163,10 +163,12 @@ def generate(prompt, schema, model=DEFAULT_MODEL, host=DEFAULT_HOST,
         "system": VOICE,
         "format": schema,
         "stream": False,
-        # Thinking models put their reasoning in the response before the
-        # answer, which is not valid JSON no matter how well the schema
-        # constrains the rest of it.
-        "think": False,
+        # Reasoning is ON. It was disabled to stop Qwen3 putting its thinking
+        # in front of the JSON and breaking the parse -- but _strip_thinking
+        # handles that now, and Ollama returns reasoning in its own field
+        # anyway. Left off, a 30B was being judged with its reasoning
+        # switched off, which is not a fair test of the model.
+        "think": think,
         "options": options,
     }).encode()
     req = urllib.request.Request(host.rstrip("/") + "/api/generate", data=body,
@@ -174,7 +176,12 @@ def generate(prompt, schema, model=DEFAULT_MODEL, host=DEFAULT_HOST,
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             payload = json.load(r)
-        return json.loads(_strip_thinking(payload["response"]))
+        # With reasoning on, some builds return it separately and leave the
+        # answer in `response`; others prepend it. Take whichever holds JSON.
+        answer = payload.get("response") or ""
+        if not answer.strip():
+            answer = payload.get("thinking") or ""
+        return json.loads(_strip_thinking(answer))
     except urllib.error.URLError as exc:
         if verbose:
             print(f"  (writer: cannot reach Ollama at {host}: {exc.reason})")
@@ -340,6 +347,7 @@ def write(prompt, schema, backend=DEFAULT_BACKEND, **kw):
                     model=kw.get("model", DEFAULT_MODEL),
                     host=kw.get("host", DEFAULT_HOST),
                     seed=kw.get("seed"),
+                    think=kw.get("think", True),
                     verbose=verbose)
 
 
@@ -524,7 +532,17 @@ def captions(game, level, duration_s, players, events, fps, max_chars=40,
 NARRATION_SCHEMA = {
     "type": "object",
     "properties": {
-        "script": {"type": "array", "items": {"type": "string"}},
+        "script": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string"},
+                    "event": {"type": "integer"},
+                },
+                "required": ["text"],
+            },
+        },
         "closing": {"type": "string"},
     },
     "required": ["script", "closing"],
@@ -597,9 +615,15 @@ def narration(game, level, duration_s, players, events, fps, wpm=125, **kw):
         "- Plain spoken prose. No stage directions, no speaker labels, no\n"
         "  field names, no markdown, no emoji, no timestamps. Every string is\n"
         "  read aloud EXACTLY as written.\n"
+        "- When an entry is ABOUT one of the numbered moments above, give it\n"
+        "  that [N] as 'event'. The speech is held back so the line lands while\n"
+        "  that moment is on screen, so the entries must be in the same order\n"
+        "  as the moments they name, with enough said in between to fill the\n"
+        "  time. Leave 'event' out of the general trivia, which is most of it.\n"
         "- 'closing' is the last thing said: ask which level or which game to\n"
         "  play next. A question, never 'like and subscribe'.\n"
-        "Return JSON: {\"script\": [\"...\", \"...\"], \"closing\": \"...\"}"
+        "Return JSON: {\"script\": [{\"text\": \"...\"}, "
+        "{\"text\": \"...\", \"event\": 2}], \"closing\": \"...\"}"
         % (words, duration_s))
     data = write(prompt, NARRATION_SCHEMA, **kw)
     if not data:
@@ -607,21 +631,20 @@ def narration(game, level, duration_s, players, events, fps, wpm=125, **kw):
 
     lines = []
     for item in data.get("script", []):
-        text = clean_spoken(item)
-        if text:
-            lines.append({"text": text, "closing": False})
+        # Tolerate a bare string: a backend without schema enforcement may
+        # ignore the object shape entirely.
+        raw = item if isinstance(item, str) else item.get("text", "")
+        text = clean_spoken(raw)
+        if not text:
+            continue
+        anchor = None
+        if isinstance(item, dict) and item.get("event") is not None:
+            anchor = event_time(events, item.get("event"), fps, duration_s)
+        lines.append({"text": text, "anchor": anchor, "closing": False})
     closing = clean_spoken(data.get("closing", ""))
     if closing:
-        lines.append({"text": closing, "closing": True})
-    if not lines:
-        return None
-
-    # Placeholder times only. tts.space_clips lays the speech end to end from
-    # what each line actually renders to; nothing here pretends to know that.
-    step = duration_s / max(1, len(lines))
-    for i, line in enumerate(lines):
-        line["at"] = round(min(i * step, max(0.0, duration_s - 1.0)), 2)
-    return lines
+        lines.append({"text": closing, "anchor": None, "closing": True})
+    return lines or None
 
 
 # ------------------------------------------------------------------- copy --

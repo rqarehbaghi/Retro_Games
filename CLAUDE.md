@@ -104,12 +104,19 @@ every sentence sound like a different person. Use `CustomVoice` with a named
 preset (`voice_speaker`) — it keeps one speaker identity and still accepts a
 per-line `instruct`, so the delivery varies while the person does not.
 
-**The spoken track is ONE CONTINUOUS MONOLOGUE laid end to end.** Pinning
-commentary lines to event timestamps produced disconnected sentences dropped
-into gaps — captions read aloud, not a person talking. `writer.narration` now
-writes flowing prose and `tts.space_clips` lays it down sequentially from the
-length each line actually rendered to. Events are context for WHAT to say,
-never instructions for WHEN.
+**The spoken track is one continuous monologue WITH the lines that name a
+moment held back to it.** Both extremes failed: pinning every line to an event
+sounded like captions read aloud, and pure end-to-end speech drifted out of
+sync with the footage. Script entries carry an optional `event` index; anchored
+lines wait for their moment while the trivia between them flows continuously.
+`tts.space_clips` reports how much silence it had to insert waiting, which is
+the signal that the script needs more said between the anchors.
+
+**Ollama runs WITH reasoning on.** `think` was set false to stop Qwen3 putting
+its chain of thought in front of the JSON, before `_strip_thinking` existed —
+which meant a thinking model was being judged with thinking disabled. The
+answer is read from `response`, falling back to `thinking` when the first is
+empty.
 
 **Speech is measured, never estimated, and never allowed to outlast the
 footage.** Synthesised speech is reliably slower than words-per-minute

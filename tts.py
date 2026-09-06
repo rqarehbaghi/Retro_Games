@@ -100,7 +100,7 @@ def speak_lines(lines, out_dir, model=None, model_name=DEFAULT_MODEL,
         wavs, sr = model.generate_custom_voice(
             text=text, language=language, speaker=speaker, instruct=voice)
         sf.write(path, wavs[0], sr)
-        out.append((float(item["at"]), path, bool(item.get("closing"))))
+        out.append((item.get("anchor"), path, bool(item.get("closing"))))
         if verbose:
             print("    [%2d/%2d] %s" % (i + 1, len(lines), text[:64]))
     return out
@@ -147,17 +147,24 @@ def space_clips(clips, duration_s, min_gap=MIN_GAP, verbose=True):
     reserved = (lengths[closing[0][1]] + min_gap) if closing else 0.0
     ceiling = max(0.0, duration_s - reserved)
 
-    # END TO END from the top, in order, because this is one monologue rather
-    # than remarks pinned to moments. The requested times were placeholders;
-    # what governs is how long each line actually renders to.
-    placed, cursor, dropped = [], 0.6, 0
+    # End to end in order, because this is one monologue -- but a line that
+    # NAMES a moment waits for it. Speaking continuously with no regard for the
+    # footage put the commentary out of sync with what was on screen; pinning
+    # every line to an event made it sound like captions read aloud. Holding
+    # back only the anchored lines keeps the speech continuous AND lands the
+    # ones that matter while their moment is visible.
+    placed, cursor, dropped, held = [], 0.6, 0, 0.0
     for item in body:
-        path = item[1]
-        if cursor + lengths[path] > ceiling:
+        anchor, path = item[0], item[1]
+        start = cursor
+        if anchor is not None and anchor > cursor:
+            held += anchor - cursor
+            start = anchor
+        if start + lengths[path] > ceiling:
             dropped += 1
             continue
-        placed.append((cursor, path))
-        cursor += lengths[path] + min_gap
+        placed.append((start, path))
+        cursor = start + lengths[path] + min_gap
 
     if closing:
         path = closing[0][1]
@@ -165,6 +172,9 @@ def space_clips(clips, duration_s, min_gap=MIN_GAP, verbose=True):
         placed.append((max(0.0, min(start, duration_s - lengths[path])), path))
 
     if verbose:
+        if held > 2.0:
+            print("  (voice: %.0fs of silence added waiting for moments the "
+                  "script names -- ask for more to say between them)" % held)
         if dropped:
             print("  (voice: %d line%s dropped -- the spoken script was longer "
                   "than the footage)" % (dropped, "" if dropped == 1 else "s"))

@@ -575,6 +575,7 @@ def main():
     parser.add_argument("--claude-model", default=cfg.get("claude_model", writer.CLAUDE_MODEL), help="Claude model for --writer claude. (default: %(default)s)")
     parser.add_argument("--claude-effort", choices=("low", "medium", "high", "xhigh", "max"), default=cfg.get("claude_effort", writer.CLAUDE_EFFORT), help="How hard the Claude model works: low, medium, high, xhigh or max. Lower spends fewer tokens. Writing captions is not intelligence-sensitive, so the default is a step below the API's own. (default: %(default)s)")
     parser.add_argument("--writer-model", default=cfg.get("writer_model", writer.DEFAULT_MODEL), help="Ollama model for --writer ollama. See writer.py for what fits a 24GB card. (default: %(default)s)")
+    parser.add_argument("--no-think", action="store_true", help="Turn off reasoning on the ollama backend. It is ON by default -- a thinking model with thinking disabled writes noticeably worse, and it was disabled for a parsing bug that is since fixed.")
     parser.add_argument("--writer-host", default=cfg.get("writer_host", writer.DEFAULT_HOST), help="Where Ollama is listening. (default: %(default)s)")
     parser.add_argument("--list-writer-models", action="store_true", help="Show which Ollama models are installed, with notes on what suits a 24GB card, then exit")
     parser.add_argument("--no-voice", action="store_true", help="Skip the spoken commentary. It is produced by default; narration.txt is still written either way.")
@@ -799,7 +800,8 @@ def main():
     seed = random.randrange(1 << 31)
     ai = dict(backend=args.writer, model=args.writer_model,
               claude_model=args.claude_model, claude_effort=args.claude_effort,
-              host=args.writer_host, cli=args.writer_cli, seed=seed)
+              host=args.writer_host, cli=args.writer_cli, seed=seed,
+              think=not args.no_think)
     in_use = {
         "claude": "%s, effort %s" % (args.claude_model, args.claude_effort),
         "claude-code": "%s via subscription" % args.claude_model,

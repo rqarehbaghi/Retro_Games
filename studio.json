@@ -24,11 +24,12 @@
     }
   },
   "claude_model": "claude-opus-4-8",
-  "_voice": "--voice speaks narration.txt with Qwen3-TTS and lays it over the videos, ducking the game audio under each line. Apache 2.0, ~4GB, runs on the same GPU. voice_describe is a plain-words description rather than a preset name -- keep it in step with the writing voice. Without --voice, narration.txt is written but nothing is spoken.",
+  "_voice": "The spoken commentary is produced by default -- set voice false, or pass --no-voice, to skip it. Qwen3-TTS speaks narration.txt and the track is laid over both captioned videos with the game audio ducked under each line. Lines are placed on their events and then corrected against the ACTUAL rendered length, so two of them can never talk over each other. voice_describe is a plain-words description rather than a preset name.",
   "voice_model": "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
   "voice_describe": "A dry, unimpressed male sports commentator in his forties. British. Measured pace, deadpan delivery, a little weary. He is amused but never excitable, and lands his punchlines flat rather than selling them.",
   "_timing": "Captions land on the exact frame their event was logged -- every value the event scan reads changes as the thing happens. caption_offset shifts all of them by a fixed number of seconds if a whole run reads late or early; it is 0 by default and nothing is adjusted unless you set it.",
   "caption_offset": 0.0,
   "claude_effort": "medium",
-  "_cost": "claude_model and claude_effort apply to both Claude backends (claude_effort only to the API one). Effort is how much the model spends thinking and answering: low | medium | high | xhigh | max, where the API's own default is high. Writing captions is not intelligence-sensitive, so medium is a deliberate step down. Drop to low if the bill still bites; raise it if the writing goes flat."
+  "_cost": "claude_model and claude_effort apply to both Claude backends (claude_effort only to the API one). Effort is how much the model spends thinking and answering: low | medium | high | xhigh | max, where the API's own default is high. Writing captions is not intelligence-sensitive, so medium is a deliberate step down. Drop to low if the bill still bites; raise it if the writing goes flat.",
+  "voice": true
 }

@@ -89,6 +89,52 @@ def speak_lines(lines, out_dir, model=None, model_name=DEFAULT_MODEL,
     return out
 
 
+MIN_GAP = 0.35          # breath between one line ending and the next starting
+
+
+def wav_seconds(path):
+    """Actual length of a rendered line.
+
+    Read with soundfile, which this module already needs to WRITE the lines, so
+    it cannot be missing when this is called. An earlier version shelled out to
+    ffprobe and returned 0.0 when that failed -- which would have quietly
+    disabled the overlap correction rather than reporting anything."""
+    import soundfile as sf
+    info = sf.info(path)
+    return info.frames / float(info.samplerate)
+
+
+def space_clips(clips, duration_s, min_gap=MIN_GAP, verbose=True):
+    """Push back any line that would start while the previous one is talking.
+
+    The narration script spaces its lines by ESTIMATED reading time -- words
+    divided by a words-per-minute figure -- which is close but never exact. Two
+    lines that overlap by even half a second are both unintelligible, and that
+    is far worse than one arriving slightly after its moment. So the estimate
+    is corrected here against what the renderer actually produced.
+
+    Order is preserved and nothing is dropped; a pushed line drifts from its
+    event, and how far is reported so a consistently large drift can be fixed
+    upstream by asking for fewer or shorter lines."""
+    placed, cursor, worst = [], 0.0, 0.0
+    for at, path in sorted(clips):
+        try:
+            length = wav_seconds(path)
+        except Exception:
+            length = 0.0
+        start = max(at, cursor)
+        worst = max(worst, start - at)
+        placed.append((start, path))
+        cursor = start + length + min_gap
+    if verbose and worst > 1.0:
+        print("  (voice: lines pushed back by up to %.1fs to stop them "
+              "overlapping)" % worst)
+    if verbose and cursor > duration_s + 1.0:
+        print("  (voice: the script runs %.0fs past the end of the footage)"
+              % (cursor - duration_s))
+    return placed
+
+
 def build_track(clips, duration_s, out_path, sample_rate=SAMPLE_RATE):
     """One wav the length of the video, each clip starting at its timestamp.
 
@@ -96,6 +142,7 @@ def build_track(clips, duration_s, out_path, sample_rate=SAMPLE_RATE):
     the footage on its own, without relying on the mux to position anything."""
     if not clips:
         return None
+    clips = space_clips(clips, duration_s)
     inputs, chains, labels = [], [], []
     for i, (at, path) in enumerate(clips):
         inputs += ["-i", path]

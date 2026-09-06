@@ -577,6 +577,7 @@ def main():
     parser.add_argument("--writer-model", default=cfg.get("writer_model", writer.DEFAULT_MODEL), help="Ollama model for --writer ollama. See writer.py for what fits a 24GB card. (default: %(default)s)")
     parser.add_argument("--writer-host", default=cfg.get("writer_host", writer.DEFAULT_HOST), help="Where Ollama is listening. (default: %(default)s)")
     parser.add_argument("--list-writer-models", action="store_true", help="Show which Ollama models are installed, with notes on what suits a 24GB card, then exit")
+    parser.add_argument("--no-voice", action="store_true", help="Skip the spoken commentary. It is produced by default; narration.txt is still written either way.")
     parser.add_argument("--voice", action="store_true", help="Speak the narration and lay it over the videos, ducking the game audio under it. Needs qwen-tts (pip install -U qwen-tts soundfile) and a GPU. Without it narration.txt is written but nothing is spoken.")
     parser.add_argument("--voice-model", default=cfg.get("voice_model", tts.DEFAULT_MODEL), help="Qwen3-TTS model for --voice. (default: %(default)s)")
     parser.add_argument("--voice-describe", default=cfg.get("voice_describe", tts.DEFAULT_VOICE), help="How the commentator should sound, in plain words -- Qwen3-TTS designs the voice from this rather than picking a preset. Set it once as voice_describe in studio.json.")
@@ -665,6 +666,10 @@ def main():
             f"  ollama pull {args.writer_model}\n"
             f"  python studio.py --list-writer-models")
 
+    # Spoken by default -- a commentary script nobody reads out is not a
+    # commentary track, and --voice being opt-in meant every run so far
+    # silently produced no audio.
+    args.voice = not args.no_voice and cfg.get("voice", True)
     if args.voice and not tts.available():
         sys.exit("--voice needs Qwen3-TTS:\n"
                  "  pip install -U qwen-tts soundfile\n"

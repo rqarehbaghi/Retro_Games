@@ -392,6 +392,7 @@ CAPTION_SCHEMA = {
     "type": "object",
     "properties": {
         "opening": {"type": "string"},
+        "closing": {"type": "string"},
         "captions": {
             "type": "array",
             "items": {
@@ -404,7 +405,7 @@ CAPTION_SCHEMA = {
             },
         },
     },
-    "required": ["opening", "captions"],
+    "required": ["opening", "closing", "captions"],
 }
 
 CAPTION_GAP = 6.0        # clear seconds between one caption and the next
@@ -431,14 +432,19 @@ def captions(game, level, duration_s, players, events, fps, max_chars=40,
         "- Caption the interesting moments only. Skip the dull ones, and skip\n"
         "  most coins.\n"
         "- 'opening' is one caption shown at the very start, setting up the run.\n"
+        "- 'closing' is one caption shown at the END, asking the viewer something\n"
+        "  they can actually answer in a comment -- which level next, which game\n"
+        "  next, whether to play one to the finish. A QUESTION, not a demand:\n"
+        "  never 'like and subscribe', never 'smash that button'. Under %d\n"
+        "  characters like the rest, and in the same voice.\n"
         "- Every caption must be different. No repeated jokes.\n"
         "- Praise the good moments as well as mocking the bad ones.\n\n"
         "Good: \"He walked into it. Fully aware.\"\n"
         "Good: \"A mushroom. Do not get attached.\"\n"
         "Too long: \"That enemy has stood there since 1988 waiting for this.\"\n\n"
-        "Return JSON: {\"opening\": \"...\", \"captions\": "
+        "Return JSON: {\"opening\": \"...\", \"closing\": \"...\", \"captions\": "
         "[{\"event\": 3, \"text\": \"...\"}]}"
-        % max_chars)
+        % (max_chars, max_chars))
     data = write(prompt, CAPTION_SCHEMA, **kw)
     if not data:
         return None
@@ -461,12 +467,25 @@ def captions(game, level, duration_s, players, events, fps, max_chars=40,
                         "event": int(index), "kind": events[int(index)][1]})
     out.sort(key=lambda c: c["at"])
 
+    # The ask goes LAST, after the run has earned it. Asking up front reads as
+    # a demand; the same question after ninety seconds of watching reads as a
+    # conversation, and a question someone can answer gets replies where
+    # "comment below" does not.
+    closing = str(data.get("closing", "")).strip()
+    if closing and duration_s > 8:
+        out.append({"at": round(max(0.0, duration_s - 5.0), 2),
+                    "text": closing[:max_chars], "event": None, "closing": True})
+
     # Two captions on top of each other are unreadable, and a model asked for
     # "the interesting moments" will happily pick three in a row.
     spaced = []
     for cap in out:
         if spaced and cap["at"] - spaced[-1]["at"] < CAPTION_GAP:
-            continue
+            # Never thin out the closing ask -- push whatever crowds it aside
+            # instead. It is the one caption with a job beyond being funny.
+            if not cap.get("closing"):
+                continue
+            spaced.pop()
         spaced.append(cap)
     return spaced or None
 

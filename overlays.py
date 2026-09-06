@@ -44,15 +44,19 @@ DEFAULT_STYLE = {
     "crf": 18,
     # size_div divides the SHORT EDGE of the frame (see text_size), so one
     # setting renders the same size in both outputs. A LARGER number still
-    # means SMALLER text.
+    # means SMALLER text -- these are 10% smaller than the previous values.
+    #
+    # Black text on a white outline and a white shadow. The polarity has to be
+    # consistent: black glyphs with a black outline would disappear against
+    # dark footage, so the outline and shadow carry the contrast.
     "title": {
-        "size_div": 36,
-        "color": "white@0.92",
-        "border_color": "black@0.9",
+        "size_div": 40,
+        "color": "black",
+        "border_color": "white@0.9",
         "y_frac": 0.045,
         "case": "sentence",
         "shadow": True,
-        "shadow_color": "black@0.75",
+        "shadow_color": "white@0.75",
         "shadow_x": 3,
         "shadow_y": 3,
         "box": False,
@@ -60,9 +64,9 @@ DEFAULT_STYLE = {
         "box_pad": 12,
     },
     "caption": {
-        "size_div": 26,
-        "color": "white",
-        "border_color": "black@0.92",
+        "size_div": 29,
+        "color": "black",
+        "border_color": "white@0.92",
         "shadow": True,
         "hold": 2.6,
         "max_lines": 2,
@@ -76,7 +80,7 @@ DEFAULT_STYLE = {
         # while these cover only the glyphs. box stays available for a heavier
         # look but is off.
         "shadow": True,
-        "shadow_color": "black@0.75",
+        "shadow_color": "white@0.75",
         "shadow_x": 3,
         "shadow_y": 3,
         "box": False,
@@ -84,14 +88,14 @@ DEFAULT_STYLE = {
         "box_pad": 14,
     },
     "watermark": {
-        "size_div": 52,
-        "color": "white@0.6",
-        "border_color": "black@0.7",
+        "size_div": 58,
+        "color": "black@0.7",
+        "border_color": "white@0.7",
         "y_frac_vertical": 0.925,
         "y_frac_wide": 0.94,
         "case": "none",
         "shadow": True,
-        "shadow_color": "black@0.6",
+        "shadow_color": "white@0.6",
         "shadow_x": 2,
         "shadow_y": 2,
         "box": False,

@@ -351,31 +351,54 @@ def write(prompt, schema, backend=DEFAULT_BACKEND, **kw):
                     verbose=verbose)
 
 
+# A run collects a great many coins and almost nothing else in bulk, so a raw
+# timeline is mostly noise: one real playthrough produced 97 events of which
+# nearly all were coins. Long prompts of near-identical lines cost quality on
+# every call and made the description call return nothing at all.
+COIN_KINDS = ("coin", "score")
+MAX_TIMELINE = 40
+
+
 def _timeline(events, fps):
-    """The run, as something a model can read."""
+    """The run as something a model can read, with bulk collectibles collapsed.
+
+    INDICES ARE PRESERVED. Captions and narration anchor to them, so a
+    collapsed run still prints the real index of the events either side of it
+    and the summary in between names the range it stands for."""
     label = {
         "death": "died", "shrink": "shrank to small", "powerdown": "lost a power tier",
         "powerup": "collected a power-up", "1up": "got an extra life",
         "coin": "collected a coin", "clear": "finished the level",
         "pipe": "went down a pipe", "score": "scored points",
     }
-    out = []
-    for i, (frame, kind, detail) in enumerate(events):
+
+    def stamp_at(frame):
         secs = frame / fps
-        out.append("  [%d] %d:%05.2f  %s (%s)" % (i, secs // 60, secs % 60,
-                                                  label.get(kind, kind), detail))
+        return "%d:%05.2f" % (secs // 60, secs % 60)
+
+    out, i, n = [], 0, len(events)
+    while i < n:
+        frame, kind, detail = events[i]
+        if kind in COIN_KINDS:
+            run = i
+            while run + 1 < n and events[run + 1][1] == kind:
+                run += 1
+            if run - i >= 2:
+                out.append("  [%d] %s  %s" % (i, stamp_at(frame), label.get(kind, kind)))
+                out.append("      ... [%d]-[%d], %d more, through to %s ..."
+                           % (i + 1, run, run - i, stamp_at(events[run][0])))
+                i = run + 1
+                continue
+        out.append("  [%d] %s  %s (%s)" % (i, stamp_at(frame),
+                                           label.get(kind, kind), detail))
+        i += 1
+
+    if len(out) > MAX_TIMELINE:
+        kept = out[:MAX_TIMELINE - 1]
+        kept.append("      ... and %d more lines, mostly collectibles ..."
+                    % (len(out) - MAX_TIMELINE + 1))
+        out = kept
     return "\n".join(out) or "  (nothing notable happened)"
-
-
-# NO LEAD. Every value is logged on the frame the thing happens -- including
-# `lives`, which decrements as Mario dies, not at the end of the death
-# animation. An earlier version subtracted 0.5 to 3 seconds per kind on the
-# theory that some values lagged the picture; that theory came from a note
-# about a DIFFERENT byte (0x0749) and was never checked against video, and the
-# result was every caption arriving about a second before the thing it was
-# about. A caption is a reaction: it belongs on the frame, not ahead of it.
-#
-# caption_offset in studio.json is the remaining knob, and it is 0 unless set.
 
 
 def event_time(events, index, fps, duration_s):

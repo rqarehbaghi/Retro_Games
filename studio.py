@@ -935,7 +935,12 @@ def main():
             handle.write("%s  %s\n" % (stamp(int(at * FPS)), text))
     written_copy = writer.copy(**ctx, watermark=args.watermark, **ai) or {}
     if not written_copy:
-        print("  WARNING: the model returned no description; metadata is bare.")
+        print("  WARNING: no description came back -- paste.txt will be EMPTY.")
+        print(f"           Retry just the writing: python studio.py --game {args.game} \\")
+        print(f"             --from-mp4 {os.path.join(folder, os.path.basename(native))}")
+        print( "           A smaller model often manages captions and commentary")
+        print( "           but not the long description; --writer claude-code is")
+        print( "           the fallback that reliably does.")
     meta = build_metadata(args.game, args.players, events, title, args.watermark,
                           written_copy, level=args.level, duration_s=duration,
                           model=in_use)

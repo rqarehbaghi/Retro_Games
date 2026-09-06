@@ -67,9 +67,6 @@ from overlays import (DEFAULT_FONT, DEFAULT_STYLE, TRANSITIONS,
                       merge_style, render_spec, save_spec)
 
 
-
-
-
 FPS = 60.0988
 
 
@@ -80,10 +77,6 @@ def stamp(frame):
 
 def slugify(text):
     return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:60] or "session"
-
-
-
-
 
 
 STUDIO_CONFIG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "studio.json")
@@ -125,133 +118,6 @@ def auto_title(game, level=None):
     to know."""
     name = pretty_game(game)
     return "%s - %s" % (name, level) if level else name
-
-
-# Lines timed to what actually happened, because the event log knows exactly
-# when it happened. A handle burnt in the corner is branding, not commentary --
-# these are the commentary. Pools rather than single strings so a run with four
-# deaths does not print the same sentence four times.
-#
-# Voice is dry and self-deprecating: this is footage of the author playing,
-# and a caption that boasts about a mushroom reads badly. {n} is filled with
-# the running count of that event where a pool uses it.
-CAPTION_LINES = {
-    # The voice is a commentator who has watched a great deal of this and is
-    # not impressed easily -- but is FAIR. Mistakes get taken apart; genuinely
-    # good play gets credit, delivered as a backhanded compliment rather than
-    # withheld. A caption that only ever sneers stops being funny by the third
-    # one, because nothing is at stake in the praise.
-    #
-    # Lines can run long now: captions wrap onto up to three lines and stay on
-    # screen in proportion to their length, so there is room for an actual joke
-    # instead of a fragment.
-    #
-    # A STARTING TABLE, not the final wording. Every run writes the chosen
-    # lines into overlays.json beside the video and restyle.py re-renders after
-    # you edit it, so the funniest version of any of these is the one written
-    # after actually watching the clip.
-    "open": ["Right. A grown adult, a 1988 cartridge, and no excuses.",
-             "He has played this before. Allegedly.",
-             "One take. Everything you are about to see was avoidable."],
-    "death": ["Killed by the first enemy in the game. A round one. With a face.",
-              "He saw it coming and walked at it anyway. Bold.",
-              "Death {n}. At this point the goombas are just spectating.",
-              "That enemy has stood there since 1988 waiting for exactly this.",
-              "Avoidable. Every single frame of that was avoidable."],
-    "shrink": ["And it is gone. Nine glorious seconds of being large.",
-               "Back to small. Back to being a target.",
-               "The mushroom gave its life for absolutely nothing."],
-    "powerdown": ["There goes the tail. He had it for one screen.",
-                  "Downgraded, and honestly, earned."],
-    "powerup": ["A mushroom. Look at him. Practically a professional.",
-                "Genuine competence. I am noting it for the record.",
-                "Upgraded. Enjoy it, it will not survive the next screen.",
-                "Now he is big, and the confidence is already a problem."],
-    "1up": ["An extra life, for a man who clearly needs the inventory.",
-            "A 1-Up. Credit where it is due. He will waste it in a minute."],
-    "coin": ["{n} coins. Financially secure, mechanically hopeless.",
-             "{n} coins collected, none of which make him better at this.",
-             "{n} coins. Genuinely tidy collecting, for whatever that is worth."],
-    "clear": ["He cleared it. I am as surprised as you are, and I am paid to watch.",
-              "Level complete, and the last stretch was actually good. There. Said it.",
-              "Finished. Not pretty, but finished, and that counts."],
-    "pipe": ["Into a pipe. Hiding from his responsibilities.",
-             "Down a pipe, where there are fewer witnesses."],
-}
-
-CAPTION_HOLD = 2.6        # seconds each line stays up
-CAPTION_GAP = 1.5         # clear seconds between one line leaving and the next
-COIN_EVERY = 10           # only caption coins at milestones
-
-
-def caption_script(events, duration, game, seed=None):
-    """(start_seconds, text) pairs for the whole run.
-
-    Deliberately sparse. A caption on every coin would be a wall of text over
-    the gameplay, so coins only speak at milestones and nothing lands within
-    CAPTION_GAP of the previous line."""
-    rng = random.Random(seed if seed is not None else game)
-    lines = []
-
-    used = {}
-
-    def pool(kind, count=None):
-        """A line not yet used for this kind, until the pool runs dry.
-
-        Plain rng.choice picks independently every time, so a long run printed
-        "peak. it is all downhill from here." three times -- which is exactly
-        what having pools was supposed to prevent."""
-        options = CAPTION_LINES.get(kind)
-        if not options:
-            return None
-        seen = used.setdefault(kind, set())
-        fresh = [o for o in options if o not in seen]
-        if not fresh:
-            seen.clear()
-            fresh = list(options)
-        text = rng.choice(fresh)
-        seen.add(text)
-        return text.format(n=count, game=pretty_game(game))
-
-    opener = pool("open")
-    if opener:
-        lines.append((0.6, opener))
-
-    counts = {}
-    for frame, kind, _detail in events:
-        counts[kind] = counts.get(kind, 0) + 1
-        if kind == "coin" and counts[kind] % COIN_EVERY:
-            continue
-        if kind == "score":
-            continue
-        text = pool(kind, counts[kind])
-        if not text:
-            continue
-        # Events are logged when the value changes, which for a death is after
-        # the animation -- so the line lands as the punchline rather than
-        # spoiling it. No extra offset needed.
-        at = frame / FPS
-        if at + CAPTION_HOLD > duration:
-            continue
-        # Space against when the previous line LEAVES the screen, not when it
-        # arrived: holds scale with length now and can exceed a fixed gap, so a
-        # constant would let a long caption still be up when the next appears.
-        if lines:
-            prev_at, prev_text = lines[-1]
-            prev_hold = max(CAPTION_HOLD, len(prev_text) / 13.0)
-            if at < prev_at + prev_hold + CAPTION_GAP:
-                continue
-        lines.append((at, text))
-    return lines
-
-
-
-
-
-
-
-
-
 
 
 # Weighted so the cut lands on what is worth watching. A clear or a 1-Up is the
@@ -332,10 +198,6 @@ def highlight_segments(events, total_s, budget_s, seg_s=4.0, lead=None):
         return [(best_window(events, total_s, budget_s), budget_s)]
     chosen.sort()
     return [(start, end - start) for start, end in chosen]
-
-
-
-
 
 
 TRANSITION_DROP = 600
@@ -522,94 +384,6 @@ def read_events(bk2_path, game):
     return filter_power_noise(events, total_frames=frame)
 
 
-# Talking over the whole run, not just its highlights. A commentary track that
-# only speaks when something happens leaves most of a 90-second video silent,
-# so the gaps get filled with observation -- which is what a real commentator
-# does while nothing much is going on.
-NARRATION_OPEN = [
-    "Here we go. {game}, {level}. No save states, no rewinds, no second takes.",
-    "{game}, {level}. A cartridge older than most of the audience, and a man who "
-    "insists he remembers how this goes.",
-    "Welcome back. {game}, {level}, played straight through. Whatever happens "
-    "next, it happened live.",
-]
-
-NARRATION_FILL = [
-    "Look at this. Not one pixel of it has changed since 1988, and neither has "
-    "the correct way to play it.",
-    "There is a rhythm to this level that people spent childhoods learning. We "
-    "will see whether any of it survived.",
-    "Everything on this screen is trying to kill him, politely, on a fixed "
-    "schedule, exactly as it did decades ago.",
-    "The music has not stopped. The music never stops. That is half of why "
-    "anyone remembers this game at all.",
-    "Nothing here is random. Every enemy, every block, every gap is in the same "
-    "place it has always been.",
-    "This is the part where muscle memory is supposed to take over. Any moment "
-    "now.",
-    "Somewhere out there is a person who can do this level in forty seconds "
-    "without breathing hard. This is not that person.",
-    "Steady progress. I want to acknowledge it now, because I suspect it will "
-    "not last.",
-]
-
-NARRATION_EVENT = {
-    "death": [
-        "And there it is. Killed by the oldest, slowest, most telegraphed enemy "
-        "in the entire game.",
-        "He walked into that. Not tripped, not got cornered. Walked.",
-        "That was avoidable, and I want that noted. Every frame of it was "
-        "avoidable.",
-        "Death number {n}. The enemies are not even trying at this point.",
-    ],
-    "shrink": [
-        "And the mushroom is gone. Nine seconds of being large, wasted.",
-        "Back to small. Back to being exactly one mistake from the start of the "
-        "level.",
-    ],
-    "powerdown": [
-        "There goes the tail, after roughly one screen of ownership.",
-        "Downgraded. Somewhere a raccoon is filing a complaint.",
-    ],
-    "powerup": [
-        "A mushroom, and credit where it is due, that was a clean grab.",
-        "Powered up. He looks dangerous now. He is not, but he looks it.",
-        "Good. Genuinely good. I am contractually obliged to say something "
-        "unkind later, so enjoy this.",
-    ],
-    "1up": [
-        "An extra life. Earned, and almost certainly about to be spent.",
-        "A one up. That is the good news. The bad news is the next thirty "
-        "seconds.",
-    ],
-    "coin": [
-        "{n} coins now. Financially secure. Mechanically, we will see.",
-        "Coins are stacking up. That is real, that counts, that is skill.",
-    ],
-    "clear": [
-        "And that is the level. Finished, on camera, no retries. Say what you "
-        "like about the middle section, the ending was clean.",
-        "Cleared. I am going to be honest with you, I did not expect that, and I "
-        "am paid to expect things.",
-    ],
-    "pipe": [
-        "Into a pipe, away from his problems.",
-        "Down we go. Fewer witnesses down here.",
-    ],
-}
-
-NARRATION_CLOSE = [
-    "That is the run. {tally} Somewhere a version of this that went smoothly "
-    "exists, and this was not it.",
-    "And that is where we leave it. {tally} Same time next level.",
-    "Run over. {tally} You may now go and remember this game as harder than it "
-    "was.",
-]
-
-WORDS_PER_MINUTE = 150      # a plain TTS read
-NARRATION_GAP = 6.0         # fill any silence longer than this
-
-
 def _tally(events):
     counts = {}
     for _frame, kind, _detail in events:
@@ -623,212 +397,17 @@ def _tally(events):
     return ("Final count: " + ", ".join(bits) + ".") if bits else ""
 
 
-def narration(events, duration_s, game, players, level=None, seed=None):
-    """A full commentary script, timed across the whole run.
+def build_metadata(game, players, events, title, watermark, written,
+                   level=None, duration_s=0.0, model=""):
+    """The upload copy, assembled around what the model wrote.
 
-    Previously this listed the handful of moments the captions already covered,
-    which left roughly eighty seconds of a ninety-second video with nothing
-    being said over it. A commentary track has to keep talking, so event lines
-    are the spine and observation fills the silences between them."""
-    rng = random.Random(seed if seed is not None else "%s-narration" % game)
-    name = pretty_game(game)
-    where = level or "from the top"
-    used = {}
-
-    def pick(pool, key, **fmt):
-        seen = used.setdefault(key, set())
-        fresh = [line for line in pool if line not in seen] or list(pool)
-        if len(fresh) == len(pool):
-            seen.clear()
-        line = rng.choice(fresh)
-        seen.add(line)
-        return line.format(game=name, level=where, **fmt)
-
-    script = [(0.4, pick(NARRATION_OPEN, "open"))]
-    counts = {}
-    for frame, kind, _detail in events:
-        counts[kind] = counts.get(kind, 0) + 1
-        pool = NARRATION_EVENT.get(kind)
-        if not pool:
-            continue
-        if kind == "coin" and counts[kind] % 10:
-            continue
-        at = frame / FPS
-        if at > duration_s - 3:
-            continue
-        script.append((at, pick(pool, kind, n=counts[kind])))
-
-    # Fill the silences. Reading rate sets how long a line occupies, so a gap
-    # is only filled when there is genuinely room for another one.
-    script.sort()
-
-    def spoken(text):
-        return len(text.split()) / WORDS_PER_MINUTE * 60.0
-
-    filled = []
-    for i, (at, text) in enumerate(script):
-        filled.append((at, text))
-        cursor = at + spoken(text)
-        # Against the SORTED neighbour: indexing the unsorted list here left a
-        # fifteen-second silence in the middle of a run it thought it had filled.
-        next_at = script[i + 1][0] if i + 1 < len(script) else duration_s
-        while next_at - cursor > NARRATION_GAP:
-            line = pick(NARRATION_FILL, "fill")
-            filled.append((cursor + 1.0, line))
-            cursor += 1.0 + spoken(line)
-
-    tally = _tally(events)
-    close = pick(NARRATION_CLOSE, "close", tally=tally)
-    # After everything else has finished speaking, not merely near the end --
-    # placing it by duration alone put the sign-off before the last event.
-    last_end = max((at + spoken(text) for at, text in filled), default=0.0)
-    # Late enough to be a sign-off, early enough to finish before the footage
-    # does -- placing it purely by duration put it before the final event, and
-    # placing it purely after that final line ran it past the end of the video.
-    close_at = max(last_end + 0.5, duration_s - spoken(close) - 0.5)
-    overruns = close_at + spoken(close) > duration_s
-    filled.append((min(close_at, max(0.0, duration_s - 0.5)), close))
-    filled.sort()
-
-    lines = ["# Commentary script for %s%s" % (name, ", " + level if level else ""),
-             "# %d seconds of footage, about %d words, read at ~%d wpm."
-             % (duration_s,
-                sum(len(t.split()) for _a, t in filled), WORDS_PER_MINUTE),
-             "# Timestamps are when each line should START.",
-             ""]
-    if overruns:
-        lines.insert(3, "# NOTE the sign-off runs past the end of the footage. "
-                        "Trim it, or hold the last frame.")
-    for at, text in filled:
-        lines.append("[%s] %s" % (stamp(int(at * FPS)), text))
-    return "\n".join(lines)
-
-
-# ------------------------------------------------------------ the copy ----
-# Nostalgia is the actual pitch. The audience for a World 1-1 run is not
-# looking for a tutorial -- they played this, or watched a sibling play it, and
-# the description has to say so before it says anything else.
-DESC_OPEN = [
-    "If you were there for this one, you already know the sound of that first "
-    "overworld theme better than you know your own phone number.",
-    "Some games you remember. This one you can still hear. The moment that "
-    "music starts, you are eight years old and it is a Saturday.",
-    "There was a time when this screen was the whole world, and getting past it "
-    "was the most important thing happening that week.",
-]
-
-DESC_BODY = [
-    "No save states, no rewinds, no second attempts. One take, mistakes "
-    "included, exactly the way it was played when the only thing standing "
-    "between you and the start of the level was a very small number of lives.",
-    "Played straight through on emulation of the original hardware. Same enemy "
-    "placement, same physics, same unforgiving gap you have been falling into "
-    "since the eighties.",
-    "Everything here is the original game, untouched. No romhacks, no practice "
-    "tools, no rewinding the bad bits. What you see is what happened.",
-]
-
-DESC_CLOSE = [
-    "Drop a comment if you remember where the secret in this level is. Half of "
-    "you do. The other half are about to find out.",
-    "Tell me in the comments how old you were when you first played this. Be "
-    "honest, we are all in the same boat here.",
-    "If this brought something back, subscribe -- more of the same, one level at "
-    "a time, no save states.",
-]
-
-YOUTUBE_TAGS = ["retro gaming", "nes", "nintendo", "nostalgia", "80s games",
-                "90s kids", "retro games", "classic gaming", "gameplay",
-                "full playthrough", "no commentary", "childhood games"]
-
-
-def build_description(game, level, events, duration_s, players, watermark, seed=None):
-    """A real YouTube description: hook, context, what happened, and a prompt.
-
-    The old one was three lines and a stat count, which is not a description --
-    it is a caption with delusions. Long-form platforms expect several hundred
-    words and use them for search."""
-    rng = random.Random(seed if seed is not None else "%s-desc" % game)
-    name = pretty_game(game)
-    where = ("%s, %s" % (name, level)) if level else name
-
+    Nothing here composes prose any more. Every phrase pool this module used to
+    carry was removed: they gave the same eight jokes and the same description
+    under every upload, which is the opposite of what a channel needs."""
     counts = {}
     for _frame, kind, _detail in events:
         counts[kind] = counts.get(kind, 0) + 1
-
-    chapters = []
-    for frame, kind, detail in events:
-        if kind in ("powerup", "1up", "clear", "death", "pipe"):
-            secs = int(frame / FPS)
-            chapters.append("%d:%02d  %s" % (secs // 60, secs % 60, {
-                "powerup": "Power-up",
-                "1up": "Extra life",
-                "clear": "Level clear",
-                "death": "Death",
-                "pipe": "Into a pipe",
-            }[kind]))
-
-    parts = [where + ".", "", rng.choice(DESC_OPEN), "", rng.choice(DESC_BODY), ""]
-    if players == 2:
-        parts += ["Two players: one human, one trained neural network. "
-                  "The machine has played this level more times than any person "
-                  "alive, and it still cannot be trusted near a pit.", ""]
-    if chapters:
-        # YouTube only turns these into real chapters when the list starts at
-        # 0:00, so the run-up is an entry rather than an omission.
-        chapters.insert(0, "0:00  Start")
-        parts.append("CHAPTERS")
-        parts.extend("  " + c for c in chapters[:14])
-        parts.append("")
-    tally = _tally(events)
-    if tally:
-        parts += [tally, ""]
-    parts += [rng.choice(DESC_CLOSE), "",
-              "Runtime: %d:%02d" % (int(duration_s) // 60, int(duration_s) % 60), ""]
-    if watermark:
-        parts += [watermark, ""]
-    parts.append(" ".join("#" + t.replace(" ", "") for t in YOUTUBE_TAGS[:8]))
-    return "\n".join(parts)
-
-
-def build_short_caption(game, level, events, watermark, tags, seed=None):
-    """The one-field caption TikTok and Instagram give you: hook then tags."""
-    rng = random.Random(seed if seed is not None else "%s-short" % game)
-    name = pretty_game(game)
-    hooks = [
-        "%s. If you know, you know." % (level or name),
-        "%s%s, one take, no save states. Tell me you remember this."
-        % (name, ", " + level if level else ""),
-        "Be honest, how old were you when you first played this? %s%s"
-        % (name, ", " + level if level else ""),
-    ]
-    counts = {}
-    for _f, kind, _d in events:
-        counts[kind] = counts.get(kind, 0) + 1
-    if counts.get("death"):
-        hooks.append("Died %d time%s on a level I have beaten a hundred times. %s"
-                     % (counts["death"], "" if counts["death"] == 1 else "s", name))
-    return "%s\n\n%s\n%s" % (rng.choice(hooks), watermark, tags)
-
-
-def build_metadata(game, players, events, title, watermark, level=None,
-                   duration_s=0.0):
-    counts = {}
-    for _frame, kind, _detail in events:
-        counts[kind] = counts.get(kind, 0) + 1
-    tags = list(YOUTUBE_TAGS)
-    if players == 2:
-        tags += ["ai", "human vs ai", "machine learning", "reinforcement learning"]
-    hashtags = {
-        "youtube": " ".join("#" + t.replace(" ", "") for t in tags[:10]),
-        "tiktok": " ".join("#" + t.replace(" ", "")
-                           for t in ["retro", "nostalgia", "nes", "gaming",
-                                     "90skids", "fyp"]),
-        "instagram": " ".join("#" + t.replace(" ", "")
-                              for t in ["retrogaming", "nostalgia", "nes",
-                                        "nintendo", "90skids", "80skids",
-                                        "retro", "gaming", "reels"]),
-    }
+    tags = written.get("tags") or []
     return {
         "title": title,
         "game": game,
@@ -836,15 +415,15 @@ def build_metadata(game, players, events, title, watermark, level=None,
         "players": players,
         "duration_seconds": round(duration_s, 1),
         "event_counts": counts,
-        "description": build_description(game, level, events, duration_s,
-                                         players, watermark),
+        "written_by": model,
+        "description": written.get("description", ""),
         "tags": tags,
-        "hashtags": hashtags,
+        "hashtags": {
+            "youtube": " ".join("#" + t.replace(" ", "") for t in tags[:10]),
+        },
         "captions": {
-            "tiktok": build_short_caption(game, level, events, watermark,
-                                          hashtags["tiktok"]),
-            "instagram": build_short_caption(game, level, events, watermark,
-                                             hashtags["instagram"]),
+            "tiktok": written.get("tiktok", ""),
+            "instagram": written.get("instagram", ""),
         },
     }
 
@@ -1001,7 +580,6 @@ def main():
     parser.add_argument("--transition-seconds", type=float, default=0.25, help="Length of each transition in seconds. (default: %(default)s)")
     parser.add_argument("--no-captions", action="store_true", help="Turn off the timed commentary captions. They are written from the event log, so they land on the thing they are about.")
     parser.add_argument("--level", default=cfg.get("level"), help="Where in the game this run is, e.g. World 1-1. Shown after the game name in the title. Set it once as the level key in studio.json.")
-    parser.add_argument("--writer", choices=("table", "ollama"), default=cfg.get("writer", "table"), help="Who writes the captions, commentary and descriptions. 'table' uses the built-in pools, which repeat across runs. 'ollama' asks a model running on this machine to write them fresh against what actually happened, falling back to the tables if it is unreachable or returns nothing usable. (default: %(default)s)")
     parser.add_argument("--writer-model", default=cfg.get("writer_model", writer.DEFAULT_MODEL), help="Ollama model for --writer ollama. See writer.py for what fits a 24GB card. (default: %(default)s)")
     parser.add_argument("--writer-host", default=cfg.get("writer_host", writer.DEFAULT_HOST), help="Where Ollama is listening. (default: %(default)s)")
     parser.add_argument("--list-writer-models", action="store_true", help="Show which Ollama models are installed, with notes on what suits a 24GB card, then exit")
@@ -1050,6 +628,23 @@ def main():
                  f"  sudo apt install -y fonts-dejavu-core")
     if not shutil.which("ffmpeg"):
         sys.exit("ffmpeg is not on PATH -- see README step 1.")
+
+    # Checked HERE, before a single frame is played. Every word on the video is
+    # written by the model now, so a missing server means an unusable run --
+    # and finding that out after playing a level would cost the recording.
+    if not writer.available(args.writer_host):
+        sys.exit(
+            f"No Ollama server at {args.writer_host}.\n"
+            f"  All captions, commentary and descriptions are written by a\n"
+            f"  local model -- there are no built-in phrases to fall back on.\n\n"
+            f"  Start one:   ollama serve\n"
+            f"  Get a model: ollama pull {args.writer_model}\n"
+            f"  Check:       python studio.py --list-writer-models")
+    if args.writer_model not in writer.installed_models(args.writer_host):
+        sys.exit(
+            f"Ollama is running but {args.writer_model!r} is not pulled.\n"
+            f"  ollama pull {args.writer_model}\n"
+            f"  python studio.py --list-writer-models")
 
     bk2_path = None
 
@@ -1139,30 +734,25 @@ def main():
 
     title = args.title or auto_title(args.game, args.level)
 
-    # A model, when one is asked for and reachable; the tables otherwise. Every
-    # writer entry point returns None on any failure, so an unreachable model
-    # costs a bit of variety and never the run.
-    ai = None
-    if args.writer == "ollama":
-        if not writer.available(args.writer_host):
-            print(f"WARNING: no Ollama at {args.writer_host} -- using the built-in tables.")
-            print( "         start one with 'ollama serve', or drop --writer ollama.")
-        else:
-            print(f"Writing with {args.writer_model} ...")
-            ai = dict(model=args.writer_model, host=args.writer_host)
+    # One seed for the whole run, drawn fresh each time. Same footage played
+    # twice must not produce the same script twice, and an explicit seed is
+    # what guarantees that rather than trusting the server's default.
+    seed = random.randrange(1 << 31)
+    ai = dict(model=args.writer_model, host=args.writer_host, seed=seed)
+    print(f"Writing with {args.writer_model} (seed {seed}) ...")
 
     ctx = dict(game=pretty_game(args.game), level=args.level, duration_s=duration,
                players=args.players, events=events, fps=FPS)
 
     lines = []
     if not args.no_captions:
-        written_caps = writer.captions(**ctx, **ai) if ai else None
-        if written_caps:
-            lines = [(c["at"], c["text"]) for c in written_caps]
-        else:
-            if ai:
-                print("  (captions: falling back to the tables)")
-            lines = caption_script(events, duration, args.game)
+        written_caps = writer.captions(**ctx, **ai)
+        if written_caps is None:
+            sys.exit("The model returned nothing usable for the captions.\n"
+                     "  The videos are unwritten but the recording is safe in\n"
+                     f"  {folder} -- re-run with --from-mp4 on the source there,\n"
+                     "  or try a different --writer-model.")
+        lines = [(c["at"], c["text"]) for c in written_caps]
     if not args.title:
         print("Title: %s" % title)
     if lines:
@@ -1208,37 +798,26 @@ def main():
     written = render_spec(spec, out_dir=folder)
     wide, tall, clean = written[0], written[1], written[2]
 
+    written_narr = writer.narration(**ctx, **ai) or []
     with open(os.path.join(folder, "narration.txt"), "w") as handle:
-        written_narr = writer.narration(**ctx, **ai) if ai else None
-        if written_narr:
-            handle.write("# Commentary for %s%s, written by %s.\n"
-                         % (pretty_game(args.game),
-                            ", " + args.level if args.level else "",
-                            args.writer_model))
-            handle.write("# Timestamps are when each line should START.\n\n")
-            for item in written_narr:
-                handle.write("[%s] %s\n"
-                             % (stamp(int(item["at"] * FPS)), item["text"]))
-        else:
-            if ai:
-                print("  (narration: falling back to the tables)")
-            handle.write(narration(events, duration, args.game, args.players,
-                                   level=args.level) + "\n")
+        handle.write("# Commentary for %s%s, written by %s (seed %d).\n"
+                     % (pretty_game(args.game),
+                        ", " + args.level if args.level else "",
+                        args.writer_model, seed))
+        handle.write("# Timestamps are when each line should START.\n\n")
+        for item in written_narr:
+            handle.write("[%s] %s\n" % (stamp(int(item["at"] * FPS)), item["text"]))
+    if not written_narr:
+        print("  WARNING: the model returned no commentary; narration.txt is empty.")
     with open(os.path.join(folder, "captions.txt"), "w") as handle:
         for at, text in lines:
             handle.write("%s  %s\n" % (stamp(int(at * FPS)), text))
-    meta = build_metadata(args.game, args.players, events, title,
-                          args.watermark, level=args.level,
-                          duration_s=duration)
-    written_copy = writer.copy(**ctx, watermark=args.watermark, **ai) if ai else None
-    if written_copy:
-        meta["description"] = written_copy["description"]
-        meta["tags"] = written_copy["tags"] or meta["tags"]
-        meta["captions"] = {"tiktok": written_copy["tiktok"],
-                            "instagram": written_copy["instagram"]}
-        meta["written_by"] = args.writer_model
-    elif ai:
-        print("  (descriptions: falling back to the tables)")
+    written_copy = writer.copy(**ctx, watermark=args.watermark, **ai) or {}
+    if not written_copy:
+        print("  WARNING: the model returned no description; metadata is bare.")
+    meta = build_metadata(args.game, args.players, events, title, args.watermark,
+                          written_copy, level=args.level, duration_s=duration,
+                          model=args.writer_model)
     with open(os.path.join(folder, "metadata.json"), "w") as handle:
         json.dump(meta, handle, indent=2)
     with open(os.path.join(folder, "UPLOAD.txt"), "w") as handle:

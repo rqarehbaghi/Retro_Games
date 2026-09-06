@@ -45,7 +45,7 @@ import urllib.request
 
 DEFAULT_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
 DEFAULT_MODEL = "qwen3:30b-a3b"
-TIMEOUT = 180
+TIMEOUT = 600      # a 14B writing a full commentary track is not quick
 
 MODEL_NOTES = """\
 Picking a model for a 24GB card (RTX 4090):
@@ -97,29 +97,55 @@ def installed_models(host=DEFAULT_HOST):
         return []
 
 
+THINK_OPEN = "<think>"
+THINK_CLOSE = "</think>"
+
+
+def _strip_thinking(text):
+    """Drop a reasoning block a thinking model emitted before its answer.
+
+    Qwen3 and its relatives reason out loud first. With `think` honoured this
+    never fires, but older Ollama builds ignore the flag and then every single
+    call fails to parse -- which looked exactly like the model being bad at
+    JSON rather than the request being wrong."""
+    if THINK_CLOSE in text:
+        text = text.rsplit(THINK_CLOSE, 1)[1]
+    start = text.find("{")
+    end = text.rfind("}")
+    return text[start:end + 1] if 0 <= start < end else text
+
+
 def generate(prompt, schema, model=DEFAULT_MODEL, host=DEFAULT_HOST,
-             timeout=TIMEOUT, temperature=0.9, verbose=True):
+             timeout=TIMEOUT, temperature=1.0, verbose=True, seed=None):
     """One constrained generation. Returns the parsed object, or None.
 
     `schema` is a JSON schema passed as `format`, which makes Ollama restrict
     decoding to tokens that keep the output valid against it -- the difference
     between parsing reliably and hoping."""
+    options = {"temperature": temperature, "top_p": 0.95}
+    if seed is not None:
+        # An explicit, per-run random seed. Ollama seeds from the clock by
+        # default, but being explicit is what guarantees that replaying the
+        # same footage twice cannot produce the same script twice.
+        options["seed"] = seed
     body = json.dumps({
         "model": model,
         "prompt": prompt,
         "system": VOICE,
         "format": schema,
         "stream": False,
-        # High enough that two runs of the same footage do not read alike,
-        # which is the entire point of doing this.
-        "options": {"temperature": temperature, "top_p": 0.95},
+        # Thinking models put their reasoning in the response before the
+        # answer, which is not valid JSON no matter how well the schema
+        # constrains the rest of it.
+        "think": False,
+        "options": options,
     }).encode()
     req = urllib.request.Request(host.rstrip("/") + "/api/generate", data=body,
                                  headers={"Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             payload = json.load(r)
-        return json.loads(payload["response"])
+        return json.loads(_strip_thinking(payload["response"]))
     except urllib.error.URLError as exc:
         if verbose:
             print(f"  (writer: cannot reach Ollama at {host}: {exc.reason})")

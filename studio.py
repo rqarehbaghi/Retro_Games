@@ -661,7 +661,24 @@ def main():
     # and all the social collateral. Nothing is left anywhere else, and nothing
     # is duplicated -- the .bk2 used to live in recordings/ AND be copied here.
     slug = slugify(args.title or pretty_game(args.game))
-    folder = os.path.join(args.out_dir, f"{datetime.now():%Y%m%d-%H%M%S}_{slug}")
+
+    # Retrying INTO the folder it came from, rather than beside it. A staged
+    # folder is recognisable: a *_source.mp4 with a .bk2 next to it. Without
+    # this every retry of a failed write left another dated folder holding a
+    # copy of the same recording and no videos, which is not what "retry"
+    # means -- and after two failures you are hunting for which one is current.
+    reuse = None
+    if args.from_mp4:
+        parent = os.path.dirname(os.path.abspath(args.from_mp4))
+        if (os.path.basename(args.from_mp4).endswith("_source.mp4")
+                and glob.glob(os.path.join(parent, "*.bk2"))):
+            reuse = parent
+    if reuse:
+        folder = reuse
+        slug = os.path.basename(args.from_mp4)[:-len("_source.mp4")]
+        print(f"Retrying in place: {folder}")
+    else:
+        folder = os.path.join(args.out_dir, f"{datetime.now():%Y%m%d-%H%M%S}_{slug}")
     os.makedirs(folder, exist_ok=True)
     # Only a --record-dir needs creating; the staged folder already exists.
     record_dir = args.record_dir or folder
@@ -671,7 +688,8 @@ def main():
     if args.from_mp4:
         # Someone else's file: copy it in rather than move it.
         native = os.path.join(folder, f"{slug}_source.mp4")
-        shutil.copy2(args.from_mp4, native)
+        if os.path.abspath(args.from_mp4) != os.path.abspath(native):
+            shutil.copy2(args.from_mp4, native)
         # A staged folder holds the .bk2 next to the mp4, so a retry can still
         # scan the run. Without this, re-running a failed write threw the event
         # timeline away and the model wrote about a run it could not see --

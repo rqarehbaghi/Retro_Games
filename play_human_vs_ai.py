@@ -10,7 +10,8 @@ Supports:
   - Split-Screen Speedrun Battles (Mario, Sonic, Mega Man)
 
 How it works:
-  1. Opens an interactive pygame window capturing your keyboard (or USB gamepad) for Player 1.
+  1. Opens an interactive pygame window reading your keyboard AND any USB
+     gamepad SDL can see, for Player 1.
   2. Runs your trained Stable-Baselines3 PPO model for Player 2.
   3. Feeds joint action arrays to stable-retro with proper frame preprocessing (WarpFrame, FrameSkip, VecFrameStack).
   4. Records the exact controller button streams to a .bk2 replay.
@@ -95,13 +96,71 @@ KEY_MAPPING = {
     pygame.K_SPACE: "MODE",
 }
 
-def make_p1_action(env_buttons, pressed_keys):
+# A USB pad reports a d-pad either as a hat or as the first two axes, and which
+# one depends on the pad and its mode, so both are read. Face buttons are in
+# SDL order: 0 south, 1 east, 2 west, 3 north. NES "A" is jump, so the south
+# and east buttons both map to it and the other two to B -- a diamond where
+# either lower button jumps is what a retro pad is shaped for.
+PAD_BUTTONS = {0: "A", 1: "A", 2: "B", 3: "B", 6: "SELECT", 7: "START",
+               8: "SELECT", 9: "START"}
+PAD_DEADZONE = 0.5
+
+
+def find_pads():
+    """Every gamepad SDL can see. Empty is the normal result under WSL."""
+    import pygame
+    pygame.joystick.init()
+    pads = []
+    for i in range(pygame.joystick.get_count()):
+        pad = pygame.joystick.Joystick(i)
+        pad.init()
+        pads.append(pad)
+    return pads
+
+
+def apply_pad(action, env_buttons, pad):
+    """Fold a gamepad's current state into an action array."""
+    def press(name):
+        if name in env_buttons:
+            action[env_buttons.index(name)] = True
+
+    if pad.get_numhats():
+        hx, hy = pad.get_hat(0)
+        if hx < 0:
+            press("LEFT")
+        elif hx > 0:
+            press("RIGHT")
+        if hy > 0:
+            press("UP")
+        elif hy < 0:
+            press("DOWN")
+    if pad.get_numaxes() >= 2:
+        ax, ay = pad.get_axis(0), pad.get_axis(1)
+        if ax < -PAD_DEADZONE:
+            press("LEFT")
+        elif ax > PAD_DEADZONE:
+            press("RIGHT")
+        if ay < -PAD_DEADZONE:
+            press("UP")
+        elif ay > PAD_DEADZONE:
+            press("DOWN")
+    for index, name in PAD_BUTTONS.items():
+        if index < pad.get_numbuttons() and pad.get_button(index):
+            press(name)
+    return action
+
+
+def make_p1_action(env_buttons, pressed_keys, pad=None):
     """Converts currently pressed pygame keys into a boolean array matching env.buttons."""
     action = np.array([False] * len(env_buttons), dtype=bool)
     for key, button_name in KEY_MAPPING.items():
         if pressed_keys[key]:
             if button_name in env_buttons:
                 action[env_buttons.index(button_name)] = True
+    # Both at once, so a pad can be picked up mid-session without the keyboard
+    # stopping working.
+    if pad is not None:
+        action = apply_pad(action, env_buttons, pad)
     return action
 
 
@@ -125,7 +184,8 @@ def process_frame(rgb_frame, target_size=84):
     return resized
 
 
-def play_match(game, state, model_path, record_dir, scale=3, fps_cap=60, mode="versus"):
+def play_match(game, state, model_path, record_dir, scale=3, fps_cap=60,
+               mode="versus", players=2):
     os.makedirs(record_dir, exist_ok=True)
     before_bk2s = set(glob.glob(os.path.join(record_dir, "*.bk2")))
     session_start = time.time()
@@ -135,12 +195,12 @@ def play_match(game, state, model_path, record_dir, scale=3, fps_cap=60, mode="v
         env = retro.make(
             game=game,
             state=state or retro.State.DEFAULT,
-            players=2,
+            players=players,
             record=record_dir,
             render_mode="rgb_array",
         )
     except Exception as e:
-        print(f"[Warning] Failed to initialize with players=2: {e}")
+        print(f"[Warning] Failed to initialize with players={players}: {e}")
         print("Falling back to standard 1-player environment...")
         env = retro.make(
             game=game,
@@ -156,6 +216,18 @@ def play_match(game, state, model_path, record_dir, scale=3, fps_cap=60, mode="v
     print(f"\\n=== MATCH STARTED: {game} ===")
     print(f"Mode: {mode.upper()} | Active Players: {num_players}")
     print(f"Controller Buttons detected: {buttons}")
+    pads = find_pads()
+    pad = pads[0] if pads else None
+    if pad is not None:
+        print(f"Gamepad: {pad.get_name()} -- {pad.get_numbuttons()} buttons, "
+              f"{pad.get_numhats()} hat(s), {pad.get_numaxes()} axes")
+    else:
+        print("Gamepad: none detected, keyboard only.")
+        print("         On WSL a USB pad is not visible until it is attached")
+        print("         with usbipd-win from an admin PowerShell:")
+        print("           usbipd list")
+        print("           usbipd bind --busid <id>")
+        print("           usbipd attach --wsl --busid <id>")
     print(f"Human: PLAYER 1 (Keyboard/Gamepad) | AI: PLAYER 2 ({model_path or 'Random Policy'})")
     print("---------------------------------------------------------------")
 
@@ -196,7 +268,7 @@ def play_match(game, state, model_path, record_dir, scale=3, fps_cap=60, mode="v
                 running = False
 
         pressed = pygame.key.get_pressed()
-        p1_action = make_p1_action(buttons, pressed)
+        p1_action = make_p1_action(buttons, pressed, pad)
 
         # AI (Player 2) Action Prediction
         if model is not None:

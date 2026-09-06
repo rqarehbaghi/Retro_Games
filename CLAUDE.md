@@ -138,6 +138,12 @@ cap is generous because the renderer already wraps and shrinks to fit.
 without constrained decoding hand back field names alongside values, and the
 voice read "tone amused" out loud. `clean_spoken` strips it.
 
+**A USB gamepad needs `--gamepad`, and needs to be attached to WSL first.**
+`stable_retro.examples.interactive` — what `--players 1` uses by default —
+is KEYBOARD ONLY, so a pad is silently ignored. `--gamepad` routes single
+player through the pygame window instead, which reads both. Separately, WSL2
+cannot see a USB device at all until `usbipd-win` attaches it from Windows.
+
 ## The three writer backends, and what they bill
 
 `--writer` in `studio.json`. **A Claude Pro subscription and the Messages API

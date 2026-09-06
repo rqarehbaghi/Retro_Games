@@ -554,6 +554,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--game", help="stable-retro game id (see list_games.py). Required unless --paste-block or --print-upload-plan.")
     parser.add_argument("--players", type=int, choices=[1, 2], default=1, help="1 = you alone. 2 = you plus an AI player, via play_human_vs_ai. (default: %(default)s)")
+    parser.add_argument("--gamepad", action="store_true", help="Play single-player through the pygame window, which reads a USB gamepad as well as the keyboard. Without it --players 1 uses stable-retro's own interactive tool, which is KEYBOARD ONLY and will ignore a pad.")
     parser.add_argument("--mode", choices=["versus", "coop", "race"], default="versus", help="Two-player match type, ignored when --players 1. (default: %(default)s)")
     parser.add_argument("--model", default=None, help="Checkpoint driving the AI player when --players 2. Without one the AI plays randomly, which makes for a much weaker video.")
     parser.add_argument("--state", default=None)
@@ -729,7 +730,13 @@ def main():
     else:
         before = set(glob.glob(os.path.join(record_dir, "*.bk2")))
         started = time.time()
-        if args.players == 1:
+        if args.players == 1 and args.gamepad:
+            # stable-retro's interactive tool is keyboard only, so a pad needs
+            # the pygame path -- which reads both.
+            from play_human_vs_ai import play_match
+            print(f"Starting {args.game} -- close the window when you are done.\n")
+            play_match(args.game, args.state, None, record_dir, players=1)
+        elif args.players == 1:
             from play_and_record import play_human_episode
             print(f"Starting {args.game} -- close the window when you are done.\n")
             play_human_episode(args.game, args.state, record_dir)

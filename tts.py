@@ -30,17 +30,25 @@ import os
 import subprocess
 
 SAMPLE_RATE = 24000
-DEFAULT_MODEL = "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign"
+DEFAULT_MODEL = "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"
 
-# The commentator, described rather than picked. Keep it in step with VOICE in
-# writer.py -- the words and the delivery should be the same person.
+# A FIXED speaker, which is the whole point of using CustomVoice here.
+# VoiceDesign invents a new voice from the description on every call, so a
+# per-line render came out sounding like a different person each sentence --
+# reported as "nothing cohesive". CustomVoice keeps one speaker identity and
+# still takes a per-line `instruct`, so the delivery can change while the
+# person does not.
+#
+# Female presets: Vivian, Serena, Ono_Anna, Sohee.
+# Male presets:   Ryan, Eric, Dylan, Aiden, Uncle_Fu.
+DEFAULT_SPEAKER = "Vivian"
+
+# How the fixed speaker should sound. This is an instruction ON TOP of the
+# preset voice, not a description of a new one.
 DEFAULT_VOICE = (
-    "A woman in her thirties with a warm, expressive voice, commentating live "
-    "on a game she is watching someone play badly. She is genuinely reacting, "
-    "not reading: she laughs at her own jokes, groans at mistakes, sounds "
-    "surprised when something goes right, and lets exasperation into her voice "
-    "when it goes wrong again. Natural conversational pace with real variation "
-    "in pitch and energy. Never flat, never a newsreader, never robotic."
+    "Commentate live, reacting to what you are watching rather than reading. "
+    "Warm and conversational, with real variation in pitch and energy. Never "
+    "flat, never a newsreader."
 )
 
 # Delivery per line, appended to the description above. Qwen3-TTS designs the
@@ -93,7 +101,8 @@ def instruct_for(voice, tone):
 
 
 def speak_lines(lines, out_dir, model=None, model_name=DEFAULT_MODEL,
-                voice=DEFAULT_VOICE, language="English", verbose=True):
+                voice=DEFAULT_VOICE, speaker=DEFAULT_SPEAKER,
+                language="English", verbose=True):
     """Render each narration line to its own wav. Returns [(at, path)].
 
     Per line rather than one long read, because each line has a timestamp it
@@ -109,10 +118,11 @@ def speak_lines(lines, out_dir, model=None, model_name=DEFAULT_MODEL,
             continue
         path = os.path.join(out_dir, "line_%03d.wav" % i)
         tone = item.get("tone", "")
-        wavs, sr = model.generate_voice_design(
-            text=text, language=language, instruct=instruct_for(voice, tone))
+        wavs, sr = model.generate_custom_voice(
+            text=text, language=language, speaker=speaker,
+            instruct=instruct_for(voice, tone))
         sf.write(path, wavs[0], sr)
-        out.append((float(item["at"]), path))
+        out.append((float(item["at"]), path, bool(item.get("closing"))))
         if verbose:
             print("    [%2d/%2d] %5.1fs  %-11s %s"
                   % (i + 1, len(lines), item["at"],
@@ -136,33 +146,54 @@ def wav_seconds(path):
 
 
 def space_clips(clips, duration_s, min_gap=MIN_GAP, verbose=True):
-    """Push back any line that would start while the previous one is talking.
+    """Lay the lines out so they neither overlap nor outlast the footage.
 
-    The narration script spaces its lines by ESTIMATED reading time -- words
-    divided by a words-per-minute figure -- which is close but never exact. Two
-    lines that overlap by even half a second are both unintelligible, and that
-    is far worse than one arriving slightly after its moment. So the estimate
-    is corrected here against what the renderer actually produced.
+    Two separate failures, both reported. Lines are spaced in the script by
+    ESTIMATED reading time -- words over a words-per-minute figure -- which is
+    never exact, so two of them talk over each other and both become
+    unintelligible. And synthesised speech is reliably slower than the
+    estimate, so the track ran past the end of the video.
 
-    Order is preserved and nothing is dropped; a pushed line drifts from its
-    event, and how far is reported so a consistently large drift can be fixed
-    upstream by asking for fewer or shorter lines."""
-    placed, cursor, worst = [], 0.0, 0.0
-    for at, path in sorted(clips):
+    Pushing alone fixes the first and worsens the second, so a line that cannot
+    finish before the footage does is DROPPED rather than pushed off the end.
+    The closing ask is exempt: room is reserved for it up front and it is
+    placed last, because it is the one line with a job beyond being funny."""
+    lengths = {}
+    for item in clips:
+        path = item[1]
         try:
-            length = wav_seconds(path)
+            lengths[path] = wav_seconds(path)
         except Exception:
-            length = 0.0
+            lengths[path] = 0.0
+
+    closing = [c for c in clips if len(c) > 2 and c[2]]
+    body = [c for c in clips if not (len(c) > 2 and c[2])]
+    reserved = (lengths[closing[0][1]] + min_gap) if closing else 0.0
+    ceiling = max(0.0, duration_s - reserved)
+
+    placed, cursor, worst, dropped = [], 0.0, 0.0, 0
+    for item in sorted(body):
+        at, path = item[0], item[1]
         start = max(at, cursor)
+        if start + lengths[path] > ceiling:
+            dropped += 1
+            continue
         worst = max(worst, start - at)
         placed.append((start, path))
-        cursor = start + length + min_gap
-    if verbose and worst > 1.0:
-        print("  (voice: lines pushed back by up to %.1fs to stop them "
-              "overlapping)" % worst)
-    if verbose and cursor > duration_s + 1.0:
-        print("  (voice: the script runs %.0fs past the end of the footage)"
-              % (cursor - duration_s))
+        cursor = start + lengths[path] + min_gap
+
+    if closing:
+        path = closing[0][1]
+        start = max(cursor, duration_s - lengths[path] - 0.3)
+        placed.append((max(0.0, min(start, duration_s - lengths[path])), path))
+
+    if verbose:
+        if worst > 1.0:
+            print("  (voice: lines pushed back by up to %.1fs so they do not "
+                  "overlap)" % worst)
+        if dropped:
+            print("  (voice: %d line%s dropped -- the spoken script was longer "
+                  "than the footage)" % (dropped, "" if dropped == 1 else "s"))
     return placed
 
 

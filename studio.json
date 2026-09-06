@@ -24,12 +24,13 @@
     }
   },
   "claude_model": "claude-opus-4-8",
-  "_voice": "The spoken commentary is produced by default -- set voice false, or pass --no-voice, to skip it. You get narration.wav (the voice alone), voice/ (one wav per line) and *_narrated.mp4 (voice over the game with the music ducked under each line). The writer picks a TONE per line -- amused, exasperated, surprised, delighted and so on -- and Qwen3-TTS is given that as part of the voice description, so the delivery changes line by line rather than reading flat. voice_describe below sets who is speaking; edit it in plain words.",
-  "voice_model": "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
-  "voice_describe": "A woman in her thirties with a warm, expressive voice, commentating live on a game she is watching someone play badly. She is genuinely reacting, not reading: she laughs at her own jokes, groans at mistakes, sounds surprised when something goes right, and lets exasperation into her voice when it goes wrong again. Natural conversational pace with real variation in pitch and energy. Never flat, never a newsreader, never robotic.",
+  "_voice": "Produced by default; --no-voice skips it. voice_speaker is a FIXED preset -- Vivian, Serena, Ono_Anna and Sohee are female, Ryan, Eric, Dylan, Aiden and Uncle_Fu male -- and it must stay fixed, because the VoiceDesign model invents a new voice per call and made every sentence a different person. voice_describe is an instruction on top of that preset, and the writer adds a per-line tone, so the delivery varies while the speaker does not. The track is fitted to the footage: lines that cannot finish before the video ends are dropped, and room is reserved for the closing ask.",
+  "voice_model": "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+  "voice_describe": "Commentate live, reacting to what you are watching rather than reading. Warm and conversational, with real variation in pitch and energy. Never flat, never a newsreader.",
   "_timing": "Captions land on the exact frame their event was logged -- every value the event scan reads changes as the thing happens. caption_offset shifts all of them by a fixed number of seconds if a whole run reads late or early; it is 0 by default and nothing is adjusted unless you set it.",
   "caption_offset": 0.0,
   "claude_effort": "medium",
   "_cost": "claude_model and claude_effort apply to both Claude backends (claude_effort only to the API one). Effort is how much the model spends thinking and answering: low | medium | high | xhigh | max, where the API's own default is high. Writing captions is not intelligence-sensitive, so medium is a deliberate step down. Drop to low if the bill still bites; raise it if the writing goes flat.",
-  "voice": true
+  "voice": true,
+  "voice_speaker": "Vivian"
 }

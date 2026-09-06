@@ -540,7 +540,7 @@ def uncovered(filled, duration_s, spoken, limit=15.0):
     return False
 
 
-def narration(game, level, duration_s, players, events, fps, wpm=150, **kw):
+def narration(game, level, duration_s, players, events, fps, wpm=125, **kw):
     """A spoken commentary script. Returns [{at, text}] or None.
 
     Split deliberately: the model writes lines ABOUT events, plus loose filler
@@ -558,11 +558,16 @@ def narration(game, level, duration_s, players, events, fps, wpm=150, **kw):
         "  from the list above. Do NOT write timestamps -- each line is placed\n"
         "  on the moment it names.\n"
         "- 'filler' is AT LEAST %d loose lines with no particular moment\n"
-        "  attached, used to fill the silences between events. Too few and the\n"
-        "  track runs out partway, leaving the rest of the video silent.\n"
-        "  Talk about the game: how old it is, what it meant to the people\n"
-        "  watching, what the player should be doing, what is coming up. Each\n"
-        "  must stand alone and make sense in any order.\n"
+        "  attached. This is the BULK of the track and it is what makes it\n"
+        "  worth listening to: real facts, trivia and jokes about THIS game\n"
+        "  and THIS level. How it was made, what was cut, what the level is\n"
+        "  famous for, what everyone got stuck on, where the secrets are, how\n"
+        "  old it all is now. Play-by-play of what is on screen is the boring\n"
+        "  option -- the viewer can see the screen. Each line must stand alone\n"
+        "  and make sense in any order, because they are placed into whatever\n"
+        "  silences the run leaves.\n"
+        "  Say only things you are confident are true. A wrong 'fact' about a\n"
+        "  game this audience grew up with is worse than no fact.\n"
         "- 'closing' signs off and says how the run went.\n"
         "- 'tone' is how each line is SPOKEN, one of: deadpan, amused,\n"
         "  exasperated, surprised, delighted, sarcastic, excited, wistful,\n"
@@ -570,10 +575,12 @@ def narration(game, level, duration_s, players, events, fps, wpm=150, **kw):
         "  script, and a track delivered at one pitch throughout sounds\n"
         "  robotic however good the words are. Match the moment: groan at a\n"
         "  death, sound genuinely surprised when something goes right.\n"
-        "- About %d words in total, read aloud at %d words per minute to fill\n"
-        "  %.0f seconds. Full sentences -- this is spoken, not captions.\n"
+        "- About %d words in TOTAL across every line. Synthesised speech runs\n"
+        "  slower than people expect, and anything past %.0f seconds is cut,\n"
+        "  so going over loses the end of the script rather than making a\n"
+        "  longer video. Full sentences -- this is spoken, not captions.\n"
         "Return JSON with keys: opening, events, filler, closing."
-        % (max(8, int(duration_s / 5)), words, wpm, duration_s))
+        % (max(8, int(duration_s / 6)), words, duration_s))
     data = write(prompt, NARRATION_SCHEMA, **kw)
     if not data:
         return None
@@ -613,8 +620,8 @@ def narration(game, level, duration_s, players, events, fps, wpm=150, **kw):
         filled.append((min(max(last + 0.5, duration_s - spoken(closing) - 0.5),
                            max(0.0, duration_s - 0.5)), closing, "amused"))
     filled.sort()
-    return [{"at": round(a, 2), "text": t, "tone": n}
-            for a, t, n in filled] or None
+    return [{"at": round(a, 2), "text": t, "tone": n,
+             "closing": t == closing} for a, t, n in filled] or None
 
 
 # ------------------------------------------------------------------- copy --

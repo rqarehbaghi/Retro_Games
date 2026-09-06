@@ -98,10 +98,27 @@ an earlier version silently dropped the end of a line that nearly fit.
 variable fonts as, literally, `Ubuntu[wdth,wght].ttf`, and `[` `]` `,` are
 filtergraph structure.
 
-**Spoken lines are re-spaced after rendering.** The script spaces them by
-estimated reading time, which is never exact; two overlapping lines are both
-unintelligible. `space_clips` measures the actual wav with `soundfile` and
-pushes later lines back.
+**The TTS speaker must stay FIXED.** Qwen3-TTS's VoiceDesign model invents a
+new voice from the description on every call, so rendering line by line made
+every sentence sound like a different person. Use `CustomVoice` with a named
+preset (`voice_speaker`) — it keeps one speaker identity and still accepts a
+per-line `instruct`, so the delivery varies while the person does not.
+
+**The spoken track is fitted to the footage, and that needs both halves.**
+Lines are spaced in the script by estimated reading time, which is never exact,
+so two of them talk over each other and both become unintelligible. And
+synthesised speech is reliably slower than the estimate, so the track ran past
+the end of the video. `space_clips` pushes overlapping lines back AND drops any
+line that cannot finish before the footage does — pushing alone fixes the first
+problem and worsens the second. Room is reserved for the closing ask so it
+always lands.
+
+**The commentary is mostly trivia, not play-by-play.** The viewer can see the
+screen; what they cannot see is how the game was made, what got cut, what
+everyone got stuck on. The prompt asks for facts and jokes about the specific
+game and level, with reactions to events as the smaller part — and tells the
+model to say only what it is confident is true, because a wrong fact about a
+game this audience grew up with is worse than no fact.
 
 ## The three writer backends, and what they bill
 

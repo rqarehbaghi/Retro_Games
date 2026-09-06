@@ -672,6 +672,17 @@ def main():
         # Someone else's file: copy it in rather than move it.
         native = os.path.join(folder, f"{slug}_source.mp4")
         shutil.copy2(args.from_mp4, native)
+        # A staged folder holds the .bk2 next to the mp4, so a retry can still
+        # scan the run. Without this, re-running a failed write threw the event
+        # timeline away and the model wrote about a run it could not see --
+        # which is exactly the case --from-mp4 exists to serve.
+        siblings = sorted(glob.glob(os.path.join(
+            os.path.dirname(os.path.abspath(args.from_mp4)), "*.bk2")))
+        if siblings:
+            bk2_path = os.path.join(folder, os.path.basename(siblings[0]))
+            if os.path.abspath(siblings[0]) != os.path.abspath(bk2_path):
+                shutil.copy2(siblings[0], bk2_path)
+            print(f"Reusing the replay beside it: {os.path.basename(bk2_path)}")
     else:
         before = set(glob.glob(os.path.join(record_dir, "*.bk2")))
         started = time.time()
@@ -757,10 +768,16 @@ def main():
     if not args.no_captions:
         written_caps = writer.captions(**ctx, **ai)
         if written_caps is None:
-            sys.exit("The model returned nothing usable for the captions.\n"
-                     "  The videos are unwritten but the recording is safe in\n"
-                     f"  {folder} -- re-run with --from-mp4 on the source there,\n"
-                     "  or try a different --writer-model.")
+            sys.exit(
+                "The model returned nothing usable for the captions.\n\n"
+                "  Nothing is lost -- the recording and the replay are in\n"
+                f"  {folder}\n"
+                "  Fix the cause above, then retry the WRITING only (no replaying,\n"
+                "  and the event timeline is picked up from the .bk2 beside it):\n\n"
+                f"    python studio.py --game {args.game} \\\n"
+                f"      --from-mp4 {os.path.join(folder, os.path.basename(native))}\n\n"
+                "  If it was an auth error, note that a set ANTHROPIC_API_KEY\n"
+                "  overrides any profile from 'ant auth login' -- unset it first.")
         lines = [(c["at"], c["text"]) for c in written_caps]
     if not args.title:
         print("Title: %s" % title)

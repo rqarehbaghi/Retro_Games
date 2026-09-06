@@ -589,6 +589,7 @@ def main():
     parser.add_argument("--voice", action="store_true", help="Speak the narration and lay it over the videos, ducking the game audio under it. Needs qwen-tts (pip install -U qwen-tts soundfile) and a GPU. Without it narration.txt is written but nothing is spoken.")
     parser.add_argument("--voice-model", default=cfg.get("voice_model", tts.DEFAULT_MODEL), help="Qwen3-TTS model for --voice. (default: %(default)s)")
     parser.add_argument("--voice-describe", default=cfg.get("voice_describe", tts.DEFAULT_VOICE), help="How the commentator should sound, in plain words -- Qwen3-TTS designs the voice from this rather than picking a preset. Set it once as voice_describe in studio.json.")
+    parser.add_argument("--caption-offset", type=float, default=cfg.get("caption_offset", 0.0), help="Shift every caption by this many seconds. Use it only for a SYSTEMATIC lag -- if one caption is on the wrong moment the model picked the wrong event and this will not help. (default: %(default)s)")
     parser.add_argument("--paste-block", metavar="DIR", default=None, help="Print the copy-paste block for an already staged folder (or a metadata.json) and exit. A normal run also writes it to paste.txt.")
     parser.add_argument("--print-upload-plan", action="store_true", help="Explain what can and cannot be automated per platform, then exit")
     args = parser.parse_args()
@@ -805,13 +806,21 @@ def main():
                 f"      --from-mp4 {os.path.join(folder, os.path.basename(native))}\n\n"
                 "  If it was an auth error, note that a set ANTHROPIC_API_KEY\n"
                 "  overrides any profile from 'ant auth login' -- unset it first.")
-        lines = [(c["at"], c["text"]) for c in written_caps]
+        lines = [(max(0.0, c["at"] + args.caption_offset), c["text"])
+                 for c in written_caps]
+        # Print what each caption was pinned to, so a wrong-moment caption can
+        # be told from a wrong-event one without guessing at the video.
+        print("Captions (anchored to the event log):")
+        for cap, (at, text) in zip(written_caps, lines):
+            if cap.get("event") is None:
+                print("    %s  [opening]        %s" % (stamp(int(at * FPS)), text))
+            else:
+                logged = events[cap["event"]][0] / FPS
+                print("    %s  [%d] %-9s logged %s  %s"
+                      % (stamp(int(at * FPS)), cap["event"], cap["kind"],
+                         stamp(int(logged * FPS)), text))
     if not args.title:
         print("Title: %s" % title)
-    if lines:
-        print("Captions (%d):" % len(lines))
-        for at, text in lines:
-            print("    %s  %s" % (stamp(int(at * FPS)), text))
 
     if segments:
         kept = sum(d for _s, d in segments)

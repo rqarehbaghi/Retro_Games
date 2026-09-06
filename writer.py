@@ -331,12 +331,19 @@ def captions(game, level, duration_s, players, events, fps, max_chars=40,
     out = []
     opening = str(data.get("opening", "")).strip()
     if opening:
-        out.append({"at": 0.6, "text": opening[:max_chars]})
+        out.append({"at": 0.6, "text": opening[:max_chars], "event": None})
     for item in data.get("captions", []):
         text = str(item.get("text", "")).strip()
-        at = event_time(events, item.get("event"), fps, duration_s)
+        index = item.get("event")
+        at = event_time(events, index, fps, duration_s)
         if text and at is not None:
-            out.append({"at": round(at, 2), "text": text[:max_chars]})
+            # The event is kept so the caller can SHOW what each line was
+            # pinned to. Two very different faults look identical on screen --
+            # a line landing at the wrong second, and a line landing correctly
+            # on an event it is not actually about -- and only the mapping
+            # tells them apart.
+            out.append({"at": round(at, 2), "text": text[:max_chars],
+                        "event": int(index), "kind": events[int(index)][1]})
     out.sort(key=lambda c: c["at"])
 
     # Two captions on top of each other are unreadable, and a model asked for

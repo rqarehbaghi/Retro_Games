@@ -214,6 +214,19 @@ def play_match(game, state, model_path, record_dir, scale=3, fps_cap=60,
             render_mode="rgb_array",
         )
 
+    # Cold boot (State.NONE) needs two things fixed up before reset(), and both
+    # only bite when recording is on:
+    #   - a state NAME: stable-retro builds the .bk2 filename from it inside
+    #     reset(), so with None it dies on os.path.basename(None);
+    #   - a starting STATE embedded in the movie -- the power-on snapshot. A
+    #     .bk2 with no start state records fine but cannot be REPLAYED
+    #     ("Could not load movie"), which breaks the studio pipeline
+    #     downstream, since it replays the .bk2 to render and to scan events.
+    if getattr(env.unwrapped, "statename", None) is None:
+        env.unwrapped.statename = "boot"
+    if not getattr(env.unwrapped, "initial_state", None):
+        env.unwrapped.initial_state = env.unwrapped.em.get_state()
+
     obs, info = env.reset()
     buttons = env.unwrapped.buttons
     num_players = getattr(env.unwrapped, "players", 1)
@@ -336,6 +349,12 @@ def play_match(game, state, model_path, record_dir, scale=3, fps_cap=60,
             for _ in range(4):
                 frame_stack.append(reset_frame)
 
+    # stable-retro's env.close() does NOT finalize the movie -- the .bk2 is
+    # only written when the Movie object is closed, which stop_record does.
+    # Without this the file appears only later (when the env is garbage
+    # collected), so the find_new_bk2 below saw nothing and no video rendered.
+    if hasattr(env.unwrapped, "stop_record"):
+        env.unwrapped.stop_record()
     env.close()
     pygame.quit()
 

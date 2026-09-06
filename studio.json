@@ -1,12 +1,12 @@
 {
   "_note": "Per-channel defaults for studio.py. Content keys are top level; everything about how it LOOKS goes under 'style'. Command-line flags still override.",
-  "_writer": "'claude' calls the Anthropic API (pip install anthropic, plus ANTHROPIC_API_KEY or `ant auth login`). 'ollama' uses a model on this machine -- run 'python studio.py --list-writer-models' for what is installed and what fits a 24GB card. Either way every caption, commentary line and description is written fresh per run; there are no built-in phrases.",
+  "_writer": "'claude-code' shells out to `claude -p`, which runs against a Claude Pro/Max SUBSCRIPTION -- nothing extra to buy if you already have Claude Code. 'claude' is the Messages API, billed by prepaid CREDITS, which a subscription does not include. 'ollama' is a model on this machine: free, offline, blunter. Either way every caption, commentary line and description is written fresh per run.",
   "_style": "size_div divides the SHORT edge of the frame, so one setting renders the same size in both outputs and a bigger number means smaller text. case: sentence|upper|lower|none. Depth is border + shadow; box draws a solid plate instead and is off. Anything here can also be overridden per caption in a staged overlays.json.",
   "_fonts": "Press Start 2P is fixed-cell at about one em per character, so caption LENGTH decides the rendered size more than size_div does. Captions wrap to three lines, so keep them under about 70 characters. Run list_fonts.py to see every installed face drawn with your own text.",
   "watermark": "@PlayerTwoIsABot",
   "level": "World 1-1",
   "short_seconds": 0,
-  "writer": "claude",
+  "writer": "claude-code",
   "writer_model": "qwen3:30b-a3b",
   "writer_host": "http://localhost:11434",
   "style": {

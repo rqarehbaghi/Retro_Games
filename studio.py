@@ -639,11 +639,21 @@ def main():
     # Checked HERE, before a single frame is played. Every word on the video is
     # written by a model now, so an unreachable one means an unusable run --
     # and finding that out after playing a level would cost the recording.
-    if args.writer == "claude":
+    if args.writer == "claude-code":
+        if not writer.claude_code_available():
+            sys.exit("--writer claude-code needs the Claude Code CLI on PATH.\n"
+                     "  It runs against a Claude Pro/Max subscription rather than\n"
+                     "  API credits, so there is nothing to buy -- but `claude`\n"
+                     "  has to be installed and logged in.\n"
+                     "  Otherwise: --writer ollama (local) or --writer claude (API).")
+    elif args.writer == "claude":
         if not writer.claude_available():
             sys.exit("--writer claude needs the Anthropic SDK:\n"
                      "  pip install anthropic\n"
-                     "  then set ANTHROPIC_API_KEY, or run: ant auth login")
+                     "  then set ANTHROPIC_API_KEY, or run: ant auth login\n\n"
+                     "  NOTE this is the Messages API, billed by prepaid credits --\n"
+                     "  a Claude Pro subscription does NOT include them. If you have\n"
+                     "  Pro and no credits, use --writer claude-code instead.")
     elif not writer.available(args.writer_host):
         sys.exit(
             f"No Ollama server at {args.writer_host}.\n"
@@ -786,7 +796,9 @@ def main():
     seed = random.randrange(1 << 31)
     ai = dict(backend=args.writer, model=args.writer_model,
               claude_model=args.claude_model, host=args.writer_host, seed=seed)
-    in_use = args.claude_model if args.writer == "claude" else args.writer_model
+    in_use = {"claude": args.claude_model,
+              "claude-code": "claude-code (subscription)"}.get(
+        args.writer, args.writer_model)
     print(f"Writing with {in_use} (seed {seed}) ...")
 
     ctx = dict(game=pretty_game(args.game), level=args.level, duration_s=duration,

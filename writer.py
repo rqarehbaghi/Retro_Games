@@ -8,8 +8,20 @@ the same description under every upload. This hands the writing to a model
 running on your own machine instead, so each run is written fresh against what
 actually happened in THAT run.
 
-    ollama serve                     # in one terminal
-    python studio.py --game <id> --writer ollama
+    python studio.py --game <id>                     # claude-code, the default
+    python studio.py --game <id> --writer claude     # the Messages API
+    python studio.py --game <id> --writer ollama     # a model on this machine
+
+THREE BACKENDS, and the difference is what they bill against:
+
+    claude-code   shells out to `claude -p`, which runs against a Claude Pro or
+                  Max SUBSCRIPTION. Nothing extra to install or pay for if you
+                  already have Claude Code. No schema-constrained decoding, so
+                  the JSON is asked for in the prompt and dug back out.
+    claude        the Messages API, billed by prepaid CREDITS -- a separate
+                  product from the subscription. Constrained decoding.
+    ollama        a model on this machine. Free, offline, and noticeably
+                  blunter than either of the above.
 
 NOTHING IS REQUIRED. With no --writer, or with Ollama not running, or if the
 model returns something unparseable, studio.py uses its tables exactly as
@@ -40,11 +52,12 @@ inventing a run.
 """
 import json
 import os
+import shutil
 import urllib.error
 import urllib.request
 
-BACKENDS = ("claude", "ollama")
-DEFAULT_BACKEND = "claude"
+BACKENDS = ("claude-code", "claude", "ollama")
+DEFAULT_BACKEND = "claude-code"
 
 DEFAULT_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
 DEFAULT_MODEL = "qwen3:30b-a3b"
@@ -162,6 +175,52 @@ def generate(prompt, schema, model=DEFAULT_MODEL, host=DEFAULT_HOST,
     return None
 
 
+def claude_code_available():
+    """Is the Claude Code CLI installed and usable?"""
+    return shutil.which("claude") is not None
+
+
+def generate_claude_code(prompt, schema, verbose=True, timeout=300, **_kw):
+    """One generation through the Claude Code CLI. Parsed object, or None.
+
+    This is the path that costs nothing extra: `claude -p` runs against a
+    Claude Pro or Max SUBSCRIPTION, while the Messages API is a separate
+    product billed by prepaid credits. A subscription does not include API
+    credits and an API balance does not include a subscription -- so with Pro
+    and no credits, this is the way to reach a frontier model.
+
+    No schema-constrained decoding here, unlike the API and Ollama paths, so
+    the schema goes in the prompt and the answer is dug out of whatever comes
+    back. _strip_thinking already handles prose either side of the JSON."""
+    import subprocess
+    ask = (VOICE + "\n\n" + prompt +
+           "\n\nRespond with ONLY the JSON object described above. No preamble,"
+           "\nno explanation, no markdown fence. It is parsed by a program.")
+    try:
+        result = subprocess.run(
+            ["claude", "-p", ask, "--output-format", "json"],
+            capture_output=True, text=True, timeout=timeout)
+        if result.returncode != 0:
+            if verbose:
+                print("  (writer: claude CLI exited %d: %s)"
+                      % (result.returncode, (result.stderr or "").strip()[:200]))
+            return None
+        # --output-format json wraps the answer in a metadata envelope; the
+        # model's own output is the `result` field.
+        envelope = json.loads(result.stdout)
+        return json.loads(_strip_thinking(envelope.get("result", "")))
+    except subprocess.TimeoutExpired:
+        if verbose:
+            print(f"  (writer: claude CLI did not answer within {timeout}s)")
+    except (KeyError, ValueError) as exc:
+        if verbose:
+            print(f"  (writer: claude CLI returned nothing usable: {exc})")
+    except Exception as exc:                                   # noqa: BLE001
+        if verbose:
+            print(f"  (writer: {exc.__class__.__name__}: {exc})")
+    return None
+
+
 def claude_available():
     """Is the anthropic SDK importable? Credentials are resolved by the SDK."""
     try:
@@ -212,6 +271,8 @@ def generate_claude(prompt, schema, model=CLAUDE_MODEL, verbose=True, **_kw):
 
 def write(prompt, schema, backend=DEFAULT_BACKEND, **kw):
     """Dispatch to whichever backend was asked for."""
+    if backend == "claude-code":
+        return generate_claude_code(prompt, schema, verbose=kw.get("verbose", True))
     if backend == "claude":
         return generate_claude(prompt, schema,
                                model=kw.get("claude_model", CLAUDE_MODEL),

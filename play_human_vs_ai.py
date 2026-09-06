@@ -354,8 +354,17 @@ def play_match(game, state, model_path, record_dir, scale=3, fps_cap=60,
         # Render Header / Scoreboard
         pygame.draw.rect(screen, (20, 24, 33), (0, window_h, window_w, 60))
         elapsed_sec = int(time.time() - match_start_time)
+        # LIVE P1 input readout. If this shows "none" while you press keys, the
+        # game is not getting your input -- click the window to give it focus,
+        # or the pad is not seen (see the "Gamepad:" line printed at startup).
+        # If it lights up (e.g. ['START']), input IS reaching the game and you
+        # are just navigating the boot/title/menu, where only START advances.
+        p1_pressed = [name for name, on in zip(buttons, p1_action) if on]
+        if p1_pressed and not getattr(play_match, "_input_seen", False):
+            play_match._input_seen = True
+            print(f"[input OK] first P1 input detected: {p1_pressed}")
         status_text = font.render(
-            f"P1 (HUMAN): [Z:Atk X:Jump Arrows:Move]   |   P2 (AI): {model_path and 'PPO Agent' or 'Random'}   |   Time: {elapsed_sec}s",
+            f"P1 INPUT: {p1_pressed or 'none'}   |   START = Enter / pad-Start   |   {elapsed_sec}s",
             True, (240, 240, 240)
         )
         screen.blit(status_text, (15, window_h + 18))

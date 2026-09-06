@@ -144,7 +144,8 @@ def _strip_thinking(text):
 
 
 def generate(prompt, schema, model=DEFAULT_MODEL, host=DEFAULT_HOST,
-             timeout=TIMEOUT, temperature=1.0, verbose=True, seed=None):
+             timeout=TIMEOUT, temperature=1.0, verbose=True, seed=None,
+             **_kw):
     """One constrained generation. Returns the parsed object, or None.
 
     `schema` is a JSON schema passed as `format`, which makes Ollama restrict
@@ -318,19 +319,28 @@ def generate_claude(prompt, schema, model=CLAUDE_MODEL, effort=CLAUDE_EFFORT,
 
 
 def write(prompt, schema, backend=DEFAULT_BACKEND, **kw):
-    """Dispatch to whichever backend was asked for."""
+    """Dispatch to whichever backend was asked for.
+
+    Each backend is handed the arguments it actually takes, named explicitly.
+    An earlier version passed everything through minus a blacklist of one key,
+    so every option added afterwards -- claude_effort, cli -- leaked into the
+    wrong backend and raised TypeError at the call. A blacklist has to be
+    updated every time anything is added; naming what each one takes does not."""
+    verbose = kw.get("verbose", True)
     if backend == "claude-code":
-        return generate_claude_code(prompt, schema,
-                                    verbose=kw.get("verbose", True),
+        return generate_claude_code(prompt, schema, verbose=verbose,
                                     cli=kw.get("cli", DEFAULT_CLI),
                                     model=kw.get("claude_model"))
     if backend == "claude":
         return generate_claude(prompt, schema,
                                model=kw.get("claude_model", CLAUDE_MODEL),
                                effort=kw.get("claude_effort", CLAUDE_EFFORT),
-                               verbose=kw.get("verbose", True))
+                               verbose=verbose)
     return generate(prompt, schema,
-                    **{k: v for k, v in kw.items() if k != "claude_model"})
+                    model=kw.get("model", DEFAULT_MODEL),
+                    host=kw.get("host", DEFAULT_HOST),
+                    seed=kw.get("seed"),
+                    verbose=verbose)
 
 
 def _timeline(events, fps):

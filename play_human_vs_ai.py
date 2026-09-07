@@ -109,18 +109,20 @@ KEY_MAPPING = {
 CONTROLLER_MAP = {
     "A":      ("CONTROLLER_BUTTON_A", "CONTROLLER_BUTTON_B"),
     "B":      ("CONTROLLER_BUTTON_X", "CONTROLLER_BUTTON_Y"),
-    "START":  ("CONTROLLER_BUTTON_START",),
-    "SELECT": ("CONTROLLER_BUTTON_BACK",),
     "UP":     ("CONTROLLER_BUTTON_DPAD_UP",),
     "DOWN":   ("CONTROLLER_BUTTON_DPAD_DOWN",),
     "LEFT":   ("CONTROLLER_BUTTON_DPAD_LEFT",),
     "RIGHT":  ("CONTROLLER_BUTTON_DPAD_RIGHT",),
 }
 
-# Raw-index fallback, used ONLY for a pad SDL has no profile for. Deliberately
-# limited to the face buttons, which are conventionally 0..3. START and SELECT
-# are not guessed at all -- binding them to the wrong index is worse than
-# leaving them unbound, which is the mistake this replaces.
+# START and SELECT are read by RAW INDEX on every path, profile or not.
+# Deliberately NOT taken from SDL: its profile for these pads puts
+# start=b11 / back=b10, which are not the buttons the pad actually labels
+# START and SELECT, so the semantic route was wrong on real hardware. The
+# d-pad and face buttons above stay semantic, where SDL is right.
+PAD_SYSTEM_BUTTONS = {6: "SELECT", 7: "START", 8: "SELECT", 9: "START"}
+
+# Face buttons by raw index, used only for a pad SDL has no profile for.
 PAD_BUTTONS = {0: "A", 1: "A", 2: "B", 3: "B"}
 PAD_DEADZONE = 0.5
 
@@ -139,18 +141,25 @@ class Pad:
                 self.ctrl = sdl_controller.Controller(index)
         except Exception:                                        # noqa: BLE001
             self.ctrl = None
-        if self.ctrl is None:
+        # The joystick view is opened ALONGSIDE the controller view, not just
+        # as a fallback: START/SELECT are read by raw index on both paths.
+        try:
             self.joy = pygame.joystick.Joystick(index)
             try:
                 self.joy.init()
             except Exception:                                    # noqa: BLE001
                 pass
+        except Exception:                                        # noqa: BLE001
+            self.joy = None
 
     def describe(self):
         if self.ctrl is not None:
-            return f"{self.ctrl.name} -- SDL profile (START/SELECT/d-pad all known)"
-        return (f"{self.joy.get_name()} -- {self.joy.get_numbuttons()} buttons, "
-                "RAW index mapping: SDL has no profile, so START/SELECT are unbound")
+            return (f"{self.ctrl.name} -- SDL profile for d-pad/face buttons, "
+                    "raw index for START/SELECT")
+        if self.joy is not None:
+            return (f"{self.joy.get_name()} -- {self.joy.get_numbuttons()} buttons, "
+                    "raw index mapping (SDL has no profile for this pad)")
+        return "unreadable pad"
 
     def apply(self, action, env_buttons):
         def press(name):
@@ -186,6 +195,12 @@ class Pad:
                     press(name)
             ax, ay = ((joy.get_axis(0), joy.get_axis(1))
                       if joy.get_numaxes() >= 2 else (0.0, 0.0))
+
+        # START/SELECT by RAW index on BOTH paths -- see PAD_SYSTEM_BUTTONS.
+        if self.joy is not None:
+            for index, name in PAD_SYSTEM_BUTTONS.items():
+                if index < self.joy.get_numbuttons() and self.joy.get_button(index):
+                    press(name)
 
         # The analogue stick doubles as a d-pad on either path.
         if ax < -PAD_DEADZONE:

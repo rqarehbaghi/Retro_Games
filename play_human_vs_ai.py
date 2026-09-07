@@ -155,24 +155,46 @@ def apply_pad(action, env_buttons, pad):
     return action
 
 
-def make_p1_action(env_buttons, held_keys, pad=None):
-    """Currently pressed keys -> a boolean array matching env.buttons.
+# Player 2 on the keyboard uses the NUMERIC KEYPAD, which collides with none of
+# Player 1's keys above -- so two people can share one keyboard when a second
+# gamepad is not around. With two pads, P2 just uses pad 2 and ignores this.
+KEY_MAPPING_P2 = {
+    pygame.K_KP8: "UP",
+    pygame.K_KP2: "DOWN",
+    pygame.K_KP4: "LEFT",
+    pygame.K_KP6: "RIGHT",
+    pygame.K_KP7: "B",
+    pygame.K_KP9: "A",
+    pygame.K_KP0: "A",
+    pygame.K_KP_ENTER: "START",
+    pygame.K_KP_PLUS: "SELECT",
+}
 
-    held_keys is a SET of pygame key codes that are down. It used to be the
-    sequence from pygame.key.get_pressed(), but that returns nothing while the
-    window lacks focus and was unreliable under WSLg -- so the caller now also
-    tracks KEYDOWN/KEYUP and passes the union, and membership is tested with
-    `in` rather than by indexing."""
+
+def keys_to_action(env_buttons, held_keys, key_map, pad=None):
+    """A set of held pygame key codes (+ an optional pad) -> a button array.
+
+    held_keys is a SET, tested with `in`. It used to be the sequence from
+    pygame.key.get_pressed(), but that returns nothing while the window lacks
+    focus and was unreliable under WSLg, so the caller now also tracks
+    KEYDOWN/KEYUP events and passes the union."""
     action = np.array([False] * len(env_buttons), dtype=bool)
-    for key, button_name in KEY_MAPPING.items():
-        if key in held_keys:
-            if button_name in env_buttons:
-                action[env_buttons.index(button_name)] = True
-    # Both at once, so a pad can be picked up mid-session without the keyboard
-    # stopping working.
+    for key, button_name in key_map.items():
+        if key in held_keys and button_name in env_buttons:
+            action[env_buttons.index(button_name)] = True
     if pad is not None:
         action = apply_pad(action, env_buttons, pad)
     return action
+
+
+def make_p1_action(env_buttons, held_keys, pad=None):
+    """Player 1: the arrow/WASD keyboard layout (KEY_MAPPING) plus pad 1."""
+    return keys_to_action(env_buttons, held_keys, KEY_MAPPING, pad)
+
+
+def make_p2_action(env_buttons, held_keys, pad=None):
+    """Player 2 (second human): the numeric keypad (KEY_MAPPING_P2) plus pad 2."""
+    return keys_to_action(env_buttons, held_keys, KEY_MAPPING_P2, pad)
 
 
 def discretize_ai_action(action_idx, env_buttons, combos=AI_COMBOS):
@@ -195,8 +217,58 @@ def process_frame(rgb_frame, target_size=84):
     return resized
 
 
+class AudioStreamer:
+    """Play the emulator's per-frame audio through pygame.mixer, in real time.
+
+    stable-retro renders video to an array and hands back audio as (N, 2) int16
+    samples per step via em.get_audio(), but nothing ever played them -- so the
+    window was silent. This owns one mixer channel and keeps it fed. It is
+    deliberately NON-FATAL: on a box with no audio device it disables itself and
+    the session keeps running (silently) rather than crashing the game."""
+
+    def __init__(self, rate):
+        self.ok = False
+        self.pending = []
+        try:
+            pygame.mixer.quit()      # drop the default 44.1k mixer pygame.init made
+            pygame.mixer.init(frequency=int(round(rate)), size=-16, channels=2,
+                              buffer=512)
+            self.channel = pygame.mixer.Channel(0)
+            self.ok = True
+            print(f"Audio: on ({int(round(rate))} Hz).")
+        except Exception as exc:                                  # noqa: BLE001
+            print(f"Audio: off ({exc.__class__.__name__}: {exc}).")
+
+    def feed(self, samples):
+        """Queue one step's samples. While a block is still waiting to play it
+        keeps accumulating, so the channel is handed one continuous block at a
+        time instead of 60 tiny clips a second (which click)."""
+        if not self.ok:
+            return
+        try:
+            self.pending.append(np.ascontiguousarray(samples, dtype=np.int16))
+            if self.channel.get_queue() is not None:
+                return               # a block is already queued; pile onto it
+            block = (self.pending[0] if len(self.pending) == 1
+                     else np.concatenate(self.pending))
+            self.pending = []
+            snd = pygame.sndarray.make_sound(block)
+            if self.channel.get_busy():
+                self.channel.queue(snd)
+            else:
+                self.channel.play(snd)
+        except Exception:                                        # noqa: BLE001
+            self.ok = False          # never let audio kill the play session
+
+    def close(self):
+        try:
+            pygame.mixer.quit()
+        except Exception:                                        # noqa: BLE001
+            pass
+
+
 def play_match(game, state, model_path, record_dir, scale=3, fps_cap=60,
-               mode="versus", players=2, boot_screen=False):
+               mode="versus", players=2, boot_screen=False, p2_human=False):
     os.makedirs(record_dir, exist_ok=True)
     before_bk2s = set(glob.glob(os.path.join(record_dir, "*.bk2")))
     session_start = time.time()
@@ -246,18 +318,30 @@ def play_match(game, state, model_path, record_dir, scale=3, fps_cap=60,
     print(f"Mode: {mode.upper()} | Active Players: {num_players}")
     print(f"Controller Buttons detected: {buttons}")
     pads = find_pads()
-    pad = pads[0] if pads else None
-    if pad is not None:
-        print(f"Gamepad: {pad.get_name()} -- {pad.get_numbuttons()} buttons, "
-              f"{pad.get_numhats()} hat(s), {pad.get_numaxes()} axes")
-    else:
+    pad1 = pads[0] if len(pads) >= 1 else None
+    pad2 = pads[1] if len(pads) >= 2 else None
+    for idx, pd in ((1, pad1), (2, pad2)):
+        if pd is not None:
+            print(f"Gamepad {idx}: {pd.get_name()} -- {pd.get_numbuttons()} buttons, "
+                  f"{pd.get_numhats()} hat(s), {pd.get_numaxes()} axes")
+    if pad1 is None:
         print("Gamepad: none detected, keyboard only.")
         print("         On WSL a USB pad is not visible until it is attached")
         print("         with usbipd-win from an admin PowerShell:")
         print("           usbipd list")
         print("           usbipd bind --busid <id>")
         print("           usbipd attach --wsl --busid <id>")
-    print(f"Human: PLAYER 1 (Keyboard/Gamepad) | AI: PLAYER 2 ({model_path or 'Random Policy'})")
+    if p2_human:
+        print("TWO HUMANS -- no AI.")
+        print("  Player 1: keyboard arrows + Z(B)/X(A), START=Enter"
+              + ("  and Gamepad 1" if pad1 else ""))
+        if pad2 is not None:
+            print("  Player 2: Gamepad 2")
+        else:
+            print("  Player 2: numeric keypad (8/2/4/6 = move, 7=B, 9/0=A, KP-Enter=START)")
+            print("            Plug in a SECOND controller for a proper two-pad game.")
+    else:
+        print(f"Human: PLAYER 1 (Keyboard/Gamepad) | AI: PLAYER 2 ({model_path or 'Random Policy'})")
     print("---------------------------------------------------------------")
 
     # 2. Load trained PPO model for Player 2
@@ -282,6 +366,7 @@ def play_match(game, state, model_path, record_dir, scale=3, fps_cap=60,
     pygame.display.set_caption(f"Retro AI Arena: Human (P1) vs AI (P2) - [{game}]")
     clock = pygame.time.Clock()
     font = pygame.font.SysFont("Arial", 18, bold=True)
+    audio = AudioStreamer(env.unwrapped.em.get_audio_rate())
 
     running = True
     step_count = 0
@@ -311,10 +396,12 @@ def play_match(game, state, model_path, record_dir, scale=3, fps_cap=60,
         polled = pygame.key.get_pressed()
         combined = set(held_keys)
         combined.update(k for k in KEY_MAPPING if polled[k])
-        p1_action = make_p1_action(buttons, combined, pad)
+        p1_action = make_p1_action(buttons, combined, pad1)
 
-        # AI (Player 2) Action Prediction
-        if model is not None:
+        # Player 2: a second human (two controllers / hot-seat) or the AI.
+        if p2_human:
+            p2_action = make_p2_action(buttons, combined, pad2)
+        elif model is not None:
             stacked_obs = np.array(frame_stack)  # shape (4, 84, 84)
             p2_discrete_action, _ = model.predict(stacked_obs, deterministic=True)
             p2_action = discretize_ai_action(int(p2_discrete_action), buttons)
@@ -342,6 +429,7 @@ def play_match(game, state, model_path, record_dir, scale=3, fps_cap=60,
         # Step Emulator
         obs, reward, terminated, truncated, info = env.step(joint_action)
         step_count += 1
+        audio.feed(env.unwrapped.em.get_audio())
 
         # Update Frame Stack for AI
         frame_stack.append(process_frame(obs))
@@ -363,10 +451,13 @@ def play_match(game, state, model_path, record_dir, scale=3, fps_cap=60,
         if p1_pressed and not getattr(play_match, "_input_seen", False):
             play_match._input_seen = True
             print(f"[input OK] first P1 input detected: {p1_pressed}")
-        status_text = font.render(
-            f"P1 INPUT: {p1_pressed or 'none'}   |   START = Enter / pad-Start   |   {elapsed_sec}s",
-            True, (240, 240, 240)
-        )
+        if p2_human:
+            p2_pressed = [name for name, on in zip(buttons, p2_action) if on]
+            header = f"P1: {p1_pressed or '-'}     P2: {p2_pressed or '-'}     {elapsed_sec}s"
+        else:
+            header = (f"P1 INPUT: {p1_pressed or 'none'}   |   "
+                      f"START = Enter / pad-Start   |   {elapsed_sec}s")
+        status_text = font.render(header, True, (240, 240, 240))
         screen.blit(status_text, (15, window_h + 18))
 
         pygame.display.flip()
@@ -389,6 +480,7 @@ def play_match(game, state, model_path, record_dir, scale=3, fps_cap=60,
     # collected), so the find_new_bk2 below saw nothing and no video rendered.
     if hasattr(env.unwrapped, "stop_record"):
         env.unwrapped.stop_record()
+    audio.close()
     env.close()
     pygame.quit()
 

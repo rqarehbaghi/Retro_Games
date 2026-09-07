@@ -378,7 +378,9 @@ def play_match(game, state, model_path, record_dir, scale=3, fps_cap=60,
     pad2 = pads[1] if len(pads) >= 2 else None
     for idx, pd in ((1, pad1), (2, pad2)):
         if pd is not None:
-            print(f"Gamepad {idx}: {pd.describe()}")
+            # SDL orders pads by device node (js0 before js1), so plugging in
+            # another pad can silently swap who is player 1.
+            print(f"Gamepad {idx} (SDL index {pd.index}): {pd.describe()}")
     if pad1 is None:
         print("Gamepad: none detected, keyboard only.")
         print("         On WSL a USB pad is not visible until it is attached")
@@ -465,7 +467,8 @@ def play_match(game, state, model_path, record_dir, scale=3, fps_cap=60,
     # second missed almost every tap -- 1 frame in 62 -- and made working input
     # look dead.
     diag_keys = 0
-    diag_pad = set()
+    diag_pad1 = set()
+    diag_pad2 = set()
     diag_sent = set()
     warned_focus = False
 
@@ -522,11 +525,20 @@ def play_match(game, state, model_path, record_dir, scale=3, fps_cap=60,
 
         diag_frames += 1
         diag_keys = max(diag_keys, len(combined))
-        if pad1 is not None:
+        # BOTH pads, separately. SDL orders pads by device node, so attaching a
+        # second one renumbers them -- js0 becomes index 0 and takes over as
+        # player 1, demoting the pad that used to work to player 2. Reporting
+        # only pad 1 hid which physical pad was actually producing input.
+        for _slot, _pd in ((diag_pad1, pad1), (diag_pad2, pad2)):
+            if _pd is None:
+                continue
             try:
-                for _i in range(pad1.joy.get_numbuttons()):
-                    if pad1.joy.get_button(_i):
-                        diag_pad.add(_i)
+                for _i in range(_pd.joy.get_numbuttons()):
+                    if _pd.joy.get_button(_i):
+                        _slot.add(_i)
+                _hx, _hy = (_pd.joy.get_hat(0) if _pd.joy.get_numhats() else (0, 0))
+                if (_hx, _hy) != (0, 0):
+                    _slot.add("hat%d,%d" % (_hx, _hy))
             except Exception:                                    # noqa: BLE001
                 pass
         # Report what the EMULATOR actually received, not what we asked for.
@@ -547,14 +559,16 @@ def play_match(game, state, model_path, record_dir, scale=3, fps_cap=60,
             # with a working pad is the signature of an unfocused window, not a
             # broken mapping -- worth stating outright rather than inferring.
             focused = bool(pygame.key.get_focused())
-            print("[%5.1fs] fps %4.1f  steps %6d  resets %d | focus %s | "
-                  "keys %d | pad %s | SENT %s | hpos=%s lives=%s"
+            print("[%5.1fs] fps %4.1f steps %6d resets %d | focus %s | keys %d "
+                  "| pad1 %s | pad2 %s | SENT %s | hpos=%s"
                   % (_now - match_start_time,
                      diag_frames / max(1e-6, _now - diag_at),
                      step_count, resets, "YES" if focused else "NO ",
-                     diag_keys, sorted(diag_pad) or "-",
+                     diag_keys,
+                     sorted(map(str, diag_pad1)) or "-",
+                     sorted(map(str, diag_pad2)) or "-",
                      sorted(diag_sent) or "-",
-                     info.get("hpos"), info.get("lives")))
+                     info.get("hpos")))
             if not focused and not warned_focus:
                 warned_focus = True
                 print("      ^ the game window does NOT have keyboard focus."
@@ -563,7 +577,8 @@ def play_match(game, state, model_path, record_dir, scale=3, fps_cap=60,
             diag_at = _now
             diag_frames = 0
             diag_keys = 0
-            diag_pad = set()
+            diag_pad1 = set()
+            diag_pad2 = set()
             diag_sent = set()
 
         # Update Frame Stack for AI

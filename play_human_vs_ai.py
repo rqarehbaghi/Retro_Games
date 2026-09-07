@@ -370,6 +370,21 @@ def play_match(game, state, model_path, record_dir, scale=3, fps_cap=60,
     buttons = env.unwrapped.buttons
     num_players = getattr(env.unwrapped, "players", 1)
 
+    # Window FIRST, pads second. SDL keeps joystick state up to date through
+    # the event queue, and that queue belongs to the video subsystem -- opening
+    # pads before any window exists is the wrong order and can leave their
+    # state never refreshing. Nothing downstream cares that this moved up.
+    pygame.init()
+    native_h, native_w, _ = obs.shape
+    window_w, window_h = native_w * scale, native_h * scale
+    screen = pygame.display.set_mode((window_w, window_h + 60))
+    caption = (f"Retro AI Arena: 2-Player Local - [{game}]" if p2_human
+               else f"Retro AI Arena: Human (P1) vs AI (P2) - [{game}]")
+    pygame.display.set_caption(caption)
+    clock = pygame.time.Clock()
+    font = pygame.font.SysFont("Arial", 18, bold=True)
+    audio = AudioStreamer(env.unwrapped.em.get_audio_rate())
+
     print(f"\n=== MATCH STARTED: {game} ===")
     print(f"Mode: {mode.upper()} | Active Players: {num_players}")
     print(f"Controller Buttons detected: {buttons}")
@@ -430,18 +445,6 @@ def play_match(game, state, model_path, record_dir, scale=3, fps_cap=60,
     init_frame = process_frame(obs)
     for _ in range(4):
         frame_stack.append(init_frame)
-
-    # 4. Setup Pygame Display Window
-    pygame.init()
-    native_h, native_w, _ = obs.shape
-    window_w, window_h = native_w * scale, native_h * scale
-    screen = pygame.display.set_mode((window_w, window_h + 60))
-    caption = (f"Retro AI Arena: 2-Player Local - [{game}]" if p2_human
-               else f"Retro AI Arena: Human (P1) vs AI (P2) - [{game}]")
-    pygame.display.set_caption(caption)
-    clock = pygame.time.Clock()
-    font = pygame.font.SysFont("Arial", 18, bold=True)
-    audio = AudioStreamer(env.unwrapped.em.get_audio_rate())
 
     running = True
     step_count = 0

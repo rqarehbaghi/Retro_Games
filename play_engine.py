@@ -351,6 +351,16 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
             use_restricted_actions=retro.Actions.ALL,
             render_mode="rgb_array",
         )
+    except FileNotFoundError as e:
+        # A missing ROM is not a players problem. The generic fallback below
+        # would just call retro.make again and fail identically, producing a
+        # confusing double traceback -- so say exactly what is wrong and stop.
+        sys.exit(
+            f"\nNo ROM found for '{game}'. A game id must match --list-games\n"
+            f"EXACTLY, including the -v0 suffix.\n"
+            f"  e.g. SuperMarioBros3-Nes-v0  (not SuperMarioBros3-Nes)\n"
+            f"  See what is installed:  python studio.py --list-games\n"
+            f"  ({e})")
     except Exception as e:
         print(f"[Warning] Failed to initialize with players={players}: {e}")
         print("Falling back to standard 1-player environment...")

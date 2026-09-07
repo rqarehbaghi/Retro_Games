@@ -96,51 +96,98 @@ KEY_MAPPING = {
     pygame.K_SPACE: "MODE",
 }
 
-# A USB pad reports a d-pad either as a hat or as the first two axes, and which
-# one depends on the pad and its mode, so both are read. Face buttons are in
-# SDL order: 0 south, 1 east, 2 west, 3 north. NES "A" is jump, so the south
-# and east buttons both map to it and the other two to B -- a diamond where
-# either lower button jumps is what a retro pad is shaped for.
-PAD_BUTTONS = {0: "A", 1: "A", 2: "B", 3: "B", 6: "SELECT", 7: "START",
-               8: "SELECT", 9: "START"}
+# Buttons are read by MEANING, not by index. SDL's GameController layer maps a
+# recognised pad onto a standard layout (A/B/X/Y, START, BACK, DPAD_*) from its
+# own per-GUID database. Guessing raw indices is what broke this: the previous
+# table assumed START was button 6-9, but the pads here report
+#   a=b0  b=b1  x=b3  y=b4  back=b10  start=b11  dpad=hat0
+# so START was simply never bound and pressing Start at the 1P/2P menu did
+# nothing, while the d-pad and face buttons appeared to work.
+#
+# NES has only A (jump) and B (run/fire), so both lower face buttons map to A
+# and both upper ones to B -- the diamond a retro pad is shaped for.
+CONTROLLER_MAP = {
+    "A":      ("CONTROLLER_BUTTON_A", "CONTROLLER_BUTTON_B"),
+    "B":      ("CONTROLLER_BUTTON_X", "CONTROLLER_BUTTON_Y"),
+    "START":  ("CONTROLLER_BUTTON_START",),
+    "SELECT": ("CONTROLLER_BUTTON_BACK",),
+    "UP":     ("CONTROLLER_BUTTON_DPAD_UP",),
+    "DOWN":   ("CONTROLLER_BUTTON_DPAD_DOWN",),
+    "LEFT":   ("CONTROLLER_BUTTON_DPAD_LEFT",),
+    "RIGHT":  ("CONTROLLER_BUTTON_DPAD_RIGHT",),
+}
+
+# Raw-index fallback, used ONLY for a pad SDL has no profile for. Deliberately
+# limited to the face buttons, which are conventionally 0..3. START and SELECT
+# are not guessed at all -- binding them to the wrong index is worse than
+# leaving them unbound, which is the mistake this replaces.
+PAD_BUTTONS = {0: "A", 1: "A", 2: "B", 3: "B"}
 PAD_DEADZONE = 0.5
 
 
-def find_pads():
-    """Every gamepad SDL can see. Empty is the normal result under WSL."""
-    import pygame
-    # Joysticks can only be enumerated once pygame is initialised. play_match
-    # called this BEFORE its pygame.init(), so get_count() returned 0 and the
-    # pad was silently dropped ("Gamepad: none detected" with a pad attached).
-    # pygame.init() is idempotent, so calling it here is safe.
-    pygame.init()
-    pygame.joystick.init()
-    pads = []
-    for i in range(pygame.joystick.get_count()):
-        pad = pygame.joystick.Joystick(i)
-        pad.init()
-        pads.append(pad)
-    return pads
+class Pad:
+    """One gamepad, read semantically when SDL recognises it."""
 
+    def __init__(self, index):
+        self.index = index
+        self.ctrl = None
+        self.joy = None
+        try:
+            from pygame._sdl2 import controller as sdl_controller
+            sdl_controller.init()
+            if sdl_controller.is_controller(index):
+                self.ctrl = sdl_controller.Controller(index)
+        except Exception:                                        # noqa: BLE001
+            self.ctrl = None
+        if self.ctrl is None:
+            self.joy = pygame.joystick.Joystick(index)
+            try:
+                self.joy.init()
+            except Exception:                                    # noqa: BLE001
+                pass
 
-def apply_pad(action, env_buttons, pad):
-    """Fold a gamepad's current state into an action array."""
-    def press(name):
-        if name in env_buttons:
-            action[env_buttons.index(name)] = True
+    def describe(self):
+        if self.ctrl is not None:
+            return f"{self.ctrl.name} -- SDL profile (START/SELECT/d-pad all known)"
+        return (f"{self.joy.get_name()} -- {self.joy.get_numbuttons()} buttons, "
+                "RAW index mapping: SDL has no profile, so START/SELECT are unbound")
 
-    if pad.get_numhats():
-        hx, hy = pad.get_hat(0)
-        if hx < 0:
-            press("LEFT")
-        elif hx > 0:
-            press("RIGHT")
-        if hy > 0:
-            press("UP")
-        elif hy < 0:
-            press("DOWN")
-    if pad.get_numaxes() >= 2:
-        ax, ay = pad.get_axis(0), pad.get_axis(1)
+    def apply(self, action, env_buttons):
+        def press(name):
+            if name in env_buttons:
+                action[env_buttons.index(name)] = True
+
+        if self.ctrl is not None:
+            for nes_name, consts in CONTROLLER_MAP.items():
+                for const in consts:
+                    code = getattr(pygame, const, None)
+                    if code is not None and self.ctrl.get_button(code):
+                        press(nes_name)
+                        break
+            # SDL reports controller axes over the full int16 range.
+            lx = getattr(pygame, "CONTROLLER_AXIS_LEFTX", 0)
+            ly = getattr(pygame, "CONTROLLER_AXIS_LEFTY", 1)
+            ax = self.ctrl.get_axis(lx) / 32768.0
+            ay = self.ctrl.get_axis(ly) / 32768.0
+        else:
+            joy = self.joy
+            if joy.get_numhats():
+                hx, hy = joy.get_hat(0)
+                if hx < 0:
+                    press("LEFT")
+                elif hx > 0:
+                    press("RIGHT")
+                if hy > 0:
+                    press("UP")
+                elif hy < 0:
+                    press("DOWN")
+            for index, name in PAD_BUTTONS.items():
+                if index < joy.get_numbuttons() and joy.get_button(index):
+                    press(name)
+            ax, ay = ((joy.get_axis(0), joy.get_axis(1))
+                      if joy.get_numaxes() >= 2 else (0.0, 0.0))
+
+        # The analogue stick doubles as a d-pad on either path.
         if ax < -PAD_DEADZONE:
             press("LEFT")
         elif ax > PAD_DEADZONE:
@@ -149,10 +196,21 @@ def apply_pad(action, env_buttons, pad):
             press("UP")
         elif ay > PAD_DEADZONE:
             press("DOWN")
-    for index, name in PAD_BUTTONS.items():
-        if index < pad.get_numbuttons() and pad.get_button(index):
-            press(name)
-    return action
+        return action
+
+
+def find_pads():
+    """Every gamepad SDL can see, wrapped so buttons read by meaning."""
+    # Joysticks cannot be enumerated before pygame is initialised; play_match
+    # used to call this first, so get_count() returned 0 and pads were dropped.
+    pygame.init()
+    pygame.joystick.init()
+    return [Pad(i) for i in range(pygame.joystick.get_count())]
+
+
+def apply_pad(action, env_buttons, pad):
+    """Fold a gamepad's current state into an action array."""
+    return pad.apply(action, env_buttons)
 
 
 # Player 2 on the keyboard uses the NUMERIC KEYPAD, which collides with none of
@@ -322,8 +380,7 @@ def play_match(game, state, model_path, record_dir, scale=3, fps_cap=60,
     pad2 = pads[1] if len(pads) >= 2 else None
     for idx, pd in ((1, pad1), (2, pad2)):
         if pd is not None:
-            print(f"Gamepad {idx}: {pd.get_name()} -- {pd.get_numbuttons()} buttons, "
-                  f"{pd.get_numhats()} hat(s), {pd.get_numaxes()} axes")
+            print(f"Gamepad {idx}: {pd.describe()}")
     if pad1 is None:
         print("Gamepad: none detected, keyboard only.")
         print("         On WSL a USB pad is not visible until it is attached")

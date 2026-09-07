@@ -761,7 +761,7 @@ def main():
     parser.add_argument("--game", help="stable-retro game id (see list_games.py). Required unless --brief, --paste-block or --print-upload-plan.")
     parser.add_argument("--players", type=int, choices=[1, 2], default=1, help="1 = you alone. 2 = you plus an AI player, via play_human_vs_ai. (default: %(default)s)")
     parser.add_argument("--boot-screen", action="store_true", help="Start from the power-on title screen (state=NONE) instead of a mid-level save state, so you can pick 1P/2P and the game mode yourself. Passed through to the play window.")
-    parser.add_argument("--two-human", action="store_true", help="Two HUMAN players, no AI. Player 1 = keyboard/pad 1, Player 2 = a SECOND gamepad (or the numeric keypad). Always starts from the title so you can choose 2 PLAYER GAME; for SMB3 this is the classic alternating two-player game. To keep the AI opponent instead, use --players 2 with --model <checkpoint>.")
+    parser.add_argument("--two-human", action="store_true", help="Two HUMAN players, no AI. Player 1 = keyboard/pad 1, Player 2 = a SECOND gamepad (or the numeric keypad). Pair it with --boot-screen to choose 2 PLAYER GAME at the title; for SMB3 that is the classic alternating two-player game. To keep the AI opponent instead, use --players 2 with --model <checkpoint>.")
     parser.add_argument("--gamepad", action="store_true", help="Play single-player through the pygame window, which reads a USB gamepad as well as the keyboard. Without it --players 1 uses stable-retro's own interactive tool, which is KEYBOARD ONLY and will ignore a pad.")
     parser.add_argument("--mode", choices=["versus", "coop", "race"], default="versus", help="Two-player match type, ignored when --players 1. (default: %(default)s)")
     parser.add_argument("--model", default=None, help="Checkpoint driving the AI player when --players 2. Without one the AI plays randomly, which makes for a much weaker video.")
@@ -954,13 +954,20 @@ def main():
         before = set(glob.glob(os.path.join(record_dir, "*.bk2")))
         started = time.time()
         if args.two_human:
-            # Two humans on two controllers, no AI. Choosing 2 PLAYER GAME lives
-            # on the title screen, so this always boots there.
+            # Two humans on two controllers, no AI. --boot-screen is NOT forced
+            # here: it is the caller's switch, not this branch's. Most games do
+            # keep the 2-player choice on the title screen, so say so and let
+            # the caller decide rather than deciding for them.
             from play_human_vs_ai import play_match
-            print(f"Starting {args.game} -- TWO human players, from the title. "
-                  "Close the window when you are done.\n")
+            if not args.boot_screen:
+                print("NOTE: --two-human without --boot-screen starts from the save")
+                print("      state, which for most games is already a ONE-player")
+                print("      game -- player 2's pad will do nothing. Add")
+                print("      --boot-screen to pick 2 PLAYER GAME at the title.")
+            print(f"Starting {args.game} -- TWO human players. "
+                  "Close the window when you are done.")
             play_match(args.game, args.state, None, record_dir, players=2,
-                       p2_human=True, mode=args.mode, boot_screen=True)
+                       p2_human=True, mode=args.mode, boot_screen=args.boot_screen)
         elif args.players == 1 and args.gamepad:
             # stable-retro's interactive tool is keyboard only, so a pad needs
             # the pygame path -- which reads both.

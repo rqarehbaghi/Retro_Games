@@ -300,19 +300,62 @@ def split_collapses(collapses, clear_windows):
     return inside
 
 
+def load_game_ram_config(path, game):
+    """Read RAM addresses and variable specs from games.json without importing ML libraries."""
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except Exception as exc:
+        print(f"Could not read {path}: {exc}")
+        return {}
+    entry = data.get(game) or {}
+    variables = entry.get("variables") or {}
+
+    def addr(name):
+        spec = variables.get(name) or {}
+        if spec.get("source") in (None, "unknown") or spec.get("address") is None:
+            return None
+        return int(spec["address"], 0) if isinstance(spec["address"], str) else int(spec["address"])
+
+    mapped = {
+        "progress_address": addr("progress"),
+        "powerup_address": addr("powerup"),
+        "playstate_address": addr("playstate"),
+        "coin_address": addr("coins"),
+        "speed_address": addr("pmeter"),
+        "clear_address": addr("course_clear"),
+        "timer_address": addr("timer"),
+    }
+    clear = variables.get("course_clear") or {}
+    if clear.get("clear_value") is not None:
+        mapped["clear_value"] = int(str(clear["clear_value"]), 0)
+    progress = variables.get("progress") or {}
+    if progress.get("address_high") is not None:
+        mapped["progress_address_high"] = int(str(progress["address_high"]), 0)
+    if progress.get("source") == "info16":
+        mapped["progress_use_info_x"] = True
+        if progress.get("address_high") is not None:
+            mapped["progress_address_high"] = int(str(progress["address_high"]), 0)
+    playstate = variables.get("playstate") or {}
+    if playstate.get("in_play_value") is not None:
+        mapped["playstate_value"] = int(str(playstate["in_play_value"]), 0)
+    meter = variables.get("pmeter") or {}
+    if meter.get("full_value") is not None:
+        mapped["speed_full"] = int(str(meter["full_value"]), 0)
+    return mapped
+
+
 def read_events(bk2_path, game):
     """Replay the recording and note what happened, so narration and titles
     describe the real run instead of being generic. Degrades to an empty
     timeline for any game games.json has no variables for."""
     try:
         import stable_retro as retro
-
-        from train import load_game_config
     except Exception as exc:
         print(f"  (event scan unavailable: {exc})")
         return []
 
-    defaults, _rewards = load_game_config(
+    defaults = load_game_ram_config(
         os.path.join(os.path.dirname(os.path.abspath(__file__)), "games.json"), game)
     coin_addr = defaults.get("coin_address")
     power_addr = defaults.get("powerup_address")
@@ -322,7 +365,9 @@ def read_events(bk2_path, game):
     env = retro.make(game=movie.get_game(), state=None,
                      use_restricted_actions=retro.Actions.ALL,
                      players=movie.players, render_mode="rgb_array")
-    env.initial_state = movie.get_state()
+    state_bytes = movie.get_state()
+    if state_bytes:
+        env.initial_state = state_bytes
     env.reset()
 
     prog_key = None
@@ -758,11 +803,12 @@ def main():
             style_cfg.setdefault(key, cfg[key])
     style = merge_style(style_cfg)
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--game", help="stable-retro game id (see list_games.py). Required unless --brief, --paste-block or --print-upload-plan.")
-    parser.add_argument("--players", type=int, choices=[1, 2], default=1, help="1 = you alone. 2 = you plus an AI player, via play_human_vs_ai. (default: %(default)s)")
+    parser.add_argument("--list-games", action="store_true", help="List all installed stable-retro game IDs and exit")
+    parser.add_argument("--game", help="stable-retro game id. Required unless --brief, --paste-block, --list-games or --print-upload-plan.")
+    parser.add_argument("--players", type=int, choices=[1, 2], default=1, help="1 = you alone. 2 = you plus an AI player, via play_engine. (default: %(default)s)")
     parser.add_argument("--boot-screen", action="store_true", help="Start from the power-on title screen (state=NONE) instead of a mid-level save state, so you can pick 1P/2P and the game mode yourself. Passed through to the play window.")
     parser.add_argument("--two-human", action="store_true", help="Two HUMAN players, no AI. Player 1 = keyboard/pad 1, Player 2 = a SECOND gamepad (or the numeric keypad). Pair it with --boot-screen to choose 2 PLAYER GAME at the title; for SMB3 that is the classic alternating two-player game. To keep the AI opponent instead, use --players 2 with --model <checkpoint>.")
-    parser.add_argument("--gamepad", action="store_true", help="Play single-player through the pygame window, which reads a USB gamepad as well as the keyboard. Without it --players 1 uses stable-retro's own interactive tool, which is KEYBOARD ONLY and will ignore a pad.")
+    parser.add_argument("--gamepad", action="store_true", help="(Now default) Gamepad and keyboard are both supported seamlessly via pygame.")
     parser.add_argument("--mode", choices=["versus", "coop", "race"], default="versus", help="Two-player match type, ignored when --players 1. (default: %(default)s)")
     parser.add_argument("--model", default=None, help="Checkpoint driving the AI player when --players 2. Without one the AI plays randomly, which makes for a much weaker video.")
     parser.add_argument("--state", default=None)
@@ -838,8 +884,18 @@ def main():
             print(paste_block(json.load(handle)))
         return
 
+    if args.list_games:
+        try:
+            import stable_retro as retro
+            print("Installed games in stable-retro:")
+            for g in sorted(retro.data.list_games()):
+                print(f"  {g}")
+        except Exception as exc:
+            print(f"Could not list games: {exc}")
+        return
+
     if not args.game:
-        sys.exit("--game is required (see list_games.py)")
+        sys.exit("--game is required (use --list-games to see available games)")
 
     for key in ("font", "title_font"):
         if not os.path.exists(style[key]):
@@ -953,12 +1009,9 @@ def main():
     else:
         before = set(glob.glob(os.path.join(record_dir, "*.bk2")))
         started = time.time()
+        from play_engine import play_match
+
         if args.two_human:
-            # Two humans on two controllers, no AI. --boot-screen is NOT forced
-            # here: it is the caller's switch, not this branch's. Most games do
-            # keep the 2-player choice on the title screen, so say so and let
-            # the caller decide rather than deciding for them.
-            from play_human_vs_ai import play_match
             if not args.boot_screen:
                 print("NOTE: --two-human without --boot-screen starts from the save")
                 print("      state, which for most games is already a ONE-player")
@@ -969,30 +1022,17 @@ def main():
             play_match(args.game, args.state, None, record_dir, players=2,
                        p2_human=True, mode=args.mode, boot_screen=args.boot_screen,
                        render_mp4=False)
-        elif args.players == 1 and (args.gamepad or args.boot_screen):
-            # The pygame path is required for EITHER of two reasons:
-            #   - a gamepad: stable-retro's interactive tool is keyboard only;
-            #   - --boot-screen: that tool cannot cold boot at all, because its
-            #     --state is a string and RetroEnv only honours the enum
-            #     State.NONE, so it ends up hunting for a save state called
-            #     "NONE" and dying in gzip.open(None).
-            # This path reads the keyboard as well, so nothing is lost.
-            from play_human_vs_ai import play_match
-            print(f"Starting {args.game} -- close the window when you are done.\n")
+        elif args.players == 1:
+            print(f"Starting {args.game} -- single player (gamepad & keyboard enabled). "
+                  "Close the window when you are done.\n")
             play_match(args.game, args.state, None, record_dir, players=1,
                        boot_screen=args.boot_screen, render_mp4=False)
-        elif args.players == 1:
-            from play_and_record import play_human_episode
-            print(f"Starting {args.game} -- close the window when you are done.\n")
-            play_human_episode(args.game, args.state, record_dir,
-                               boot_screen=args.boot_screen)
         else:
-            from play_human_vs_ai import play_match
             if not args.model:
                 print("WARNING: --players 2 with no --model means the AI player is "
                       "picking random buttons. Fine for a pipeline test, weak as content.\n")
-            play_match(args.game, args.state, args.model, record_dir, mode=args.mode,
-                       boot_screen=args.boot_screen, render_mp4=False)
+            play_match(args.game, args.state, args.model, record_dir, players=2,
+                       mode=args.mode, boot_screen=args.boot_screen, render_mp4=False)
 
         from play_and_record import find_new_bk2, render_to_mp4
         bk2_path = find_new_bk2(record_dir, before, started_at=started)

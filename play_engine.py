@@ -440,15 +440,15 @@ def play_match(game, state, model_path, record_dir, scale=3, fps_cap=60,
         else:
             print("No checkpoint model found — AI will use exploratory random policy.")
 
-    # 3. Setup Frame Stack buffer (4 frames of 84x84 grayscale)
+    # 3. Setup Frame Stack buffer (4 frames of 84x84 grayscale) ONLY if AI needs it
     frame_stack = deque(maxlen=4)
-    init_frame = process_frame(obs)
-    for _ in range(4):
-        frame_stack.append(init_frame)
+    if model is not None:
+        init_frame = process_frame(obs)
+        for _ in range(4):
+            frame_stack.append(init_frame)
 
     running = True
     step_count = 0
-    p1_wins, p2_wins = 0, 0
     match_start_time = time.time()
 
     # Keys currently held, tracked from KEYDOWN/KEYUP events. get_pressed()
@@ -584,8 +584,9 @@ def play_match(game, state, model_path, record_dir, scale=3, fps_cap=60,
             diag_pad2 = set()
             diag_sent = set()
 
-        # Update Frame Stack for AI
-        frame_stack.append(process_frame(obs))
+        # Update Frame Stack for AI (only when active)
+        if model is not None:
+            frame_stack.append(process_frame(obs))
 
         # Render Game Frame to Pygame Surface
         frame_surface = pygame.surfarray.make_surface(np.transpose(obs, (1, 0, 2)))
@@ -623,10 +624,11 @@ def play_match(game, state, model_path, record_dir, scale=3, fps_cap=60,
             step_count = 0
             # Refill the AI's frame-stack from the fresh round so it doesn't
             # keep reacting to stale frames from the round that just ended.
-            reset_frame = process_frame(obs)
-            frame_stack.clear()
-            for _ in range(4):
-                frame_stack.append(reset_frame)
+            if model is not None:
+                reset_frame = process_frame(obs)
+                frame_stack.clear()
+                for _ in range(4):
+                    frame_stack.append(reset_frame)
 
     # stable-retro's env.close() does NOT finalize the movie -- the .bk2 is
     # only written when the Movie object is closed, which stop_record does.
@@ -650,8 +652,13 @@ def play_match(game, state, model_path, record_dir, scale=3, fps_cap=60,
         if not render_mp4:
             return bk2_path
         print("Rendering synchronized MP4 video...")
-        subprocess.run([sys.executable, "-m", "stable_retro.scripts.playback_movie", bk2_path], check=False)
+        here = os.path.dirname(os.path.abspath(__file__))
+        render_tool = os.path.join(here, "render_bk2.py")
         mp4_path = os.path.splitext(bk2_path)[0] + ".mp4"
+        if os.path.exists(render_tool):
+            subprocess.run([sys.executable, render_tool, bk2_path, mp4_path], check=False)
+        else:
+            subprocess.run([sys.executable, "-m", "stable_retro.scripts.playback_movie", bk2_path], check=False)
         if os.path.exists(mp4_path):
             print(f"Exported HD Match Video: {mp4_path}")
             return mp4_path

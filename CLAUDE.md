@@ -52,13 +52,15 @@ python restyle.py ./studio_out/<folder>
 ## Where things live
 
 - `studio.py` — orchestrates: play → scan events → write → render → speak
+- `play_engine.py` — unified pygame interactive gameplay engine (P1/P2 human, AI model, pads, cold boot)
+- `render_bk2.py` — unified emulator replay renderer to MP4 with reward shape correction
 - `writer.py` — every prompt and all three LLM backends
 - `overlays.py` — all rendering; both studio and restyle go through `render_spec`
 - `tts.py` — Qwen3-TTS speech and the ducking mux
 - `restyle.py` — re-render from an edited `overlays.json`
-- `list_fonts.py` — sample sheet of every installed font
 - `games.json` — verified RAM addresses per game, with the evidence for each
-- `train.py` and the `inspect_*` / `find_*` tools — the deferred training half
+- `train.py` — the deferred RL PPO training pipeline
+- `tools/` — RAM discovery, pad testing, and inspection utilities (`probe_pad.py`, `find_game_vars.py`, `audit_ram.py`, etc.)
 
 ## Facts that cost real effort to establish
 

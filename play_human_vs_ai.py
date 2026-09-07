@@ -326,7 +326,8 @@ class AudioStreamer:
 
 
 def play_match(game, state, model_path, record_dir, scale=3, fps_cap=60,
-               mode="versus", players=2, boot_screen=False, p2_human=False):
+               mode="versus", players=2, boot_screen=False, p2_human=False,
+               render_mp4=True):
     os.makedirs(record_dir, exist_ok=True)
     before_bk2s = set(glob.glob(os.path.join(record_dir, "*.bk2")))
     session_start = time.time()
@@ -372,7 +373,7 @@ def play_match(game, state, model_path, record_dir, scale=3, fps_cap=60,
     buttons = env.unwrapped.buttons
     num_players = getattr(env.unwrapped, "players", 1)
 
-    print(f"\\n=== MATCH STARTED: {game} ===")
+    print(f"\n=== MATCH STARTED: {game} ===")
     print(f"Mode: {mode.upper()} | Active Players: {num_players}")
     print(f"Controller Buttons detected: {buttons}")
     pads = find_pads()
@@ -403,11 +404,12 @@ def play_match(game, state, model_path, record_dir, scale=3, fps_cap=60,
 
     # 2. Load trained PPO model for Player 2
     model = None
-    if model_path and os.path.exists(model_path):
-        print(f"Loading trained AI policy from: {model_path}")
-        model = PPO.load(model_path)
-    else:
-        print("No checkpoint model found — AI will use exploratory random policy.")
+    if not p2_human:
+        if model_path and os.path.exists(model_path):
+            print(f"Loading trained AI policy from: {model_path}")
+            model = PPO.load(model_path)
+        else:
+            print("No checkpoint model found — AI will use exploratory random policy.")
 
     # 3. Setup Frame Stack buffer (4 frames of 84x84 grayscale)
     frame_stack = deque(maxlen=4)
@@ -420,7 +422,9 @@ def play_match(game, state, model_path, record_dir, scale=3, fps_cap=60,
     native_h, native_w, _ = obs.shape
     window_w, window_h = native_w * scale, native_h * scale
     screen = pygame.display.set_mode((window_w, window_h + 60))
-    pygame.display.set_caption(f"Retro AI Arena: Human (P1) vs AI (P2) - [{game}]")
+    caption = (f"Retro AI Arena: 2-Player Local - [{game}]" if p2_human
+               else f"Retro AI Arena: Human (P1) vs AI (P2) - [{game}]")
+    pygame.display.set_caption(caption)
     clock = pygame.time.Clock()
     font = pygame.font.SysFont("Arial", 18, bold=True)
     audio = AudioStreamer(env.unwrapped.em.get_audio_rate())
@@ -549,13 +553,16 @@ def play_match(game, state, model_path, record_dir, scale=3, fps_cap=60,
     bk2_path = find_new_bk2(record_dir, before_bk2s, started_at=session_start)
 
     if bk2_path:
-        print(f"\\nMatch replay recorded to: {bk2_path}")
+        print(f"\nMatch replay recorded to: {bk2_path}")
+        if not render_mp4:
+            return bk2_path
         print("Rendering synchronized MP4 video...")
         subprocess.run([sys.executable, "-m", "stable_retro.scripts.playback_movie", bk2_path], check=False)
         mp4_path = os.path.splitext(bk2_path)[0] + ".mp4"
         if os.path.exists(mp4_path):
             print(f"Exported HD Match Video: {mp4_path}")
             return mp4_path
+        return bk2_path
     return None
 
 
@@ -564,6 +571,7 @@ def main():
     parser.add_argument("--game", required=True, help="stable-retro game id, e.g. MortalKombatII-Genesis or StreetFighterIISNES")
     parser.add_argument("--state", default=None, help="Save state name (or NONE for cold boot)")
     parser.add_argument("--boot-screen", action="store_true", help="Start from cold boot / title screen (state=retro.State.NONE)")
+    parser.add_argument("--two-human", action="store_true", help="Two human players (P1: keyboard/pad1, P2: numpad/pad2)")
     parser.add_argument("--model", default=None, help="Path to trained PPO checkpoint .zip for Player 2")
     parser.add_argument("--mode", choices=["versus", "coop", "race"], default="versus", help="Match mode")
     parser.add_argument("--scale", type=int, default=3, help="Window display scale factor (default: 3)")
@@ -580,6 +588,8 @@ def main():
         fps_cap=args.fps,
         mode=args.mode,
         boot_screen=args.boot_screen,
+        p2_human=args.two_human,
+        players=2 if args.two_human else (2 if args.model else 1),
     )
 
 

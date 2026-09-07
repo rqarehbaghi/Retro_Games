@@ -967,14 +967,15 @@ def main():
             print(f"Starting {args.game} -- TWO human players. "
                   "Close the window when you are done.")
             play_match(args.game, args.state, None, record_dir, players=2,
-                       p2_human=True, mode=args.mode, boot_screen=args.boot_screen)
+                       p2_human=True, mode=args.mode, boot_screen=args.boot_screen,
+                       render_mp4=False)
         elif args.players == 1 and args.gamepad:
             # stable-retro's interactive tool is keyboard only, so a pad needs
             # the pygame path -- which reads both.
             from play_human_vs_ai import play_match
             print(f"Starting {args.game} -- close the window when you are done.\n")
             play_match(args.game, args.state, None, record_dir, players=1,
-                       boot_screen=args.boot_screen)
+                       boot_screen=args.boot_screen, render_mp4=False)
         elif args.players == 1:
             from play_and_record import play_human_episode
             print(f"Starting {args.game} -- close the window when you are done.\n")
@@ -986,7 +987,7 @@ def main():
                 print("WARNING: --players 2 with no --model means the AI player is "
                       "picking random buttons. Fine for a pipeline test, weak as content.\n")
             play_match(args.game, args.state, args.model, record_dir, mode=args.mode,
-                       boot_screen=args.boot_screen)
+                       boot_screen=args.boot_screen, render_mp4=False)
 
         from play_and_record import find_new_bk2, render_to_mp4
         bk2_path = find_new_bk2(record_dir, before, started_at=started)
@@ -1057,8 +1058,10 @@ def main():
     }.get(args.writer, args.writer_model)
     print(f"Writing with {in_use} (seed {seed}) ...")
 
+    effective_players = 2 if args.two_human else args.players
     ctx = dict(game=pretty_game(args.game), level=args.level, duration_s=duration,
-               players=args.players, events=events, fps=FPS)
+               players=effective_players, events=events, fps=FPS,
+               two_human=args.two_human)
 
     lines, written_caps = [], []
     if not args.no_captions:
@@ -1196,7 +1199,7 @@ def main():
         print( "           A smaller model often manages captions and commentary")
         print( "           but not the long description; --writer claude-code is")
         print( "           the fallback that reliably does.")
-    meta = build_metadata(args.game, args.players, events, title, args.watermark,
+    meta = build_metadata(args.game, effective_players, events, title, args.watermark,
                           written_copy, level=args.level, duration_s=duration,
                           model=in_use)
     with open(os.path.join(folder, "metadata.json"), "w") as handle:

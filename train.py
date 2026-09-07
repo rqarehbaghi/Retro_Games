@@ -574,7 +574,8 @@ class RewardShaper(Wrapper):
                  speed_address=None, speed_full=127, speed_bonus=0.0,
                  power_loss_scale=0.25,
                  clear_bonus=0.0, end_on_clear=True,
-                 end_on_life_loss=True):
+                 end_on_life_loss=True,
+                 clear_address=None, clear_value=None):
         super().__init__(env)
         self.death_penalty = death_penalty
         self.survival_tick = survival_tick
@@ -603,6 +604,8 @@ class RewardShaper(Wrapper):
         self.speed_address = speed_address
         self.speed_full = speed_full
         self.speed_bonus = speed_bonus
+        self.clear_address = clear_address
+        self.clear_value = clear_value
         self.prev_score = None
         self.prev_power = None
         self.power_loss_scale = power_loss_scale
@@ -765,6 +768,19 @@ class RewardShaper(Wrapper):
                     # policy toward facing forward.
                     comp["backtrack"] = delta * self.progress_scale * self.backtrack_scale
                     reward += comp["backtrack"]
+            # Check RAM-based course clear detection if address is configured
+            if (self.clear_address is not None and not self._cleared
+                    and not died_now and self.clear_bonus):
+                clear_byte = self._read_byte(self.clear_address)
+                if clear_byte is not None:
+                    is_clear = (clear_byte == self.clear_value
+                                if self.clear_value is not None else clear_byte != 0)
+                    if is_clear:
+                        comp["clear"] = self.clear_bonus
+                        reward += comp["clear"]
+                        self._cleared = True
+                        if self.end_on_clear:
+                            terminated = True
             elif (delta < -self.TRANSITION_DROP and not died_now
                   and not self._cleared and self.clear_bonus):
                 # Position collapsed without losing a life: the level or area
@@ -988,6 +1004,7 @@ def make_env(game, state, death_penalty, jump_bonus, render=False, end_on_life_l
              speed_address=None, speed_full=127, speed_bonus=0.0,
              power_loss_scale=0.25,
              clear_bonus=0.0, end_on_clear=True,
+             clear_address=None, clear_value=None,
              auto_advance=False, timer_address=None,
              sprites=False, oam_base=0x0200, n_sprites=8,
              n_blocks=DEFAULT_N_BLOCKS):
@@ -1061,7 +1078,8 @@ def make_env(game, state, death_penalty, jump_bonus, render=False, end_on_life_l
                            coin_address=coin_address, coin_bonus=coin_bonus,
                            speed_address=speed_address, speed_full=speed_full,
                            speed_bonus=speed_bonus, power_loss_scale=power_loss_scale,
-                           clear_bonus=clear_bonus, end_on_clear=end_on_clear)
+                           clear_bonus=clear_bonus, end_on_clear=end_on_clear,
+                           clear_address=clear_address, clear_value=clear_value)
         tiles = None
         if sprites and n_blocks:
             # Before WarpFrame: the ? block tests are all colour tests, and
@@ -1115,6 +1133,7 @@ def load_game_config(path, game):
         "coin_address": addr("coins"),
         "speed_address": addr("pmeter"),
         "clear_address": addr("course_clear"),
+        "timer_address": addr("timer"),
     }
     clear = variables.get("course_clear") or {}
     if clear.get("clear_value") is not None:
@@ -1676,6 +1695,8 @@ def main():
     parser.add_argument("--timer-address", type=lambda v: int(v, 0), default=None, help="RAM index of the 3-digit BCD level timer (SMB3: 0x05EE). Used by --auto-advance to detect that a level has actually started, since the timer only ticks in a level.")
     parser.add_argument("--power-loss-scale", type=float, default=0.25, help="Fraction of --power-bonus charged when a power-up is LOST, versus paid when one is gained. Deliberately asymmetric: symmetric charging made one hit cost the full bonus, erasing ~100 decisions of progress, and the agent responded by creeping forward instead of advancing. Taking a hit is also partly luck. 1.0 restores symmetry. (default: %(default)s)")
     parser.add_argument("--clear-bonus", type=float, default=0.0, help="Reward for finishing a level or entering a new area, detected as level position collapsing WITHOUT losing a life (normal travel never jumps backwards, because the page byte absorbs the low byte's wraps). This fills the dead spot at the end of a level: progress pays for ground gained, so at the goal there is nothing left to earn and the agent shoves right against the edge instead of hitting the goal block. Paid once per episode so a re-enterable pipe cannot be farmed. (default: %(default)s)")
+    parser.add_argument("--clear-address", type=lambda v: int(v, 0), default=None, help="RAM index indicating course clear (SMB3 verified: 0x00C4).")
+    parser.add_argument("--clear-value", type=lambda v: int(v, 0), default=None, help="Value at --clear-address indicating course clear (SMB3: 255).")
     parser.add_argument("--no-end-on-clear", dest="end_on_clear", action="store_false", help="Keep playing after a level clear instead of ending the episode there. Off by default because the agent has never trained on the world map and only flails there.")
     parser.set_defaults(end_on_clear=True)
     parser.add_argument("--coin-address", type=lambda v: int(v, 0), default=None, help="RAM index of the coin counter, so collecting coins is rewarded directly instead of only through the score it grants. SMB3 verified: 0x2167 (0x25A2 is the HUD mirror and lags a frame). Needs --coin-bonus.")
@@ -1820,6 +1841,7 @@ def main():
         speed_bonus=args.speed_bonus,
         power_loss_scale=args.power_loss_scale,
         clear_bonus=args.clear_bonus, end_on_clear=args.end_on_clear,
+        clear_address=args.clear_address, clear_value=args.clear_value,
         auto_advance=args.auto_advance, timer_address=args.timer_address,
         sprites=args.sprites, oam_base=args.oam_base, n_sprites=args.n_sprites,
         n_blocks=args.n_blocks,

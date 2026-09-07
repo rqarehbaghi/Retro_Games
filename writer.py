@@ -420,12 +420,18 @@ def event_time(events, index, fps, duration_s):
     return max(0.0, min(frame / fps, max(0.0, duration_s - 1.0)))
 
 
-def _context(game, level, duration_s, players, events, fps):
+def _context(game, level, duration_s, players, events, fps, two_human=False):
+    if two_human or players == "two_human":
+        p_str = "two human players"
+    elif players == 1:
+        p_str = "one human"
+    else:
+        p_str = "one human and one AI"
     return (
         "GAME: %s\nSECTION: %s\nLENGTH: %.0f seconds\nPLAYERS: %s\n\n"
         "WHAT HAPPENED, in order:\n%s\n"
         % (game, level or "unspecified", duration_s,
-           "one human" if players == 1 else "one human and one AI",
+           p_str,
            _timeline(events, fps)))
 
 
@@ -490,13 +496,13 @@ def closing_time(events, fps, duration_s):
 
 
 def captions(game, level, duration_s, players, events, fps, max_chars=32,
-             **kw):
+             two_human=False, **kw):
     """Timed on-screen captions. Returns [{at, text}] or None.
 
     The model chooses WHICH moments to caption and what to say; the timeline
     decides WHEN each lands."""
     prompt = (
-        _context(game, level, duration_s, players, events, fps) +
+        _context(game, level, duration_s, players, events, fps, two_human=two_human) +
         "\nWrite on-screen captions for this run.\n\n"
         "These are READ IN PASSING while the game is playing, so they are the\n"
         "short form -- a punchline, not a paragraph. The long commentary goes\n"
@@ -642,7 +648,8 @@ def clean_spoken(text):
     return out.strip().strip(chr(34)).strip(chr(39)).strip()
 
 
-def narration(game, level, duration_s, players, events, fps, wpm=125, **kw):
+def narration(game, level, duration_s, players, events, fps, wpm=125,
+              two_human=False, **kw):
     """A continuous spoken script. Returns [{at, text, closing}] or None.
 
     ONE MONOLOGUE, not lines pinned to moments. Anchoring commentary to events
@@ -656,7 +663,7 @@ def narration(game, level, duration_s, players, events, fps, wpm=125, **kw):
     long each line actually rendered to."""
     words = int(duration_s / 60.0 * wpm)
     prompt = (
-        _context(game, level, duration_s, players, events, fps) +
+        _context(game, level, duration_s, players, events, fps, two_human=two_human) +
         "\nWrite what a podcaster says over this footage, start to finish.\n\n"
         "It has to sound like ONE PERSON TALKING CONTINUOUSLY, not a list of\n"
         "remarks. Each entry in 'script' is the next sentence or two of the\n"
@@ -723,10 +730,11 @@ COPY_SCHEMA = {
 }
 
 
-def copy(game, level, duration_s, players, events, fps, watermark="", **kw):
+def copy(game, level, duration_s, players, events, fps, watermark="",
+         two_human=False, **kw):
     """Platform copy. Returns {description, tiktok, instagram, tags} or None."""
     prompt = (
-        _context(game, level, duration_s, players, events, fps) +
+        _context(game, level, duration_s, players, events, fps, two_human=two_human) +
         "\nWrite the upload copy for this video.\n\n"
         "The pitch is NOSTALGIA. The audience played this game as children, or\n"
         "watched a sibling play it. Lead with that feeling before anything\n"

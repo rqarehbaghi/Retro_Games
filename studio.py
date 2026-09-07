@@ -803,12 +803,15 @@ def main():
             style_cfg.setdefault(key, cfg[key])
     style = merge_style(style_cfg)
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--list-games", action="store_true", help="List all installed stable-retro game IDs and exit")
+    parser.add_argument("--list-games", action="store_true", help="List imported games that have valid ROM files present and exit")
+    parser.add_argument("--list-all-games", action="store_true", help="List all known game definitions in stable-retro (including unimported ones) and exit")
     parser.add_argument("--game", help="stable-retro game id. Required unless --brief, --paste-block, --list-games or --print-upload-plan.")
     parser.add_argument("--players", type=int, choices=[1, 2], default=1, help="1 = you alone. 2 = you plus an AI player, via play_engine. (default: %(default)s)")
     parser.add_argument("--boot-screen", action="store_true", help="Start from the power-on title screen (state=NONE) instead of a mid-level save state, so you can pick 1P/2P and the game mode yourself. Passed through to the play window.")
     parser.add_argument("--two-human", action="store_true", help="Two HUMAN players, no AI. Player 1 = keyboard/pad 1, Player 2 = a SECOND gamepad (or the numeric keypad). Pair it with --boot-screen to choose 2 PLAYER GAME at the title; for SMB3 that is the classic alternating two-player game. To keep the AI opponent instead, use --players 2 with --model <checkpoint>.")
     parser.add_argument("--gamepad", action="store_true", help="(Now default) Gamepad and keyboard are both supported seamlessly via pygame.")
+    parser.add_argument("--scale", type=int, default=cfg.get("scale", 4), help="Window display scale multiplier (e.g. 4 or 5 for large modern screens, default: %(default)s)")
+    parser.add_argument("--fullscreen", action="store_true", help="Launch play window in borderless full screen mode")
     parser.add_argument("--mode", choices=["versus", "coop", "race"], default="versus", help="Two-player match type, ignored when --players 1. (default: %(default)s)")
     parser.add_argument("--model", default=None, help="Checkpoint driving the AI player when --players 2. Without one the AI plays randomly, which makes for a much weaker video.")
     parser.add_argument("--state", default=None)
@@ -825,10 +828,11 @@ def main():
     parser.add_argument("--transition-seconds", type=float, default=0.25, help="Length of each transition in seconds. (default: %(default)s)")
     parser.add_argument("--no-captions", action="store_true", help="Turn off the timed commentary captions. They are written from the event log, so they land on the thing they are about.")
     parser.add_argument("--level", default=cfg.get("level"), help="Where in the game this run is, e.g. World 1-1. Shown after the game name in the title. Set it once as the level key in studio.json.")
-    parser.add_argument("--writer", choices=writer.BACKENDS, default=cfg.get("writer", writer.DEFAULT_BACKEND), help="Who writes the captions, commentary and descriptions. 'claude' calls the Anthropic API (needs the anthropic package and credentials); 'ollama' uses a model running on this machine. (default: %(default)s)")
+    parser.add_argument("--writer", choices=writer.BACKENDS, default=cfg.get("writer", writer.DEFAULT_BACKEND), help="Who writes the captions, commentary and descriptions. 'auto' cascades: Claude Code -> Anthropic API -> Gemini -> Ollama. 'gemini' calls Google Gemini (GEMINI_API_KEY); 'claude' calls Anthropic API; 'ollama' runs locally. (default: %(default)s)")
     parser.add_argument("--writer-cli", default=cfg.get("writer_cli", writer.DEFAULT_CLI), help="Path to the Claude Code binary for --writer claude-code, if it is not on PATH. Also looked for at ~/.local/bin/claude and ~/.claude/local/claude. (default: %(default)s)")
     parser.add_argument("--claude-model", default=cfg.get("claude_model", writer.CLAUDE_MODEL), help="Claude model for --writer claude. (default: %(default)s)")
     parser.add_argument("--claude-effort", choices=("low", "medium", "high", "xhigh", "max"), default=cfg.get("claude_effort", writer.CLAUDE_EFFORT), help="How hard the Claude model works: low, medium, high, xhigh or max. Lower spends fewer tokens. Writing captions is not intelligence-sensitive, so the default is a step below the API's own. (default: %(default)s)")
+    parser.add_argument("--gemini-model", default=cfg.get("gemini_model", writer.GEMINI_MODEL), help="Gemini model for --writer gemini. (default: %(default)s)")
     parser.add_argument("--writer-model", default=cfg.get("writer_model", writer.DEFAULT_MODEL), help="Ollama model for --writer ollama. See writer.py for what fits a 24GB card. (default: %(default)s)")
     parser.add_argument("--no-think", action="store_true", help="Turn off reasoning on the ollama backend. It is ON by default -- a thinking model with thinking disabled writes noticeably worse, and it was disabled for a parsing bug that is since fixed.")
     parser.add_argument("--writer-host", default=cfg.get("writer_host", writer.DEFAULT_HOST), help="Where Ollama is listening. (default: %(default)s)")
@@ -884,12 +888,28 @@ def main():
             print(paste_block(json.load(handle)))
         return
 
-    if args.list_games:
+    if args.list_games or args.list_all_games:
         try:
             import stable_retro as retro
-            print("Installed games in stable-retro:")
-            for g in sorted(retro.data.list_games()):
-                print(f"  {g}")
+            all_games = sorted(retro.data.list_games())
+            if args.list_all_games:
+                print(f"All {len(all_games)} known game definitions in stable-retro:")
+                for g in all_games:
+                    print(f"  {g}")
+            else:
+                imported = []
+                for g in all_games:
+                    try:
+                        p = retro.data.get_romfile_path(g)
+                        if p and os.path.isfile(p):
+                            imported.append(g)
+                    except Exception:
+                        pass
+                print(f"Imported playable games ({len(imported)} of {len(all_games)} definitions):")
+                for g in imported:
+                    print(f"  {g}")
+                if not imported:
+                    print("\n(No imported ROMs found. Run: python -m retro.import /path/to/your/roms)")
         except Exception as exc:
             print(f"Could not list games: {exc}")
         return
@@ -1021,18 +1041,23 @@ def main():
                   "Close the window when you are done.")
             play_match(args.game, args.state, None, record_dir, players=2,
                        p2_human=True, mode=args.mode, boot_screen=args.boot_screen,
+                       scale=args.scale, fullscreen=args.fullscreen,
                        render_mp4=False)
         elif args.players == 1:
             print(f"Starting {args.game} -- single player (gamepad & keyboard enabled). "
                   "Close the window when you are done.\n")
             play_match(args.game, args.state, None, record_dir, players=1,
-                       boot_screen=args.boot_screen, render_mp4=False)
+                       boot_screen=args.boot_screen,
+                       scale=args.scale, fullscreen=args.fullscreen,
+                       render_mp4=False)
         else:
             if not args.model:
                 print("WARNING: --players 2 with no --model means the AI player is "
                       "picking random buttons. Fine for a pipeline test, weak as content.\n")
             play_match(args.game, args.state, args.model, record_dir, players=2,
-                       mode=args.mode, boot_screen=args.boot_screen, render_mp4=False)
+                       mode=args.mode, boot_screen=args.boot_screen,
+                       scale=args.scale, fullscreen=args.fullscreen,
+                       render_mp4=False)
 
         from play_and_record import find_new_bk2, render_to_mp4
         bk2_path = find_new_bk2(record_dir, before, started_at=started)
@@ -1094,10 +1119,13 @@ def main():
     # what guarantees that rather than trusting the server's default.
     seed = random.randrange(1 << 31)
     ai = dict(backend=args.writer, model=args.writer_model,
+              gemini_model=args.gemini_model,
               claude_model=args.claude_model, claude_effort=args.claude_effort,
               host=args.writer_host, cli=args.writer_cli, seed=seed,
               think=not args.no_think)
     in_use = {
+        "auto": "auto cascade (Claude Code -> Claude API -> Gemini -> Ollama)",
+        "gemini": "%s (Google Gemini API)" % args.gemini_model,
         "claude": "%s, effort %s" % (args.claude_model, args.claude_effort),
         "claude-code": "%s via subscription" % args.claude_model,
     }.get(args.writer, args.writer_model)

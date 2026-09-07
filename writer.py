@@ -57,12 +57,13 @@ import shutil
 import urllib.error
 import urllib.request
 
-BACKENDS = ("claude-code", "claude", "ollama")
-DEFAULT_BACKEND = "claude-code"
+BACKENDS = ("claude-code", "claude", "gemini", "ollama", "auto")
+DEFAULT_BACKEND = "auto"
 
 DEFAULT_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
 DEFAULT_MODEL = "qwen3:30b-a3b"
 CLAUDE_MODEL = "claude-opus-4-8"
+GEMINI_MODEL = "gemini-2.5-flash"
 
 # Effort sets how much the model spends thinking and answering. The API
 # default is "high"; "medium" is a deliberate step down, because writing
@@ -325,15 +326,124 @@ def generate_claude(prompt, schema, model=CLAUDE_MODEL, effort=CLAUDE_EFFORT,
     return None
 
 
-def write(prompt, schema, backend=DEFAULT_BACKEND, **kw):
-    """Dispatch to whichever backend was asked for.
+def generate_gemini(prompt, schema, model=GEMINI_MODEL, verbose=True, timeout=120, **_kw):
+    """One generation through Google Gemini via the google-genai or google-generativeai SDK,
+    or direct REST API if GEMINI_API_KEY is present in environment."""
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        if verbose:
+            print("  (writer: GEMINI_API_KEY environment variable is not set)")
+        return None
 
-    Each backend is handed the arguments it actually takes, named explicitly.
-    An earlier version passed everything through minus a blacklist of one key,
-    so every option added afterwards -- claude_effort, cli -- leaked into the
-    wrong backend and raised TypeError at the call. A blacklist has to be
-    updated every time anything is added; naming what each one takes does not."""
+    # 1. Try google-genai SDK
+    try:
+        from google import genai
+        from google.genai import types
+        client = genai.Client(api_key=api_key)
+        resp = client.models.generate_content(
+            model=model,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                system_instruction=VOICE,
+                response_mime_type="application/json",
+                response_schema=schema,
+            ),
+        )
+        if resp and resp.text:
+            return json.loads(_strip_thinking(resp.text))
+    except ImportError:
+        pass
+    except Exception as exc:
+        if verbose:
+            print(f"  (writer: google-genai failed: {exc})")
+
+    # 2. Try google.generativeai (legacy) SDK
+    try:
+        import google.generativeai as genai
+        genai.configure(api_key=api_key)
+        m = genai.GenerativeModel(model, system_instruction=VOICE,
+                                  generation_config={"response_mime_type": "application/json"})
+        resp = m.generate_content(prompt)
+        if resp and resp.text:
+            return json.loads(_strip_thinking(resp.text))
+    except ImportError:
+        pass
+    except Exception as exc:
+        if verbose:
+            print(f"  (writer: google-generativeai failed: {exc})")
+
+    # 3. Direct REST API fallback (no pip dependencies required)
+    try:
+        url = (f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+               f"?key={api_key}")
+        payload = {
+            "system_instruction": {"parts": [{"text": VOICE}]},
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {"responseMimeType": "application/json"}
+        }
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"}
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.load(resp)
+            text = data["candidates"][0]["content"]["parts"][0]["text"]
+            return json.loads(_strip_thinking(text))
+    except Exception as exc:
+        if verbose:
+            print(f"  (writer: gemini REST failed: {exc})")
+
+    return None
+
+
+def write(prompt, schema, backend=DEFAULT_BACKEND, **kw):
+    """Dispatch to whichever backend was asked for, with automatic cascade support."""
     verbose = kw.get("verbose", True)
+
+    if backend == "auto":
+        # Hierarchy: 1. Claude Code (subscription) -> 2. Claude API -> 3. Gemini -> 4. Ollama (local)
+        if claude_code_available(kw.get("cli", DEFAULT_CLI)):
+            res = generate_claude_code(prompt, schema, verbose=False,
+                                       cli=kw.get("cli", DEFAULT_CLI),
+                                       model=kw.get("claude_model"))
+            if res:
+                if verbose:
+                    print("  [writer] generated successfully using Claude Code")
+                return res
+
+        if os.environ.get("ANTHROPIC_API_KEY"):
+            res = generate_claude(prompt, schema,
+                                  model=kw.get("claude_model", CLAUDE_MODEL),
+                                  effort=kw.get("claude_effort", CLAUDE_EFFORT),
+                                  verbose=False)
+            if res:
+                if verbose:
+                    print("  [writer] generated successfully using Anthropic API")
+                return res
+
+        if os.environ.get("GEMINI_API_KEY"):
+            res = generate_gemini(prompt, schema,
+                                  model=kw.get("gemini_model", GEMINI_MODEL),
+                                  verbose=False)
+            if res:
+                if verbose:
+                    print("  [writer] generated successfully using Google Gemini")
+                return res
+
+        # Finally fallback to local Ollama
+        res = generate(prompt, schema,
+                       model=kw.get("model", DEFAULT_MODEL),
+                       host=kw.get("host", DEFAULT_HOST),
+                       seed=kw.get("seed"),
+                       think=kw.get("think", True),
+                       verbose=verbose)
+        if res:
+            if verbose:
+                print("  [writer] generated successfully using Ollama")
+            return res
+        return None
+
     if backend == "claude-code":
         return generate_claude_code(prompt, schema, verbose=verbose,
                                     cli=kw.get("cli", DEFAULT_CLI),
@@ -342,6 +452,10 @@ def write(prompt, schema, backend=DEFAULT_BACKEND, **kw):
         return generate_claude(prompt, schema,
                                model=kw.get("claude_model", CLAUDE_MODEL),
                                effort=kw.get("claude_effort", CLAUDE_EFFORT),
+                               verbose=verbose)
+    if backend == "gemini":
+        return generate_gemini(prompt, schema,
+                               model=kw.get("gemini_model", GEMINI_MODEL),
                                verbose=verbose)
     return generate(prompt, schema,
                     model=kw.get("model", DEFAULT_MODEL),

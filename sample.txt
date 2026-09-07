@@ -1,0 +1,87 @@
+================================================================================
+RETRO AI ARENA & STUDIO - COMMAND REFERENCE GUIDE
+================================================================================
+
+1. PLAYING GAMES (STUDIO CLI)
+--------------------------------------------------------------------------------
+# Single Player (Human alone, starting from title / boot screen)
+python studio.py --game SuperMarioBros3-Nes --boot-screen
+
+# Single Player with custom window scale (e.g. 4x or 5x for modern high-res monitors)
+python studio.py --game SuperMarioBros3-Nes --scale 5 --boot-screen
+
+# Single Player in full-screen mode (aspect-ratio preserved)
+python studio.py --game SuperMarioBros3-Nes --fullscreen --boot-screen
+
+# Two Human Players (Hot-seat / 2 Gamepads or Gamepad + Keyboard)
+python studio.py --game MortalKombatII-Genesis --two-human --boot-screen
+
+# Two Human Players Co-Op (e.g. Contra)
+python studio.py --game Contra-Nes --two-human --mode coop --boot-screen
+
+# Human (P1) vs Trained AI Bot (P2)
+python studio.py --game MortalKombatII-Genesis --players 2 --model ./checkpoints/MortalKombatII-Genesis/best_model.zip
+
+# Co-Op Human (P1) + Trained AI Bot (P2)
+python studio.py --game Contra-Nes --players 2 --mode coop --model ./checkpoints/Contra-Nes/iter_250.zip
+
+
+2. LISTING & IMPORTING GAMES
+--------------------------------------------------------------------------------
+# List only games with verified imported ROMs installed on your system
+python studio.py --list-games
+
+# List all game definitions known to stable-retro (including unimported games)
+python studio.py --list-all-games
+
+# Import ROMs into stable-retro
+python -m retro.import /path/to/your/roms
+
+
+3. AI WRITER & CAPTION GENERATION
+--------------------------------------------------------------------------------
+# Auto Cascade: Claude Code subscription -> Anthropic API -> Gemini -> Ollama
+python studio.py --game SuperMarioBros3-Nes --writer auto
+
+# Force Google Gemini (requires GEMINI_API_KEY environment variable)
+python studio.py --game SuperMarioBros3-Nes --writer gemini --gemini-model gemini-2.5-flash
+
+# Force Claude Code CLI (uses existing Claude subscription)
+python studio.py --game SuperMarioBros3-Nes --writer claude-code
+
+# Force Claude API (requires ANTHROPIC_API_KEY)
+python studio.py --game SuperMarioBros3-Nes --writer claude --claude-model claude-opus-4-8
+
+# Force Local Ollama (Free, runs offline on local GPU)
+python studio.py --game SuperMarioBros3-Nes --writer ollama --writer-model qwen3:30b-a3b
+
+
+4. RE-STAGING & VIDEO GENERATION (WITHOUT REPLAYING)
+--------------------------------------------------------------------------------
+# Re-generate captions, overlays, short 9x16 cut, and upload brief from existing video
+python studio.py --game SuperMarioBros3-Nes --from-mp4 ./studio_out/2026-04-18_SuperMarioBros3-Nes/master_16x9.mp4
+
+
+5. TRAINING AI AGENTS (REINFORCEMENT LEARNING)
+--------------------------------------------------------------------------------
+# Train a single-player policy with PPO
+python train.py --game SuperMarioBros3-Nes --timesteps 500000 --num-envs 8
+
+# Train with Self-Play (Versus fighting games)
+python train.py --game MortalKombatII-Genesis --mode versus --self-play --timesteps 1000000
+
+# Train with Co-Op reward sharing
+python train.py --game Contra-Nes --mode coop --timesteps 1000000
+
+
+6. AUDIT & DIAGNOSTIC TOOLS (Located in tools/)
+--------------------------------------------------------------------------------
+# Test gamepad mappings, axes, and button presses
+python tools/probe_pad.py
+
+# Inspect live RAM addresses and data variables during gameplay
+python tools/audit_ram.py --game SuperMarioBros3-Nes
+
+# Scan game action combos and verify button combinations
+python tools/inspect_combos.py --game MortalKombatII-Genesis
+================================================================================

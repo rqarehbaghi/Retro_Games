@@ -265,33 +265,42 @@ class AudioStreamer:
 
     stable-retro renders video to an array and hands back audio as (N, 2) int16
     samples per step via em.get_audio(), but nothing ever played them -- so the
-    window was silent. This owns one mixer channel and keeps it fed. It is
-    deliberately NON-FATAL: on a box with no audio device it disables itself and
-    the session keeps running (silently) rather than crashing the game."""
+    window was silent. This owns one mixer channel and keeps it fed with low latency.
+    If the consumer lags or audio blocks queue up, pending samples are capped so
+    audio never falls behind the action on screen."""
 
     def __init__(self, rate):
         self.ok = False
         self.pending = []
         try:
             pygame.mixer.quit()      # drop the default 44.1k mixer pygame.init made
+            # buffer=256 reduces the hardware audio buffer latency to ~5-8ms
             pygame.mixer.init(frequency=int(round(rate)), size=-16, channels=2,
-                              buffer=512)
+                              buffer=256)
             self.channel = pygame.mixer.Channel(0)
             self.ok = True
-            print(f"Audio: on ({int(round(rate))} Hz).")
+            print(f"Audio: on ({int(round(rate))} Hz, low latency buffer 256).")
         except Exception as exc:                                  # noqa: BLE001
             print(f"Audio: off ({exc.__class__.__name__}: {exc}).")
 
     def feed(self, samples):
-        """Queue one step's samples. While a block is still waiting to play it
-        keeps accumulating, so the channel is handed one continuous block at a
-        time instead of 60 tiny clips a second (which click)."""
+        """Queue one step's samples. Feeds directly into the mixer queue without
+        accumulating an unbounded buffer that causes audio lag."""
         if not self.ok:
             return
         try:
-            self.pending.append(np.ascontiguousarray(samples, dtype=np.int16))
+            arr = np.ascontiguousarray(samples, dtype=np.int16)
+            if arr.size == 0:
+                return
+            self.pending.append(arr)
+
+            # If a sound is already queued, don't accumulate more than 2 frames
+            # of backpressure. Drops older backlog if lag begins to accumulate.
             if self.channel.get_queue() is not None:
-                return               # a block is already queued; pile onto it
+                if len(self.pending) > 2:
+                    self.pending = self.pending[-2:]
+                return
+
             block = (self.pending[0] if len(self.pending) == 1
                      else np.concatenate(self.pending))
             self.pending = []
@@ -310,9 +319,9 @@ class AudioStreamer:
             pass
 
 
-def play_match(game, state, model_path, record_dir, scale=3, fps_cap=60,
+def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
                mode="versus", players=2, boot_screen=False, p2_human=False,
-               render_mp4=True):
+               fullscreen=False, render_mp4=True):
     os.makedirs(record_dir, exist_ok=True)
     before_bk2s = set(glob.glob(os.path.join(record_dir, "*.bk2")))
     session_start = time.time()
@@ -376,8 +385,20 @@ def play_match(game, state, model_path, record_dir, scale=3, fps_cap=60,
     # state never refreshing. Nothing downstream cares that this moved up.
     pygame.init()
     native_h, native_w, _ = obs.shape
-    window_w, window_h = native_w * scale, native_h * scale
-    screen = pygame.display.set_mode((window_w, window_h + 60))
+    if fullscreen:
+        disp_info = pygame.display.Info()
+        screen_w, screen_h = disp_info.current_w, disp_info.current_h
+        # Compute best fit scale preserving retro aspect ratio
+        scale_fit = max(1, min(screen_w // native_w, (screen_h - 60) // native_h))
+        window_w, window_h = native_w * scale_fit, native_h * scale_fit
+        screen = pygame.display.set_mode((screen_w, screen_h), pygame.FULLSCREEN | pygame.DOUBLEBUF)
+        offset_x = (screen_w - window_w) // 2
+        offset_y = (screen_h - (window_h + 60)) // 2
+    else:
+        window_w, window_h = native_w * scale, native_h * scale
+        screen = pygame.display.set_mode((window_w, window_h + 60), pygame.RESIZABLE | pygame.DOUBLEBUF)
+        offset_x = 0
+        offset_y = 0
     caption = (f"Retro AI Arena: 2-Player Local - [{game}]" if p2_human
                else f"Retro AI Arena: Human (P1) vs AI (P2) - [{game}]")
     pygame.display.set_caption(caption)
@@ -591,10 +612,12 @@ def play_match(game, state, model_path, record_dir, scale=3, fps_cap=60,
         # Render Game Frame to Pygame Surface
         frame_surface = pygame.surfarray.make_surface(np.transpose(obs, (1, 0, 2)))
         frame_surface = pygame.transform.scale(frame_surface, (window_w, window_h))
-        screen.blit(frame_surface, (0, 0))
+        if fullscreen:
+            screen.fill((10, 12, 16))
+        screen.blit(frame_surface, (offset_x, offset_y))
 
         # Render Header / Scoreboard
-        pygame.draw.rect(screen, (20, 24, 33), (0, window_h, window_w, 60))
+        pygame.draw.rect(screen, (20, 24, 33), (offset_x, offset_y + window_h, window_w, 60))
         elapsed_sec = int(time.time() - match_start_time)
         # LIVE P1 input readout. If this shows "none" while you press keys, the
         # game is not getting your input -- click the window to give it focus,
@@ -612,7 +635,7 @@ def play_match(game, state, model_path, record_dir, scale=3, fps_cap=60,
             header = (f"P1 INPUT: {p1_pressed or 'none'}   |   "
                       f"START = Enter / pad-Start   |   {elapsed_sec}s")
         status_text = font.render(header, True, (240, 240, 240))
-        screen.blit(status_text, (15, window_h + 18))
+        screen.blit(status_text, (offset_x + 15, offset_y + window_h + 18))
 
         pygame.display.flip()
         clock.tick(fps_cap)

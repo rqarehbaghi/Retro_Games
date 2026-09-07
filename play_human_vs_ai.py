@@ -385,6 +385,9 @@ def play_match(game, state, model_path, record_dir, scale=3, fps_cap=60,
             print("            Plug in a SECOND controller for a proper two-pad game.")
     else:
         print(f"Human: PLAYER 1 (Keyboard/Gamepad) | AI: PLAYER 2 ({model_path or 'Random Policy'})")
+    print("CLICK THE GAME WINDOW ONCE before playing. SDL delivers gamepad")
+    print("input to an unfocused window, but never keyboard input -- so an")
+    print("unclicked window looks exactly like a dead keyboard.")
     print("---------------------------------------------------------------")
 
     # 2. Load trained PPO model for Player 2
@@ -434,6 +437,13 @@ def play_match(game, state, model_path, record_dir, scale=3, fps_cap=60,
     diag_at = time.time()
     diag_frames = 0
     resets = 0
+    # Accumulated over the whole reporting window. Sampling a single frame per
+    # second missed almost every tap -- 1 frame in 62 -- and made working input
+    # look dead.
+    diag_keys = 0
+    diag_pad = set()
+    diag_sent = set()
+    warned_focus = False
 
     while running:
         # Check Pygame events
@@ -487,24 +497,43 @@ def play_match(game, state, model_path, record_dir, scale=3, fps_cap=60,
         audio.feed(env.unwrapped.em.get_audio())
 
         diag_frames += 1
+        diag_keys = max(diag_keys, len(combined))
+        if pad1 is not None:
+            try:
+                for _i in range(pad1.joy.get_numbuttons()):
+                    if pad1.joy.get_button(_i):
+                        diag_pad.add(_i)
+            except Exception:                                    # noqa: BLE001
+                pass
+        for _n, _on in zip(buttons, joint_action[:len(buttons)]):
+            if _on:
+                diag_sent.add(_n)
+
         _now = time.time()
         if _now - diag_at >= 1.0:
-            raw = []
-            if pad1 is not None:
-                try:
-                    raw = [i for i in range(pad1.joy.get_numbuttons())
-                           if pad1.joy.get_button(i)]
-                except Exception:                                # noqa: BLE001
-                    raw = ["?"]
-            sent = [n for n, on in zip(buttons, joint_action[:len(buttons)]) if on]
-            print("[%5.1fs] fps %4.1f  steps %6d  resets %d | keys held %d  "
-                  "pad raw %s | SENT TO GAME %s | hpos=%s lives=%s"
+            # SDL delivers JOYSTICK input whether or not the window is focused,
+            # but KEYBOARD input only to the focused window. So a dead keyboard
+            # with a working pad is the signature of an unfocused window, not a
+            # broken mapping -- worth stating outright rather than inferring.
+            focused = bool(pygame.key.get_focused())
+            print("[%5.1fs] fps %4.1f  steps %6d  resets %d | focus %s | "
+                  "keys %d | pad %s | SENT %s | hpos=%s lives=%s"
                   % (_now - match_start_time,
                      diag_frames / max(1e-6, _now - diag_at),
-                     step_count, resets, len(combined), raw or "-",
-                     sent or "-", info.get("hpos"), info.get("lives")))
+                     step_count, resets, "YES" if focused else "NO ",
+                     diag_keys, sorted(diag_pad) or "-",
+                     sorted(diag_sent) or "-",
+                     info.get("hpos"), info.get("lives")))
+            if not focused and not warned_focus:
+                warned_focus = True
+                print("      ^ the game window does NOT have keyboard focus."
+                      " CLICK IT once;")
+                print("        the pad works without focus, the keyboard cannot.")
             diag_at = _now
             diag_frames = 0
+            diag_keys = 0
+            diag_pad = set()
+            diag_sent = set()
 
         # Update Frame Stack for AI
         frame_stack.append(process_frame(obs))

@@ -322,13 +322,24 @@ def play_match(game, state, model_path, record_dir, scale=3, fps_cap=60,
     else:
         state_val = state or retro.State.DEFAULT
 
-    # 1. Initialize stable-retro with 2 players
+    # 1. Initialize stable-retro with 2 players.
+    #
+    # use_restricted_actions=ALL is REQUIRED for human play. The default,
+    # Actions.FILTERED, rewrites the action before the emulator sees it and
+    # silently DISCARDS START and SELECT entirely -- measured:
+    #     FILTERED: ask START -> emulator gets NOTHING
+    #     ALL:      ask START -> emulator gets START
+    # A and B and the d-pad pass through either way, which is why playing from
+    # a mid-level save state felt fine while --boot-screen was unplayable: the
+    # title screen needs START, and START was being thrown away on its way to
+    # the core, on keyboard and gamepad alike.
     try:
         env = retro.make(
             game=game,
             state=state_val,
             players=players,
             record=record_dir,
+            use_restricted_actions=retro.Actions.ALL,
             render_mode="rgb_array",
         )
     except Exception as e:
@@ -338,6 +349,7 @@ def play_match(game, state, model_path, record_dir, scale=3, fps_cap=60,
             game=game,
             state=state_val,
             record=record_dir,
+            use_restricted_actions=retro.Actions.ALL,
             render_mode="rgb_array",
         )
 
@@ -505,7 +517,14 @@ def play_match(game, state, model_path, record_dir, scale=3, fps_cap=60,
                         diag_pad.add(_i)
             except Exception:                                    # noqa: BLE001
                 pass
-        for _n, _on in zip(buttons, joint_action[:len(buttons)]):
+        # Report what the EMULATOR actually received, not what we asked for.
+        # Logging the request is how a filtered-away START hid for so long:
+        # the line said SENT ['START'] every second while the core got nothing.
+        try:
+            _applied = env.unwrapped.action_to_array(joint_action)[0]
+        except Exception:                                        # noqa: BLE001
+            _applied = joint_action[:len(buttons)]
+        for _n, _on in zip(buttons, _applied):
             if _on:
                 diag_sent.add(_n)
 

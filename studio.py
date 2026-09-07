@@ -969,9 +969,14 @@ def main():
             play_match(args.game, args.state, None, record_dir, players=2,
                        p2_human=True, mode=args.mode, boot_screen=args.boot_screen,
                        render_mp4=False)
-        elif args.players == 1 and args.gamepad:
-            # stable-retro's interactive tool is keyboard only, so a pad needs
-            # the pygame path -- which reads both.
+        elif args.players == 1 and (args.gamepad or args.boot_screen):
+            # The pygame path is required for EITHER of two reasons:
+            #   - a gamepad: stable-retro's interactive tool is keyboard only;
+            #   - --boot-screen: that tool cannot cold boot at all, because its
+            #     --state is a string and RetroEnv only honours the enum
+            #     State.NONE, so it ends up hunting for a save state called
+            #     "NONE" and dying in gzip.open(None).
+            # This path reads the keyboard as well, so nothing is lost.
             from play_human_vs_ai import play_match
             print(f"Starting {args.game} -- close the window when you are done.\n")
             play_match(args.game, args.state, None, record_dir, players=1,

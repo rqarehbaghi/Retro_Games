@@ -333,7 +333,22 @@ def play_human_episode(game, state, record_dir, boot_screen=False):
         "--record", record_dir,
     ]
     if boot_screen or (isinstance(state, str) and state.upper() == "NONE"):
-        cmd += ["--state", "NONE"]
+        # stable-retro's interactive tool CANNOT cold boot. Its --state is a
+        # plain string handed straight to retro.make, and RetroEnv only
+        # special-cases the ENUM retro.State.NONE -- "NONE" == State.NONE is
+        # False -- so the string survives as a state NAME, get_file_path finds
+        # no NONE.state, and it dies inside gzip.open(None) with
+        # "filename must be a str or bytes object, or a file".
+        # There is no CLI spelling that reaches State.NONE, so say so here
+        # rather than let that traceback out.
+        sys.exit(
+            "Cold boot (--boot-screen) is not possible through stable-retro's\n"
+            "interactive tool: its --state cannot express State.NONE.\n\n"
+            "Use the pygame path instead, which cold-boots correctly and reads\n"
+            "the keyboard AND any gamepad:\n"
+            "    python studio.py --game %s --boot-screen --gamepad\n"
+            "or for two players:\n"
+            "    python studio.py --game %s --boot-screen --two-human" % (game, game))
     elif state:
         cmd += ["--state", state]
 

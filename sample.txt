@@ -84,4 +84,28 @@ python tools/audit_ram.py --game SuperMarioBros3-Nes
 
 # Scan game action combos and verify button combinations
 python tools/inspect_combos.py --game MortalKombatII-Genesis
+
+
+7. TROUBLESHOOTING CONTROLLERS (WSL)
+--------------------------------------------------------------------------------
+# ONE tool does the whole diagnosis, in order:
+#   Phase 0  OS / WSL /dev/input permission audit (the layer that usually bites)
+#   Phase 1  SDL / pygame enumeration
+#   Phase 2  live button / axis / d-pad / auto-fire probe
+python tools/probe_pad.py
+
+# Just the permission + enumeration checks, no live probe:
+python tools/probe_pad.py --no-probe
+
+# If a pad enumerates in Linux but is dead in the game, the event nodes are
+# usually not readable by SDL. Quick fix (lost on replug / wsl --shutdown):
+sudo chmod a+r /dev/input/event* /dev/input/js*
+
+# Durable fix -- join the input group, then restart WSL from Windows:
+sudo usermod -aG input $USER      # then, in Windows:  wsl --shutdown
+
+# Attaching the pads to WSL in the first place (from an ADMIN PowerShell):
+usbipd list
+usbipd bind   --busid <id>        # once per device
+usbipd attach --wsl --busid <id>  # every replug and every wsl --shutdown
 ================================================================================

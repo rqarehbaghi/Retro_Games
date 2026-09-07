@@ -326,6 +326,37 @@ def generate_claude(prompt, schema, model=CLAUDE_MODEL, effort=CLAUDE_EFFORT,
     return None
 
 
+def _gemini_schema(node):
+    """Convert a JSON-Schema dict into the OpenAPI subset Gemini wants.
+
+    Gemini's response schema (both the legacy SDK and the REST responseSchema)
+    is an OpenAPI 3.0 subset: the type is an UPPERCASE enum (STRING, OBJECT,
+    ARRAY, NUMBER, INTEGER, BOOLEAN) and only a few keywords are understood.
+    The schemas in this file are ordinary lower-case JSON Schema, which the
+    google-genai SDK converts on its own but the other two paths do not -- so
+    without this they would 400 and silently fall through, enforcing nothing.
+    Unknown keywords are dropped rather than passed on, since Gemini rejects
+    the whole schema if it sees one it does not support."""
+    if not isinstance(node, dict):
+        return node
+    out = {}
+    t = node.get("type")
+    if isinstance(t, str):
+        out["type"] = t.upper()
+    if "enum" in node:
+        out["enum"] = node["enum"]
+    if "description" in node:
+        out["description"] = node["description"]
+    if "properties" in node:
+        out["properties"] = {k: _gemini_schema(v)
+                             for k, v in node["properties"].items()}
+    if "required" in node:
+        out["required"] = node["required"]
+    if "items" in node:
+        out["items"] = _gemini_schema(node["items"])
+    return out
+
+
 def generate_gemini(prompt, schema, model=GEMINI_MODEL, verbose=True, timeout=120, **_kw):
     """One generation through Google Gemini via the google-genai or google-generativeai SDK,
     or direct REST API if GEMINI_API_KEY is present in environment."""
@@ -361,8 +392,10 @@ def generate_gemini(prompt, schema, model=GEMINI_MODEL, verbose=True, timeout=12
     try:
         import google.generativeai as genai
         genai.configure(api_key=api_key)
-        m = genai.GenerativeModel(model, system_instruction=VOICE,
-                                  generation_config={"response_mime_type": "application/json"})
+        m = genai.GenerativeModel(
+            model, system_instruction=VOICE,
+            generation_config={"response_mime_type": "application/json",
+                               "response_schema": _gemini_schema(schema)})
         resp = m.generate_content(prompt)
         if resp and resp.text:
             return json.loads(_strip_thinking(resp.text))
@@ -379,7 +412,8 @@ def generate_gemini(prompt, schema, model=GEMINI_MODEL, verbose=True, timeout=12
         payload = {
             "system_instruction": {"parts": [{"text": VOICE}]},
             "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {"responseMimeType": "application/json"}
+            "generationConfig": {"responseMimeType": "application/json",
+                                 "responseSchema": _gemini_schema(schema)}
         }
         req = urllib.request.Request(
             url,

@@ -54,13 +54,16 @@ python restyle.py ./studio_out/<folder>
 - `studio.py` — orchestrates: play → scan events → write → render → speak
 - `play_engine.py` — unified pygame interactive gameplay engine (P1/P2 human, AI model, pads, cold boot)
 - `render_bk2.py` — unified emulator replay renderer to MP4 with reward shape correction
-- `writer.py` — every prompt and all three LLM backends
+- `writer.py` — every prompt and all four LLM backends (`claude-code`, `claude`, `gemini`, `ollama`) plus the `auto` cascade
 - `overlays.py` — all rendering; both studio and restyle go through `render_spec`
 - `tts.py` — Qwen3-TTS speech and the ducking mux
 - `restyle.py` — re-render from an edited `overlays.json`
 - `games.json` — verified RAM addresses per game, with the evidence for each
 - `train.py` — the deferred RL PPO training pipeline
-- `tools/` — RAM discovery, pad testing, and inspection utilities (`probe_pad.py`, `find_game_vars.py`, `audit_ram.py`, etc.)
+- `tools/` — RAM discovery and inspection utilities (`find_game_vars.py`, `audit_ram.py`, etc.),
+  `tools/probe_pad.py` (the unified gamepad diagnostic: OS/WSL `/dev/input` permission audit,
+  SDL enumeration, then a live button/axis/auto-fire probe), and `tools/import_fixer.py`
+  (matches ROMs in `ROMs/` against stable-retro's hash databases, headered or not, and imports them)
 
 ## Facts that cost real effort to establish
 
@@ -181,18 +184,24 @@ is KEYBOARD ONLY, so a pad is silently ignored. `--gamepad` routes single
 player through the pygame window instead, which reads both. Separately, WSL2
 cannot see a USB device at all until `usbipd-win` attaches it from Windows.
 
-## The three writer backends, and what they bill
+## The four writer backends, and what they bill
 
 `--writer` in `studio.json`. **A Claude Pro subscription and the Messages API
 are separate products** — Pro does not include API credits, and a Console
 organisation starts at a zero balance. A 400 "credit balance is too low" means
 exactly that, not a broken key.
 
+The default is now `auto`, which cascades in order and takes the first that
+answers: Claude Code (subscription) → Claude API (credits) → Gemini
+(`GEMINI_API_KEY`) → Ollama (local). Name a single backend to pin it.
+
 | Backend | Bills against | Constrained JSON |
 |---|---|---|
-| `claude-code` (default) | the Pro/Max **subscription**, via `claude -p` | no — asked for in the prompt |
-| `claude` | prepaid API **credits** | yes |
-| `ollama` | nothing, runs locally | yes |
+| `auto` (default) | whichever tier below answers first | per the tier it lands on |
+| `claude-code` | the Pro/Max **subscription**, via `claude -p` | no — asked for in the prompt |
+| `claude` | prepaid API **credits** | yes — API structured output |
+| `gemini` | Google **Gemini API** (`GEMINI_API_KEY`) | yes — schema enforced on all three of its own paths (google-genai SDK, legacy SDK, and direct REST), each fed the same schema converted to Gemini's uppercase OpenAPI subset |
+| `ollama` | nothing, runs locally | yes — Ollama `format` |
 
 Also: an exported `ANTHROPIC_API_KEY` silently overrides an OAuth profile AND
 Claude Code's own login. If auth looks wrong, check `env | grep -i anthropic`

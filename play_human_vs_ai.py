@@ -426,6 +426,15 @@ def play_match(game, state, model_path, record_dir, scale=3, fps_cap=60,
     # unioned so whichever the platform actually delivers gets through.
     held_keys = set()
 
+    # Once-a-second diagnostic. This exists to separate two failure modes that
+    # look identical on screen: input never REACHING the emulator, versus input
+    # reaching it and the game ignoring it (which is what SMB3's attract
+    # sequence does until the title settles). fps also shows whether the loop
+    # is actually running at speed.
+    diag_at = time.time()
+    diag_frames = 0
+    resets = 0
+
     while running:
         # Check Pygame events
         for event in pygame.event.get():
@@ -477,6 +486,26 @@ def play_match(game, state, model_path, record_dir, scale=3, fps_cap=60,
         step_count += 1
         audio.feed(env.unwrapped.em.get_audio())
 
+        diag_frames += 1
+        _now = time.time()
+        if _now - diag_at >= 1.0:
+            raw = []
+            if pad1 is not None:
+                try:
+                    raw = [i for i in range(pad1.joy.get_numbuttons())
+                           if pad1.joy.get_button(i)]
+                except Exception:                                # noqa: BLE001
+                    raw = ["?"]
+            sent = [n for n, on in zip(buttons, joint_action[:len(buttons)]) if on]
+            print("[%5.1fs] fps %4.1f  steps %6d  resets %d | keys held %d  "
+                  "pad raw %s | SENT TO GAME %s | hpos=%s lives=%s"
+                  % (_now - match_start_time,
+                     diag_frames / max(1e-6, _now - diag_at),
+                     step_count, resets, len(combined), raw or "-",
+                     sent or "-", info.get("hpos"), info.get("lives")))
+            diag_at = _now
+            diag_frames = 0
+
         # Update Frame Stack for AI
         frame_stack.append(process_frame(obs))
 
@@ -510,6 +539,7 @@ def play_match(game, state, model_path, record_dir, scale=3, fps_cap=60,
         clock.tick(fps_cap)
 
         if terminated or truncated:
+            resets += 1
             print(f"Round finished at step {step_count}! Resetting...")
             obs, info = env.reset()
             step_count = 0

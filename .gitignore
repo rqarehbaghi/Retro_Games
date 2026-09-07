@@ -21,3 +21,10 @@ progress_reels/
 *.bk2
 *.mp4
 *.zip
+
+# Custom integration ROMs are user-supplied and copyrighted -- never commit them
+integrations/**/rom.nes
+integrations/**/rom.sfc
+integrations/**/rom.gb
+integrations/**/rom.md
+integrations/**/rom.bin

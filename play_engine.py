@@ -323,6 +323,8 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
                mode="versus", players=2, boot_screen=False, p2_human=False,
                fullscreen=False, render_mp4=True):
     os.makedirs(record_dir, exist_ok=True)
+    import custom_integrations
+    custom_integrations.register()
     before_bk2s = set(glob.glob(os.path.join(record_dir, "*.bk2")))
     session_start = time.time()
 

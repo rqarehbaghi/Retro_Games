@@ -33,6 +33,11 @@ import sys
 def render(bk2_path, mp4_path=None):
     """Replay bk2_path and write an MP4 beside it (or at mp4_path)."""
     from stable_retro.scripts import playback_movie as pm
+    try:
+        import custom_integrations
+        custom_integrations.register()
+    except Exception:
+        pass
 
     if mp4_path is None:
         mp4_path = os.path.splitext(bk2_path)[0] + ".mp4"

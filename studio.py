@@ -351,6 +351,8 @@ def read_events(bk2_path, game):
     timeline for any game games.json has no variables for."""
     try:
         import stable_retro as retro
+        import custom_integrations
+        custom_integrations.register()
     except Exception as exc:
         print(f"  (event scan unavailable: {exc})")
         return []
@@ -891,6 +893,8 @@ def main():
     if args.list_games or args.list_all_games:
         try:
             import stable_retro as retro
+            import custom_integrations
+            custom_integrations.register()
             all_games = sorted(retro.data.list_games())
             if args.list_all_games:
                 print(f"All {len(all_games)} known game definitions in stable-retro:")

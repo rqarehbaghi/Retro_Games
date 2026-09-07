@@ -393,8 +393,20 @@ def play_match(game, state, model_path, record_dir, scale=3, fps_cap=60,
         if pad2 is not None:
             print("  Player 2: Gamepad 2")
         else:
-            print("  Player 2: numeric keypad (8/2/4/6 = move, 7=B, 9/0=A, KP-Enter=START)")
-            print("            Plug in a SECOND controller for a proper two-pad game.")
+            # Loud, because a pad that silently became "keypad only" reads as
+            # "player 2 is dead" -- and under WSL a pad vanishing mid-session is
+            # normal: usbipd hands each device over individually and drops it on
+            # replug, sleep or a wsl --shutdown.
+            print("")
+            print("  *** ONLY %d GAMEPAD DETECTED -- PLAYER 2 HAS NO CONTROLLER ***"
+                  % len(pads))
+            print("  Player 2 falls back to the numeric keypad:")
+            print("      8/2/4/6 = move, 7 = B, 9 or 0 = A, KP-Enter = START")
+            print("  For a second PAD, attach it to WSL from an admin PowerShell:")
+            print("      usbipd list")
+            print("      usbipd attach --wsl --busid <id>      (per device, every replug)")
+            print("  Then check both appear:  ls /dev/input/js*   (expect js0 AND js1)")
+            print("")
     else:
         print(f"Human: PLAYER 1 (Keyboard/Gamepad) | AI: PLAYER 2 ({model_path or 'Random Policy'})")
     print("CLICK THE GAME WINDOW ONCE before playing. SDL delivers gamepad")

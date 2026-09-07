@@ -106,24 +106,29 @@ KEY_MAPPING = {
 #
 # NES has only A (jump) and B (run/fire), so both lower face buttons map to A
 # and both upper ones to B -- the diamond a retro pad is shaped for.
+# Only the D-PAD is taken from SDL's profile. Everything else is read by raw
+# index, because SDL's profile for these pads is demonstrably wrong about them.
 CONTROLLER_MAP = {
-    "A":      ("CONTROLLER_BUTTON_A", "CONTROLLER_BUTTON_B"),
-    "B":      ("CONTROLLER_BUTTON_X", "CONTROLLER_BUTTON_Y"),
     "UP":     ("CONTROLLER_BUTTON_DPAD_UP",),
     "DOWN":   ("CONTROLLER_BUTTON_DPAD_DOWN",),
     "LEFT":   ("CONTROLLER_BUTTON_DPAD_LEFT",),
     "RIGHT":  ("CONTROLLER_BUTTON_DPAD_RIGHT",),
 }
 
-# START and SELECT are read by RAW INDEX on every path, profile or not.
-# Deliberately NOT taken from SDL: its profile for these pads puts
-# start=b11 / back=b10, which are not the buttons the pad actually labels
-# START and SELECT, so the semantic route was wrong on real hardware. The
-# d-pad and face buttons above stay semantic, where SDL is right.
-PAD_SYSTEM_BUTTONS = {6: "SELECT", 7: "START", 8: "SELECT", 9: "START"}
-
-# Face buttons by raw index, used only for a pad SDL has no profile for.
+# FACE BUTTONS, by raw index. The pad is a SNES-shaped four-button diamond
+# labelled X Y A B, which enumerates as b0=X, b1=A, b2=B, b3=Y. SDL's profile
+# claims a=b0 b=b1 x=b3 y=b4 and skips b2 entirely -- so routing these through
+# the GameController layer left the physical B button dead, which is exactly
+# what was reported.
+#
+# The pairing is the NES-era convention: the console has only A and B, so a
+# SNES-shaped pad wires the two spare buttons as turbo duplicates -- X repeats
+# A, Y repeats B. Grouping X with A and Y with B keeps that.
 PAD_BUTTONS = {0: "A", 1: "A", 2: "B", 3: "B"}
+
+# START and SELECT, also by raw index -- SDL puts start=b11 / back=b10, which
+# are not the buttons this pad labels START and SELECT.
+PAD_SYSTEM_BUTTONS = {6: "SELECT", 7: "START", 8: "SELECT", 9: "START"}
 PAD_DEADZONE = 0.5
 
 
@@ -154,8 +159,8 @@ class Pad:
 
     def describe(self):
         if self.ctrl is not None:
-            return (f"{self.ctrl.name} -- SDL profile for d-pad/face buttons, "
-                    "raw index for START/SELECT")
+            return (f"{self.ctrl.name} -- SDL profile for the d-pad, "
+                    "raw index for face buttons and START/SELECT")
         if self.joy is not None:
             return (f"{self.joy.get_name()} -- {self.joy.get_numbuttons()} buttons, "
                     "raw index mapping (SDL has no profile for this pad)")
@@ -190,17 +195,17 @@ class Pad:
                     press("UP")
                 elif hy < 0:
                     press("DOWN")
-            for index, name in PAD_BUTTONS.items():
-                if index < joy.get_numbuttons() and joy.get_button(index):
-                    press(name)
             ax, ay = ((joy.get_axis(0), joy.get_axis(1))
                       if joy.get_numaxes() >= 2 else (0.0, 0.0))
 
-        # START/SELECT by RAW index on BOTH paths -- see PAD_SYSTEM_BUTTONS.
+        # Face buttons AND start/select by RAW index on BOTH paths: SDL's
+        # profile mislabels the diamond and skips b2 (the physical B).
         if self.joy is not None:
-            for index, name in PAD_SYSTEM_BUTTONS.items():
-                if index < self.joy.get_numbuttons() and self.joy.get_button(index):
-                    press(name)
+            n = self.joy.get_numbuttons()
+            for table in (PAD_BUTTONS, PAD_SYSTEM_BUTTONS):
+                for index, name in table.items():
+                    if index < n and self.joy.get_button(index):
+                        press(name)
 
         # The analogue stick doubles as a d-pad on either path.
         if ax < -PAD_DEADZONE:

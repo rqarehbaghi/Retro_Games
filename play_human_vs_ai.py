@@ -106,15 +106,6 @@ KEY_MAPPING = {
 #
 # NES has only A (jump) and B (run/fire), so both lower face buttons map to A
 # and both upper ones to B -- the diamond a retro pad is shaped for.
-# Only the D-PAD is taken from SDL's profile. Everything else is read by raw
-# index, because SDL's profile for these pads is demonstrably wrong about them.
-CONTROLLER_MAP = {
-    "UP":     ("CONTROLLER_BUTTON_DPAD_UP",),
-    "DOWN":   ("CONTROLLER_BUTTON_DPAD_DOWN",),
-    "LEFT":   ("CONTROLLER_BUTTON_DPAD_LEFT",),
-    "RIGHT":  ("CONTROLLER_BUTTON_DPAD_RIGHT",),
-}
-
 # FACE BUTTONS, by raw index. The pad is a SNES-shaped four-button diamond
 # labelled X Y A B, which enumerates as b0=X, b1=A, b2=B, b3=Y. SDL's profile
 # claims a=b0 b=b1 x=b3 y=b4 and skips b2 entirely -- so routing these through
@@ -133,89 +124,63 @@ PAD_DEADZONE = 0.5
 
 
 class Pad:
-    """One gamepad, read semantically when SDL recognises it."""
+    """One gamepad, read entirely through the RAW joystick interface.
+
+    SDL's GameController profile is deliberately not used. For these pads it
+    reports a=b0 b=b1 x=b3 y=b4 -- skipping b2, which is the physical B -- and
+    start=b11 / back=b10, none of which match the buttons printed on the case.
+    The one thing it did get right, the d-pad, it maps to hat 0, which the raw
+    interface reads anyway. So the GameController layer offers nothing here,
+    while opening a Controller handle alongside the Joystick risks the joystick
+    reads going quiet -- a real failure mode for no gain.
+    """
 
     def __init__(self, index):
         self.index = index
-        self.ctrl = None
-        self.joy = None
+        self.joy = pygame.joystick.Joystick(index)
         try:
-            from pygame._sdl2 import controller as sdl_controller
-            sdl_controller.init()
-            if sdl_controller.is_controller(index):
-                self.ctrl = sdl_controller.Controller(index)
+            self.joy.init()
         except Exception:                                        # noqa: BLE001
-            self.ctrl = None
-        # The joystick view is opened ALONGSIDE the controller view, not just
-        # as a fallback: START/SELECT are read by raw index on both paths.
-        try:
-            self.joy = pygame.joystick.Joystick(index)
-            try:
-                self.joy.init()
-            except Exception:                                    # noqa: BLE001
-                pass
-        except Exception:                                        # noqa: BLE001
-            self.joy = None
+            pass
 
     def describe(self):
-        if self.ctrl is not None:
-            return (f"{self.ctrl.name} -- SDL profile for the d-pad, "
-                    "raw index for face buttons and START/SELECT")
-        if self.joy is not None:
-            return (f"{self.joy.get_name()} -- {self.joy.get_numbuttons()} buttons, "
-                    "raw index mapping (SDL has no profile for this pad)")
-        return "unreadable pad"
+        return (f"{self.joy.get_name()} -- {self.joy.get_numbuttons()} buttons, "
+                f"{self.joy.get_numhats()} hat(s), {self.joy.get_numaxes()} axes")
 
     def apply(self, action, env_buttons):
         def press(name):
             if name in env_buttons:
                 action[env_buttons.index(name)] = True
 
-        if self.ctrl is not None:
-            for nes_name, consts in CONTROLLER_MAP.items():
-                for const in consts:
-                    code = getattr(pygame, const, None)
-                    if code is not None and self.ctrl.get_button(code):
-                        press(nes_name)
-                        break
-            # SDL reports controller axes over the full int16 range.
-            lx = getattr(pygame, "CONTROLLER_AXIS_LEFTX", 0)
-            ly = getattr(pygame, "CONTROLLER_AXIS_LEFTY", 1)
-            ax = self.ctrl.get_axis(lx) / 32768.0
-            ay = self.ctrl.get_axis(ly) / 32768.0
-        else:
-            joy = self.joy
-            if joy.get_numhats():
-                hx, hy = joy.get_hat(0)
-                if hx < 0:
-                    press("LEFT")
-                elif hx > 0:
-                    press("RIGHT")
-                if hy > 0:
-                    press("UP")
-                elif hy < 0:
-                    press("DOWN")
-            ax, ay = ((joy.get_axis(0), joy.get_axis(1))
-                      if joy.get_numaxes() >= 2 else (0.0, 0.0))
+        joy = self.joy
+        if joy.get_numhats():
+            hx, hy = joy.get_hat(0)
+            if hx < 0:
+                press("LEFT")
+            elif hx > 0:
+                press("RIGHT")
+            if hy > 0:
+                press("UP")
+            elif hy < 0:
+                press("DOWN")
 
-        # Face buttons AND start/select by RAW index on BOTH paths: SDL's
-        # profile mislabels the diamond and skips b2 (the physical B).
-        if self.joy is not None:
-            n = self.joy.get_numbuttons()
-            for table in (PAD_BUTTONS, PAD_SYSTEM_BUTTONS):
-                for index, name in table.items():
-                    if index < n and self.joy.get_button(index):
-                        press(name)
+        count = joy.get_numbuttons()
+        for table in (PAD_BUTTONS, PAD_SYSTEM_BUTTONS):
+            for index, name in table.items():
+                if index < count and joy.get_button(index):
+                    press(name)
 
-        # The analogue stick doubles as a d-pad on either path.
-        if ax < -PAD_DEADZONE:
-            press("LEFT")
-        elif ax > PAD_DEADZONE:
-            press("RIGHT")
-        if ay < -PAD_DEADZONE:
-            press("UP")
-        elif ay > PAD_DEADZONE:
-            press("DOWN")
+        # The analogue stick doubles as a d-pad.
+        if joy.get_numaxes() >= 2:
+            ax, ay = joy.get_axis(0), joy.get_axis(1)
+            if ax < -PAD_DEADZONE:
+                press("LEFT")
+            elif ax > PAD_DEADZONE:
+                press("RIGHT")
+            if ay < -PAD_DEADZONE:
+                press("UP")
+            elif ay > PAD_DEADZONE:
+                press("DOWN")
         return action
 
 

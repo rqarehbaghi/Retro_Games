@@ -414,11 +414,36 @@ def render_to_mp4(bk2_path):
     stable-retro's playback tool has no scaling option. See upscale_mp4()
     for making the result not look tiny/blurry on a modern screen."""
     print(f"Rendering {bk2_path} to MP4 (this replays the run through the emulator)...")
-    subprocess.run(
-        [sys.executable, "-m", "stable_retro.scripts.playback_movie", bk2_path],
-        check=True,
-    )
     mp4_path = os.path.splitext(bk2_path)[0] + ".mp4"
+
+    # A MULTI-PLAYER recording cannot go through playback_movie directly: it
+    # does score[p] += reward[p] whenever the movie has >1 player, but a game
+    # with no per-player scenario (SuperMarioBros3 included) returns a single
+    # scalar reward however many players the env has, so it dies with
+    # "'float' object is not subscriptable". render_bk2.py reuses the same
+    # renderer with the reward shape corrected. Single-player keeps the stock
+    # path untouched, since that is what every existing recording used.
+    players = 1
+    try:
+        import stable_retro as retro
+        probe = retro.Movie(bk2_path)
+        players = probe.players
+        del probe
+    except Exception:                                             # noqa: BLE001
+        pass
+
+    here = os.path.dirname(os.path.abspath(__file__))
+    if players > 1:
+        print(f"  {players}-player recording -- rendering via render_bk2.py")
+        subprocess.run(
+            [sys.executable, os.path.join(here, "render_bk2.py"), bk2_path, mp4_path],
+            check=True,
+        )
+    else:
+        subprocess.run(
+            [sys.executable, "-m", "stable_retro.scripts.playback_movie", bk2_path],
+            check=True,
+        )
     return mp4_path if os.path.exists(mp4_path) else None
 
 

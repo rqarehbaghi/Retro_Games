@@ -403,12 +403,18 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
         # Compute best fit scale preserving retro aspect ratio
         scale_fit = max(1, min(screen_w // native_w, (screen_h - 60) // native_h))
         window_w, window_h = native_w * scale_fit, native_h * scale_fit
-        screen = pygame.display.set_mode((screen_w, screen_h), pygame.FULLSCREEN | pygame.DOUBLEBUF)
+        # No DOUBLEBUF: it relies on hardware buffer-swapping that WSLg's
+        # software GL does not reliably provide, and its behaviour changes
+        # between sessions -- the failure is a window frozen on its first
+        # (gray) frame while the game runs fine behind it. A plain surface
+        # blits and updates reliably everywhere.
+        screen = pygame.display.set_mode((screen_w, screen_h), pygame.FULLSCREEN)
         offset_x = (screen_w - window_w) // 2
         offset_y = (screen_h - (window_h + 60)) // 2
     else:
         window_w, window_h = native_w * scale, native_h * scale
-        screen = pygame.display.set_mode((window_w, window_h + 60), pygame.RESIZABLE | pygame.DOUBLEBUF)
+        # Plain software surface (no DOUBLEBUF, no RESIZABLE) -- see above.
+        screen = pygame.display.set_mode((window_w, window_h + 60))
         offset_x = 0
         offset_y = 0
     caption = (f"Retro AI Arena: 2-Player Local - [{game}]" if p2_human

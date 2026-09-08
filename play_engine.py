@@ -424,15 +424,33 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
     font = pygame.font.SysFont("Arial", 18, bold=True)
 
     # WSLg often leaves a freshly-created window UNPAINTED -- a frozen gray
-    # frame -- until it receives its first "expose", which normally only comes
-    # when you move or minimise the window. That is the intermittent gray
-    # screen. Pump the event queue and flip a few times, with a short wait, so
-    # the compositor maps and paints the window before the game loop starts.
-    for _ in range(8):
-        pygame.event.pump()
+    # frame -- until the compositor has actually mapped it and delivered the
+    # first "expose". A fixed sleep here was a guess: it was long enough only
+    # when a slow, bytecode-recompiling startup (the first run after a code
+    # change) happened to give the compositor time, so the window painted once
+    # and then stayed gray on every fast run after -- independent of how it was
+    # closed. Instead of guessing, drive the window and WAIT for the real
+    # expose/shown event, with a floor of one frame budget and a hard timeout
+    # as a fallback for a backend that never sends one.
+    expose_types = tuple(
+        e for e in (getattr(pygame, n, None)
+                    for n in ("WINDOWEXPOSED", "WINDOWSHOWN", "VIDEOEXPOSE"))
+        if e is not None)
+    warmup_start = time.time()
+    exposed = False
+    while True:
+        elapsed = time.time() - warmup_start
+        for ev in pygame.event.get():
+            if expose_types and ev.type in expose_types:
+                exposed = True
         screen.fill((12, 12, 16))
         pygame.display.flip()
-        pygame.time.wait(40)
+        if exposed and elapsed > 0.25:   # painted for real; give it one frame
+            break
+        if elapsed > 3.0:                # backend never reported it -- proceed
+            print("[warn] window never reported 'exposed'; painting anyway")
+            break
+        pygame.time.wait(20)
 
     audio = AudioStreamer(env.unwrapped.em.get_audio_rate())
 

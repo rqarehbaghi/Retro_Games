@@ -83,6 +83,76 @@ def replay(bk2_path):
             np.array(presses, dtype=bool), buttons)
 
 
+def _rowdec(row, enc):
+    """Decode a single RAM row under one encoding, over base addresses 0..A-3
+    (aligned so 1-, 2- and 3-byte encodings share a base index)."""
+    b0 = row[:-2].astype(np.int64); b1 = row[1:-1].astype(np.int64); b2 = row[2:].astype(np.int64)
+
+    def bcd(b):
+        hi, lo = b >> 4, b & 0xF
+        v = hi * 10 + lo
+        v[(hi > 9) | (lo > 9)] = -1
+        return v
+
+    return {
+        "u8": b0, "bcd8": bcd(b0),
+        "u16le": b0 + (b1 << 8), "u16be": (b0 << 8) + b1,
+        "bcd16le": bcd(b0) + bcd(b1) * 100, "bcd16be": bcd(b0) * 100 + bcd(b1),
+        "u24le": b0 + (b1 << 8) + (b2 << 16),
+        "bcd24le": bcd(b0) + bcd(b1) * 100 + bcd(b2) * 10000,
+        "bcd24be": bcd(b0) * 10000 + bcd(b1) * 100 + bcd(b2),
+    }[enc]
+
+
+SCALAR_ENCS = ["u8", "bcd8", "u16le", "u16be", "bcd16le", "bcd16be",
+               "u24le", "bcd24le", "bcd24be"]
+
+
+def find_value(ram, obs, tol=3):
+    """Find every address+encoding that equals the observed value AT each
+    observed frame (within +/- tol frames). Covers binary, BCD, and DIGIT
+    TILES (one digit per byte, byte = digit + offset), which is how games that
+    keep no packed number store the HUD. This is the discovery half; confirm a
+    winner with --watch against the video."""
+    F, A = ram.shape
+    for f, _ in obs:
+        if not 0 <= f < F:
+            raise SystemExit("frame %d is outside the %d-frame recording" % (f, F))
+
+    hits = []
+    # binary / BCD, aligned to base range 0..A-3
+    for enc in SCALAR_ENCS:
+        acc = None
+        for f, v in obs:
+            wnd = np.zeros(A - 2, dtype=bool)
+            for ff in range(max(0, f - tol), min(F, f + tol + 1)):
+                wnd |= (_rowdec(ram[ff], enc) == v)
+            acc = wnd if acc is None else (acc & wnd)
+        for base in np.where(acc)[0]:
+            hits.append((int(base), enc, None))
+
+    # digit tiles: MSD-first, common offsets (0 = raw digits, 0x30 = ASCII/tile)
+    maxw = max(len(str(int(v))) for _, v in obs)
+    for width in range(maxw, 7):
+        digmat = np.array([[int(c) for c in str(int(v)).rjust(width, "0")]
+                           for _, v in obs])
+        nbase = A - width
+        for off in (0, 0x30):
+            acc = None
+            for i, (f, v) in enumerate(obs):
+                wnd = np.zeros(nbase, dtype=bool)
+                for ff in range(max(0, f - tol), min(F, f + tol + 1)):
+                    row = ram[ff]
+                    ok = np.ones(nbase, dtype=bool)
+                    for pos in range(width):
+                        ok &= (row[pos:pos + nbase] == digmat[i, pos] + off)
+                    wnd |= ok
+                acc = wnd if acc is None else (acc & wnd)
+            for base in np.where(acc)[0]:
+                hits.append((int(base), "tiles%d" % width, off))
+    return hits
+
+
 def parse_watch(term):
     """'0x0418' -> (addr, 'raw', 1);  '0x0418:tiles6' -> (addr, 'tiles', 6)."""
     term = term.strip()
@@ -247,19 +317,46 @@ def main():
     p.add_argument("--demo", required=True, help="A .bk2 recording that exercises the variable")
     p.add_argument("--find", choices=sorted(SCORERS), help="Which signature to search for")
     p.add_argument("--watch", default=None, help="Comma-separated addresses to print over time instead of searching. Append :tilesN to decode N display-digit tiles into a number, e.g. 0x0418:tiles6 for a 6-digit HUD score.")
+    p.add_argument("--find-value", default=None, metavar="FRAME:VALUE,...", help="Discovery search: given values read off the HUD at known frames (e.g. \"3613:19,9034:405,14454:6411\"), find the address+encoding that holds them. Tries binary, BCD and digit-tiles. Get frame numbers from the video timestamp x 60.0988.")
+    p.add_argument("--tol", type=int, default=3, help="Frame tolerance for --find-value, since a timestamp->frame is not exact (default: %(default)s)")
     p.add_argument("--compare", default=None, help="Two addresses (e.g. 0x25A2,0x2167) to diff frame by frame. Use when a search returns several candidates that look equally good: identical everywhere means one is a copy of the other (either works); any divergence tells you which is the real variable and which is a display mirror.")
     p.add_argument("--every", type=int, default=60, help="Sample interval for --watch (default: %(default)s)")
     p.add_argument("--top", type=int, default=15)
     p.add_argument("--run-frames", type=int, default=16, help="Consecutive frames of run+direction that count as a sustained sprint for --find meter (default: %(default)s)")
     args = p.parse_args()
 
-    if not args.find and not args.watch and not args.compare:
-        raise SystemExit("Pass --find {coins,meter,timer}, --watch 0xADDR, or --compare 0xA,0xB")
+    if not args.find and not args.watch and not args.compare and not args.find_value:
+        raise SystemExit("Pass --find {coins,meter,timer}, --find-value FRAME:VALUE,..., --watch 0xADDR, or --compare 0xA,0xB")
 
     print(f"Replaying {args.demo} ...")
     ram, infos, presses, buttons = replay(args.demo)
     n = ram.shape[0]
     print(f"{n} frames, RAM size {ram.shape[1]} bytes.\n")
+
+    if args.find_value:
+        obs = []
+        for term in args.find_value.split(","):
+            fr, val = term.split(":")
+            obs.append((int(fr, 0), int(val, 0)))
+        hits = find_value(ram, obs, tol=args.tol)
+        if not hits:
+            print("No address matched all observations. Check the frame numbers")
+            print("(timestamp x 60.0988) and that the values are exactly on-screen,")
+            print("or widen --tol.")
+            return
+        # tiles and BCD are more specific than a lone u8, so surface them first
+        order = {"tiles": 0, "bcd": 1, "u16": 2, "u24": 2, "u8": 3}
+        def rank(h):
+            for k, r in order.items():
+                if h[1].startswith(k):
+                    return r
+            return 9
+        print("Candidates (verify the top one with --watch against the video):\n")
+        print("  %-8s  %-8s  %s" % ("ADDR", "ENCODING", "note"))
+        for base, enc, off in sorted(hits, key=lambda h: (rank(h), h[0]))[:20]:
+            note = "" if off is None else ("digit offset 0x%02X" % off)
+            print("  0x%04X  %-8s  %s" % (base, enc, note))
+        return
 
     if args.compare:
         a, b = [int(x, 0) for x in args.compare.split(",")]

@@ -502,6 +502,12 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
     step_count = 0
     match_start_time = time.time()
 
+    import signal
+    _stop = {"now": False}
+    def _on_sigint(_sig, _frame):
+        _stop["now"] = True
+    _old_sigint = signal.signal(signal.SIGINT, _on_sigint)
+
     # Keys currently held, tracked from KEYDOWN/KEYUP events. get_pressed()
     # alone was the whole "input not recognized" bug: with no window focus it
     # returns all-False, so keyboard AND (through the same dead action) the
@@ -527,6 +533,10 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
     warned_focus = False
 
     while running:
+        if _stop["now"]:
+            print("[interrupted -- closing the window cleanly]")
+            running = False
+            break
         # Check Pygame events
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -682,6 +692,8 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
                 frame_stack.clear()
                 for _ in range(4):
                     frame_stack.append(reset_frame)
+
+    signal.signal(signal.SIGINT, _old_sigint)
 
     # stable-retro's env.close() does NOT finalize the movie -- the .bk2 is
     # only written when the Movie object is closed, which stop_record does.

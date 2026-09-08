@@ -308,7 +308,10 @@ def load_game_ram_config(path, game):
     except Exception as exc:
         print(f"Could not read {path}: {exc}")
         return {}
-    entry = data.get(game) or {}
+    # Games live under the "games" key. An earlier version read data.get(game)
+    # at the top level, which returned nothing for EVERY game -- so the event
+    # scan silently produced no events at all, for SMB3 as much as new games.
+    entry = (data.get("games") or {}).get(game) or data.get(game) or {}
     variables = entry.get("variables") or {}
 
     def addr(name):
@@ -342,6 +345,29 @@ def load_game_ram_config(path, game):
     meter = variables.get("pmeter") or {}
     if meter.get("full_value") is not None:
         mapped["speed_full"] = int(str(meter["full_value"]), 0)
+    # SCORE. Two shapes: an info key that is a fraction of the HUD value (SMB3
+    # publishes one tenth), or a run of DISPLAY TILES -- one ASCII-ish digit per
+    # byte, byte = digit + digit_offset -- which is how games that keep no
+    # packed score store it (TetrisTime). scale_to_display multiplies an info
+    # score back to the on-screen number; tiles are already the real number.
+    score = variables.get("score") or {}
+    mapped["score_scale"] = int(score.get("scale_to_display", 1))
+    if score.get("source") == "tiles" and score.get("address") is not None:
+        mapped["score_tiles"] = (
+            int(str(score["address"]), 0),
+            int(score.get("length", 6)),
+            int(score.get("digit_offset", 48)),
+        )
+    mapped["score_events"] = bool(score.get("emit_events", True))
+    # LINES as display tiles -> line-clear events. This is the caption-worthy
+    # signal for a game like Tetris, where raw score ticks up on every drop.
+    lines = variables.get("lines") or {}
+    if lines.get("source") == "tiles" and lines.get("address") is not None:
+        mapped["lines_tiles"] = (
+            int(str(lines["address"]), 0),
+            int(lines.get("length", 3)),
+            int(lines.get("digit_offset", 48)),
+        )
     return mapped
 
 
@@ -361,6 +387,18 @@ def read_events(bk2_path, game):
         os.path.join(os.path.dirname(os.path.abspath(__file__)), "games.json"), game)
     coin_addr = defaults.get("coin_address")
     power_addr = defaults.get("powerup_address")
+    score_tiles = defaults.get("score_tiles")
+    score_scale = defaults.get("score_scale", 1)
+    score_events = defaults.get("score_events", True)
+    lines_tiles = defaults.get("lines_tiles")
+
+    def read_tiles(ram, spec):
+        base, length, off = spec
+        digits = []
+        for i in range(length):
+            d = int(ram[base + i]) - off
+            digits.append(d if 0 <= d <= 9 else 0)    # blank/garbage tile -> 0
+        return int("".join(str(d) for d in digits))
 
     movie = retro.Movie(bk2_path)
     movie.step()
@@ -433,10 +471,12 @@ def read_events(bk2_path, game):
                 clear_since = None
 
         current = {
-            "score": info.get("score"),
+            "score": (read_tiles(ram, score_tiles) if score_tiles
+                      else info.get("score")),
             "lives": info.get("lives"),
             "coins": int(ram[coin_addr]) if coin_addr is not None else None,
             "power": int(ram[power_addr]) if power_addr is not None else None,
+            "lines": read_tiles(ram, lines_tiles) if lines_tiles else None,
         }
         for key, now in current.items():
             was = prev.get(key)
@@ -458,9 +498,19 @@ def read_events(bk2_path, game):
                 kind = "shrink" if now == 0 else "powerdown"
                 events.append((frame, kind,
                                f"{POWER_TIERS.get(was, was)} -> {POWER_TIERS.get(now, now)}"))
-            elif key == "score" and now > was:
-                # info score is one tenth of the HUD value for this game
-                events.append((frame, "score", f"+{(now - was) * 10} points"))
+            elif key == "lines" and now > was:
+                # A jump in the line count IS a line clear: 4 at once is a
+                # Tetris. now-was is occasionally >4 if the counter settles in
+                # one step across the clear animation; clamp the label at 4.
+                got = now - was
+                label = {1: "single", 2: "double", 3: "triple"}.get(got, "TETRIS")
+                events.append((frame, "lines",
+                               f"{label} ({got} line{'s' if got != 1 else ''})"))
+            elif key == "score" and now > was and score_events:
+                # score_scale turns a stored score into the on-screen delta
+                # (SMB3 info score is 1/10 of the HUD; tile scores are 1:1).
+                events.append((frame, "score",
+                               f"+{(now - was) * score_scale} points"))
         prev = current
         frame += 1
         if term or trunc:

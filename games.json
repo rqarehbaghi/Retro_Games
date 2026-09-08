@@ -200,6 +200,36 @@
         "time_penalty": 0.0,
         "survival_tick": 0.0
       }
+    },
+    "TetrisTime-Nes-v0": {
+      "notes": "HUD is a DISPLAY-TILE buffer: one digit per byte, byte = digit + 0x30, most-significant digit first. Found by a known-value search over a recording and verified against the on-screen HUD at 9 frames.",
+      "variables": {
+        "score": {
+          "source": "tiles",
+          "address": "0x0418",
+          "length": 6,
+          "digit_offset": 48,
+          "verified": true,
+          "evidence": "6 digit-tiles MSD-first; decoded == HUD SCORE at frames 3613/9034/14454/18068 (19/405/6411/6803) and every other sampled frame.",
+          "emit_events": false
+        },
+        "lines": {
+          "source": "tiles",
+          "address": "0x0425",
+          "length": 3,
+          "digit_offset": 48,
+          "verified": true,
+          "evidence": "3 digit-tiles MSD-first; == HUD LINES at all sampled frames (0,2,7,12,18,21,30,31,39). A jump in this count is a line clear; +4 is a Tetris."
+        },
+        "level": {
+          "source": "tiles",
+          "address": "0x042C",
+          "length": 2,
+          "digit_offset": 48,
+          "verified": true,
+          "evidence": "2 digit-tiles; == HUD LEVEL (0->1). A binary copy also sits at 0x01E3."
+        }
+      }
     }
   }
 }

@@ -422,6 +422,18 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
     pygame.display.set_caption(caption)
     clock = pygame.time.Clock()
     font = pygame.font.SysFont("Arial", 18, bold=True)
+
+    # WSLg often leaves a freshly-created window UNPAINTED -- a frozen gray
+    # frame -- until it receives its first "expose", which normally only comes
+    # when you move or minimise the window. That is the intermittent gray
+    # screen. Pump the event queue and flip a few times, with a short wait, so
+    # the compositor maps and paints the window before the game loop starts.
+    for _ in range(8):
+        pygame.event.pump()
+        screen.fill((12, 12, 16))
+        pygame.display.flip()
+        pygame.time.wait(40)
+
     audio = AudioStreamer(env.unwrapped.em.get_audio_rate())
 
     print(f"\n=== MATCH STARTED: {game} ===")

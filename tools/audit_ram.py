@@ -43,6 +43,13 @@ import sys
 import numpy as np
 import stable_retro as retro
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+try:
+    import custom_integrations
+    custom_integrations.register()
+except Exception:                                                # noqa: BLE001
+    pass
+
 # NES NTSC frame rate. stable-retro's playback encodes at ~60.10 fps (visible in
 # its ffmpeg output), so video time = frame / FPS lines up with the MP4.
 FPS = 60.0988

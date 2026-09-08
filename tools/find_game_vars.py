@@ -40,6 +40,20 @@ import argparse
 import numpy as np
 import stable_retro as retro
 
+import os
+import sys
+
+# Custom integrations (games in this repo's integrations/, e.g. TetrisTime) are
+# only visible to retro.make after they are registered. tools/ sits one level
+# down, so reach the repo root for the helper.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+try:
+    import custom_integrations
+    custom_integrations.register()
+except Exception:                                                # noqa: BLE001
+    pass
+
+
 
 def replay(bk2_path):
     """Replay a recording, returning (ram_matrix, infos)."""
@@ -67,6 +81,17 @@ def replay(bk2_path):
         raise SystemExit("No frames replayed -- is that a valid .bk2?")
     return (np.array(rams, dtype=np.int32), infos,
             np.array(presses, dtype=bool), buttons)
+
+
+def parse_watch(term):
+    """'0x0418' -> (addr, 'raw', 1);  '0x0418:tiles6' -> (addr, 'tiles', 6)."""
+    term = term.strip()
+    if ":" in term:
+        a, enc = term.split(":", 1)
+        addr = int(a, 0)
+        if enc.startswith("tiles"):
+            return addr, "tiles", int(enc[5:] or "6")
+    return int(term, 0), "raw", 1
 
 
 def sprint_mask(presses, buttons, run_frames=16):
@@ -221,7 +246,7 @@ def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--demo", required=True, help="A .bk2 recording that exercises the variable")
     p.add_argument("--find", choices=sorted(SCORERS), help="Which signature to search for")
-    p.add_argument("--watch", default=None, help="Comma-separated addresses to print over time instead of searching")
+    p.add_argument("--watch", default=None, help="Comma-separated addresses to print over time instead of searching. Append :tilesN to decode N display-digit tiles into a number, e.g. 0x0418:tiles6 for a 6-digit HUD score.")
     p.add_argument("--compare", default=None, help="Two addresses (e.g. 0x25A2,0x2167) to diff frame by frame. Use when a search returns several candidates that look equally good: identical everywhere means one is a copy of the other (either works); any divergence tells you which is the real variable and which is a display mirror.")
     p.add_argument("--every", type=int, default=60, help="Sample interval for --watch (default: %(default)s)")
     p.add_argument("--top", type=int, default=15)
@@ -259,17 +284,31 @@ def main():
         return
 
     if args.watch:
-        addrs = [int(a, 0) for a in args.watch.split(",")]
+        # Each term is either a bare address (prints the raw byte) or
+        # "0xADDR:tilesN" -- N display-digit tiles, one digit per byte, byte =
+        # digit + 0x30, most-significant first -- which prints the DECODED
+        # number. HUD score/lines/level are usually stored that way.
+        specs = [parse_watch(t) for t in args.watch.split(",")]
+
+        def read(frame, spec):
+            addr, kind, arg = spec
+            if kind == "tiles":
+                ds = [int(ram[frame, addr + i]) - 0x30 for i in range(arg)]
+                ds = [d if 0 <= d <= 9 else 0 for d in ds]
+                return int("".join(str(d) for d in ds))
+            return int(ram[frame, addr])
+
         head = f"  {'FRAME':>6}  {'VIDEO':>9}  {'score':>7}"
-        for a in addrs:
-            head += f"  {('0x%04X' % a):>8}"
+        for addr, kind, arg in specs:
+            tag = ("0x%04X:t%d" % (addr, arg)) if kind == "tiles" else ("0x%04X" % addr)
+            head += f"  {tag:>10}"
         print(head)
         for frame in range(0, n, args.every):
             secs = frame / 60.0988
             line = (f"  {frame:6d}  {int(secs//60):02d}:{secs%60:06.3f}"
                     f"  {str(infos[frame].get('score')):>7}")
-            for a in addrs:
-                line += f"  {int(ram[frame, a]):>8}"
+            for spec in specs:
+                line += f"  {read(frame, spec):>10}"
             print(line)
         print("\nA correct variable moves when the thing it measures moves --")
         print("check a few of these frames against the video.")

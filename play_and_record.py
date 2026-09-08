@@ -431,34 +431,21 @@ def render_to_mp4(bk2_path):
     print(f"Rendering {bk2_path} to MP4 (this replays the run through the emulator)...")
     mp4_path = os.path.splitext(bk2_path)[0] + ".mp4"
 
-    # A MULTI-PLAYER recording cannot go through playback_movie directly: it
-    # does score[p] += reward[p] whenever the movie has >1 player, but a game
-    # with no per-player scenario (SuperMarioBros3 included) returns a single
-    # scalar reward however many players the env has, so it dies with
-    # "'float' object is not subscriptable". render_bk2.py reuses the same
-    # renderer with the reward shape corrected. Single-player keeps the stock
-    # path untouched, since that is what every existing recording used.
-    players = 1
-    try:
-        import stable_retro as retro
-        probe = retro.Movie(bk2_path)
-        players = probe.players
-        del probe
-    except Exception:                                             # noqa: BLE001
-        pass
-
+    # Always render through render_bk2.py rather than the stock
+    #   python -m stable_retro.scripts.playback_movie
+    # for two reasons, both of which bit real recordings:
+    #   - the stock subprocess does NOT register this repo's CUSTOM
+    #     integrations, so replaying a game like TetrisTime-Nes-v0 died with
+    #     "No romfiles found";
+    #   - it also does score[p] += reward[p] for any >1-player movie, which
+    #     crashes on a game whose scenario returns one scalar reward.
+    # render_bk2.py registers the custom integrations AND fixes the reward
+    # shape, and is a plain pass-through for an ordinary single-player movie.
     here = os.path.dirname(os.path.abspath(__file__))
-    if players > 1:
-        print(f"  {players}-player recording -- rendering via render_bk2.py")
-        subprocess.run(
-            [sys.executable, os.path.join(here, "render_bk2.py"), bk2_path, mp4_path],
-            check=True,
-        )
-    else:
-        subprocess.run(
-            [sys.executable, "-m", "stable_retro.scripts.playback_movie", bk2_path],
-            check=True,
-        )
+    subprocess.run(
+        [sys.executable, os.path.join(here, "render_bk2.py"), bk2_path, mp4_path],
+        check=True,
+    )
     return mp4_path if os.path.exists(mp4_path) else None
 
 

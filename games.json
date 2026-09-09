@@ -343,7 +343,11 @@
         "start_state_2p": "level0_2p",
         "start_state_2p_notes": "integrations/TetrisTime-Nes-v0/level0_2p.state -- a TWO-player game already underway at level 0 (both players alive, all counters 0), captured at frame 433 of studio_out/20260908-193739. Train the bot as PLAYER 2 from this state: it then learns on exactly the screen and controls it will use at deploy time, so there is no 1P->2P transfer problem. VERIFIED: loading it with players=2 and driving only the P2 half of the 18-bit action (bits 9..17) changes ONLY the right half of the screen (left-half pixel delta 0, right-half 125792). P1 can be left idle; its play does not affect P2 reward.",
         "controls": "Per player slice, buttons are [B, -, SELECT, START, UP, DOWN, LEFT, RIGHT, A]: LEFT/RIGHT move the piece, DOWN soft-drops it, A rotates clockwise and B counter-clockwise. P2 occupies bits 9..17 of the joint action.",
-        "episode_end_p2": "game_over_p2 0x004B == 0"
+        "episode_end_p2": "game_over_p2 0x004B == 0",
+        "start_state_8_2p": "level8_2p",
+        "start_state_8_2p_notes": "integrations/TetrisTime-Nes-v0/level8_2p.state -- a two-player game underway with P2 on LEVEL 8 (P1 on level 5), captured at frame 1800 of studio_out/20260909-001721. PREFER THIS FOR TRAINING: at level 0 gravity is ~960 frames per piece, so a random policy survived 1500 steps (6000 frames) without even topping out; from level 8 the same policy tops out in 288 steps with a genuinely full board (holes 10, height 63). Roughly 5x more complete episodes per frame, and a real learning signal.",
+        "well": "P2 board at 0x0600/0x0700 + 16*row + 8 (P1 at +0), 13 rows x 10 columns, FOUR BITS per cell, dropping 3 wall nibbles each side; 0 = empty. Found by driving only P2 and watching which half filled. DOUBLE BUFFERED across 0x0600 and 0x0700 and the game alternates which is current, so read both and take whichever holds more filled cells -- a stale buffer lags behind, never ahead. Holds LOCKED cells only; the falling piece is not in it.",
+        "soft_drop": "DOWN increases gravity and earns drop points. It is IGNORED when held across a piece spawn, so a policy has to re-press it per piece -- measured: DOWN held for 1200 frames landed no more pieces than no input at all, while a fresh press drops a piece within ~60 frames."
       }
     }
   }

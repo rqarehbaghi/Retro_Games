@@ -257,7 +257,8 @@ def main():
         print(header)
         frame = 0
         while movie.step():
-            keys = [movie.get_key(i, 0) for i in range(env.num_buttons)]
+            keys = [movie.get_key(i, p) for p in range(movie.players)
+                    for i in range(env.num_buttons)]
             _obs, _rew, terminated, truncated, info = env.step(keys)
             ram_row = env.get_ram().copy()
             rams.append(ram_row)

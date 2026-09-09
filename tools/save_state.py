@@ -105,7 +105,14 @@ def main():
 
     print(f"Walking {args.demo} ({game})\n")
     while movie.step():
-        keys = [movie.get_key(i, 0) for i in range(env.num_buttons)]
+        # A 2-player movie stores one key set PER PLAYER and the env's action is
+        # the concatenation (MultiBinary(num_buttons * players)). Reading only
+        # player 0 -- what this did -- fed a short action with P2's inputs
+        # MISSING, so a 2-player recording replayed as a game that never
+        # happened: P2 sat still, the RNG diverged, and every RAM value read
+        # back was fiction. studio.py always did this correctly; the tools did not.
+        keys = [movie.get_key(i, p) for p in range(movie.players)
+                for i in range(env.num_buttons)]
         _obs, _rew, terminated, truncated, info = env.step(keys)
         ram = env.get_ram()
         progress = read_progress(ram, info)

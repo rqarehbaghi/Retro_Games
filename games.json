@@ -237,6 +237,45 @@
           "over_value": 241,
           "evidence": "A game-state enum: 0 before play, 0xF0 (240) for ALL active play, 0xF1 (241) at game over. In the top-out recording (studio_out/20260908-012346_tetris-time) it holds 240 through play and flips to 241 at frame 2480 (00:41.3, the exact frame the tile score at 0x0418 freezes and the piece stops falling), then holds 241 to the end. In a SECOND recording that clears level 0 into level 1 and plays on without topping out (studio_out/20260907-231546_tetris-time) it is a steady 240 for 17000+ frames across BOTH level transitions and NEVER reaches 241 -- so 241 is game-over specific, not per-level. Found with tools/find_game_vars.py --find-latch --after 2400 --control <the second recording>: the --control cross-check dropped 124 of 151 single-recording candidates whose latched value also occurs in a run that never ended. Test: game over when 0x0631 == 241 (equivalently 240->241). CORRECTION: an earlier version recorded 0x03B7 (1 in play, 0 at this top-out), but the second recording proved 0x03B7 is level parity -- it is 1 on level 0 and 0 on level 1, flipping at the level transition, not at game over. It was verified on only one recording, where the top-out happened to be on level 0, so game-over and level-0-end were indistinguishable. REJECTED here: 0x0258 (a post-game-over counter that ramps 0->1->2) and 0x063A (steps 0->224->230, two-stage, not a clean flag)."
         }
+      },
+      "two_player_notes": "2-PLAYER mode uses a DIFFERENT layout from 1-player: per-player counters sit in a small interleaved array in zero page, and the 1P addresses do not apply. Discovered only after fixing a replay bug in the tools (they fed player 0 keys only, so a 2-player .bk2 replayed as a game that never happened).",
+      "two_player": {
+        "lines_p1": {
+          "source": "ram",
+          "address": "0x006C",
+          "verified": true,
+          "evidence": "Raw byte. EXACT match to the on-screen P1 LINES at all 7 checked frames of studio_out/20260908-193739_tetris-time (3005/4000/5108/6000/7200/8594/9200 -> 1,1,2,3,3,3,3), values read off frames extracted from the _source.mp4 with ffmpeg select=eq(n,N). P2 sits in the very next byte, so this is a per-player array."
+        },
+        "lines_p2": {
+          "source": "ram",
+          "address": "0x006D",
+          "verified": true,
+          "evidence": "Raw byte, adjacent to P1. EXACT match to on-screen P2 LINES at the same 7 frames (2,3,5,5,6,7,7). Corroborated by its HUD tile at 0x042B, which reads the same numbers as digit tiles (byte-0x30 = 2,3,5,5,6,7,7)."
+        },
+        "lines_p2_tile": {
+          "source": "tiles",
+          "address": "0x042B",
+          "length": 1,
+          "digit_offset": 48,
+          "verified": true,
+          "evidence": "Display tile mirroring lines_p2; useful as a cross-check."
+        },
+        "score_p1": {
+          "verified": false,
+          "evidence": "NOT YET FOUND. Not a plain integer at any stride/encoding; stored as digits. Re-run discovery on the FIXED replay."
+        },
+        "score_p2": {
+          "verified": false,
+          "evidence": "NOT YET FOUND. Same as score_p1."
+        },
+        "game_over_p1": {
+          "verified": false,
+          "evidence": "NOT YET FOUND on the fixed replay. P2 tops out ~frame 8600-9200, P1 later."
+        },
+        "game_over_p2": {
+          "verified": false,
+          "evidence": "NOT YET FOUND on the fixed replay."
+        }
       }
     }
   }

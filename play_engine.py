@@ -269,15 +269,9 @@ class AudioStreamer:
     If the consumer lags or audio blocks queue up, pending samples are capped so
     audio never falls behind the action on screen."""
 
-    def __init__(self, rate, enabled=True):
+    def __init__(self, rate):
         self.ok = False
         self.pending = []
-        if not enabled:
-            # RETRO_NO_AUDIO diagnostic: skip the mixer quit/init entirely. That
-            # post-display re-init of the SDL audio subsystem is the suspect for
-            # the WSLg gray screen, so this isolates it.
-            print("Audio: off (RETRO_NO_AUDIO).")
-            return
         try:
             pygame.mixer.quit()      # drop the default 44.1k mixer pygame.init made
             # buffer=256 reduces the hardware audio buffer latency to ~5-8ms
@@ -437,11 +431,10 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
         # Compute best fit scale preserving retro aspect ratio
         scale_fit = max(1, min(screen_w // native_w, (screen_h - 60) // native_h))
         window_w, window_h = native_w * scale_fit, native_h * scale_fit
-        # No DOUBLEBUF: it relies on hardware buffer-swapping that WSLg's
-        # software GL does not reliably provide, and its behaviour changes
-        # between sessions -- the failure is a window frozen on its first
-        # (gray) frame while the game runs fine behind it. A plain surface
-        # blits and updates reliably everywhere.
+        # A plain software surface (no DOUBLEBUF/RESIZABLE): the simplest
+        # thing that blits reliably under WSLg. (The gray screen once blamed
+        # on DOUBLEBUF was really an unreliable cold boot -- see the boot.state
+        # handling above.)
         screen = pygame.display.set_mode((screen_w, screen_h), pygame.FULLSCREEN)
         offset_x = (screen_w - window_w) // 2
         offset_y = (screen_h - (window_h + 60)) // 2
@@ -457,49 +450,7 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
     clock = pygame.time.Clock()
     font = pygame.font.SysFont("Arial", 18, bold=True)
 
-    # WSLg often leaves a freshly-created window UNPAINTED -- a frozen gray
-    # frame -- until the compositor has actually mapped it and delivered the
-    # first "expose". A fixed sleep here was a guess: it was long enough only
-    # when a slow, bytecode-recompiling startup (the first run after a code
-    # change) happened to give the compositor time, so the window painted once
-    # and then stayed gray on every fast run after -- independent of how it was
-    # closed. Instead of guessing, drive the window and WAIT for the real
-    # expose/shown event, with a floor of one frame budget and a hard timeout
-    # as a fallback for a backend that never sends one.
-    expose_types = tuple(
-        e for e in (getattr(pygame, n, None)
-                    for n in ("WINDOWEXPOSED", "WINDOWSHOWN", "VIDEOEXPOSE"))
-        if e is not None)
-    # RETRO_WARMUP_SECONDS forces a MINIMUM active warm-up (default 0.5s). Turn
-    # it up (e.g. 8) to test whether the gray screen is purely a "compositor
-    # not ready in time" race. The warm-up keeps pumping and flipping the whole
-    # time -- and CYCLES the fill colour -- so if the window is painting at all
-    # you will see it flash; a window that stays gray through a visibly cycling
-    # warm-up is not a timing problem and more seconds will not help.
-    warmup_min = float(os.environ.get("RETRO_WARMUP_SECONDS", "0.5"))
-    warmup_max = max(warmup_min + 0.5, 3.0)
-    warmup_start = time.time()
-    exposed = False
-    ticks = 0
-    while True:
-        elapsed = time.time() - warmup_start
-        for ev in pygame.event.get():
-            if expose_types and ev.type in expose_types:
-                exposed = True
-        # Alternating colour: a real on-screen flash proves flips are landing.
-        screen.fill((18, 90, 140) if (ticks // 8) % 2 else (140, 60, 18))
-        pygame.display.flip()
-        ticks += 1
-        if elapsed >= warmup_min and (exposed or elapsed >= warmup_max):
-            break
-        pygame.time.wait(20)
-    print(f"[warmup] {elapsed:.2f}s active, expose_event="
-          f"{'YES' if exposed else 'no'}, sdl_video_driver="
-          f"{pygame.display.get_driver()} "
-          f"(set RETRO_WARMUP_SECONDS to change the minimum)")
-
-    audio = AudioStreamer(env.unwrapped.em.get_audio_rate(),
-                          enabled=not os.environ.get("RETRO_NO_AUDIO"))
+    audio = AudioStreamer(env.unwrapped.em.get_audio_rate())
 
     print(f"\n=== MATCH STARTED: {game} ===")
     print(f"Mode: {mode.upper()} | Active Players: {num_players}")
@@ -688,12 +639,8 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
             # with a working pad is the signature of an unfocused window, not a
             # broken mapping -- worth stating outright rather than inferring.
             focused = bool(pygame.key.get_focused())
-            # obs stats: the emulator frame we are about to blit. mean/std
-            # near 0 means the core handed back a BLANK frame (gray is upstream
-            # of pygame entirely); a large std means obs is a real picture and
-            # the gray is in the surface/blit path.
             print("[%5.1fs] fps %4.1f steps %6d resets %d | focus %s | keys %d "
-                  "| pad1 %s | pad2 %s | SENT %s | hpos=%s | obs mean=%.1f std=%.1f"
+                  "| pad1 %s | pad2 %s | SENT %s | hpos=%s"
                   % (_now - match_start_time,
                      diag_frames / max(1e-6, _now - diag_at),
                      step_count, resets, "YES" if focused else "NO ",
@@ -701,8 +648,7 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
                      sorted(map(str, diag_pad1)) or "-",
                      sorted(map(str, diag_pad2)) or "-",
                      sorted(diag_sent) or "-",
-                     info.get("hpos"),
-                     float(np.mean(obs)), float(np.std(obs))))
+                     info.get("hpos")))
             if not focused and not warned_focus:
                 warned_focus = True
                 print("      ^ the game window does NOT have keyboard focus."
@@ -720,28 +666,11 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
             frame_stack.append(process_frame(obs))
 
         # Render Game Frame to Pygame Surface
-        if os.environ.get("RETRO_DIAG_FILL"):
-            # Diagnostic: draw the same cycling fill the warm-up used, IN the
-            # game loop, skipping the emulator frame. If the game area cycles
-            # blue/orange, in-loop flips present fine and the gray is the frame
-            # blit (surfarray/make_surface/scale). If it stays gray, the loop's
-            # flip itself stopped presenting.
-            screen.fill((18, 90, 140) if int(time.time() * 6) % 2 else (140, 60, 18))
-        else:
-            # obs is (H, W, 3) RGB. make_surface builds a surface in the ARRAY's
-            # pixel format; blitting that to the display surface only comes out
-            # right when the two formats line up, which under WSLg's software
-            # backend they do not always -- the frame then blits as a blank gray
-            # (the "works once, then gray" the owner saw was the runs where the
-            # formats happened to match). .convert() copies the frame into the
-            # display's exact format so the blit is correct on EVERY run. It
-            # needs the display up, which it is by here.
-            frame_surface = pygame.surfarray.make_surface(np.transpose(obs, (1, 0, 2)))
-            frame_surface = frame_surface.convert()
-            frame_surface = pygame.transform.scale(frame_surface, (window_w, window_h))
-            if fullscreen:
-                screen.fill((10, 12, 16))
-            screen.blit(frame_surface, (offset_x, offset_y))
+        frame_surface = pygame.surfarray.make_surface(np.transpose(obs, (1, 0, 2)))
+        frame_surface = pygame.transform.scale(frame_surface, (window_w, window_h))
+        if fullscreen:
+            screen.fill((10, 12, 16))
+        screen.blit(frame_surface, (offset_x, offset_y))
 
         # Render Header / Scoreboard
         pygame.draw.rect(screen, (20, 24, 33), (offset_x, offset_y + window_h, window_w, 60))

@@ -29,5 +29,3 @@ integrations/**/rom.gb
 integrations/**/rom.md
 integrations/**/rom.bin
 
-# Save states are derived from the ROM -- keep them local like the ROM.
-integrations/**/*.state

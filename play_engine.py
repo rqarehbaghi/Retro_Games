@@ -325,6 +325,23 @@ class AudioStreamer:
             pass
 
 
+def _boot_state_name(game, name="boot"):
+    """Return `name` if integrations/<game>/<name>.state exists, so
+    retro.make(state=name) loads it. Cold boot (State.NONE) starts from the
+    ROM's power-on, which for some custom integrations renders a blank gray
+    screen unpredictably -- the game steps but the PPU never turns on, and
+    whether it happens depended on the working directory and on being the first
+    emulator in the process. Loading a saved title-screen state boots
+    identically every run. Make one with tools/capture_boot_state.py."""
+    try:
+        import custom_integrations
+        path = os.path.join(custom_integrations.INTEGRATIONS_DIR,
+                            game, name + ".state")
+        return name if os.path.isfile(path) else None
+    except Exception:                                             # noqa: BLE001
+        return None
+
+
 def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
                mode="versus", players=2, boot_screen=False, p2_human=False,
                fullscreen=False, render_mp4=True):
@@ -335,7 +352,18 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
     session_start = time.time()
 
     if boot_screen or (isinstance(state, str) and state.upper() == "NONE"):
-        state_val = retro.State.NONE
+        # Prefer a saved boot state over an unreliable cold boot -- see
+        # _boot_state_name. Falls back to State.NONE when no boot.state exists.
+        boot_name = _boot_state_name(game)
+        if boot_name:
+            state_val = boot_name
+            print(f"Boot: loading saved state '{boot_name}' "
+                  f"(deterministic; avoids the cold-boot gray screen).")
+        else:
+            state_val = retro.State.NONE
+            print("Boot: cold boot (State.NONE) -- no boot.state found. If the "
+                  "screen is gray, run: python tools/capture_boot_state.py "
+                  f"--game {game}")
     else:
         state_val = state or retro.State.DEFAULT
 

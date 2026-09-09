@@ -231,11 +231,11 @@
         },
         "game_over": {
           "source": "ram",
-          "address": "0x03B7",
+          "address": "0x0631",
           "verified": true,
-          "play_value": 1,
-          "over_value": 0,
-          "evidence": "A one-way in-play flag: 255 at boot, then a rock-steady 1 for the whole game (frames 60-2460 of the recording, unchanged across every piece lock while the piece counter at 0x0208 cycled under it), then 0 from the top-out at frame ~2484 (00:41.3, the exact frame the tile SCORE at 0x0418 freezes at 166) and held 0 to the end of the tape. Found with tools/find_game_vars.py --find-latch --after 2400 and confirmed with --watch on studio_out/20260908-012346_tetris-time (a run played to a deliberate top-out with no line clears). 1 = playing, 0 = game over -- the natural episode-done signal. REJECTED: 0x03C2 (7->0) and 0x02AF (32->0) latch at the same frame but wobble during early play (10/9/8/7 and 33/32/35/37) so they are not clean booleans; 0x00F1 cycles through 243/35/21/251 as a multi-phase mode byte, not a done flag."
+          "play_value": 240,
+          "over_value": 241,
+          "evidence": "A game-state enum: 0 before play, 0xF0 (240) for ALL active play, 0xF1 (241) at game over. In the top-out recording (studio_out/20260908-012346_tetris-time) it holds 240 through play and flips to 241 at frame 2480 (00:41.3, the exact frame the tile score at 0x0418 freezes and the piece stops falling), then holds 241 to the end. In a SECOND recording that clears level 0 into level 1 and plays on without topping out (studio_out/20260907-231546_tetris-time) it is a steady 240 for 17000+ frames across BOTH level transitions and NEVER reaches 241 -- so 241 is game-over specific, not per-level. Found with tools/find_game_vars.py --find-latch --after 2400 --control <the second recording>: the --control cross-check dropped 124 of 151 single-recording candidates whose latched value also occurs in a run that never ended. Test: game over when 0x0631 == 241 (equivalently 240->241). CORRECTION: an earlier version recorded 0x03B7 (1 in play, 0 at this top-out), but the second recording proved 0x03B7 is level parity -- it is 1 on level 0 and 0 on level 1, flipping at the level transition, not at game over. It was verified on only one recording, where the top-out happened to be on level 0, so game-over and level-0-end were indistinguishable. REJECTED here: 0x0258 (a post-game-over counter that ramps 0->1->2) and 0x063A (steps 0->224->230, two-stage, not a clean flag)."
         }
       }
     }

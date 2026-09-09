@@ -353,6 +353,7 @@ def main():
     p.add_argument("--tol", type=int, default=3, help="Frame tolerance for --find-value, since a timestamp->frame is not exact (default: %(default)s)")
     p.add_argument("--find-latch", action="store_true", help="Discovery search for a game-over / course-clear / level FLAG: an address whose value is absent from early play and then holds steady to the end of the recording. Record the winner in games.json the way course_clear is.")
     p.add_argument("--after", type=int, default=0, help="For --find-latch, only report flags that latch at or after this frame -- pass the frame the ending starts to cut coincidental early latches (default: %(default)s).")
+    p.add_argument("--control", default=None, metavar="BK2", help="For --find-latch: a SECOND recording that never reaches the state (e.g. a run that changes level but never tops out). A real flag never takes its latched value in a run that never hit the state, so any candidate whose latched value appears in the control is dropped. This is the cross-recording check the house rules require -- it is what separates a game-over flag from a per-level or per-piece byte.")
     p.add_argument("--compare", default=None, help="Two addresses (e.g. 0x25A2,0x2167) to diff frame by frame. Use when a search returns several candidates that look equally good: identical everywhere means one is a copy of the other (either works); any divergence tells you which is the real variable and which is a display mirror.")
     p.add_argument("--every", type=int, default=60, help="Sample interval for --watch (default: %(default)s)")
     p.add_argument("--top", type=int, default=15)
@@ -369,6 +370,19 @@ def main():
 
     if args.find_latch:
         hits = find_latch(ram, after=args.after)
+        if args.control:
+            print("Cross-checking against control %s ..." % args.control)
+            cram, _ci, _cp, _cb = replay(args.control)
+            kept = []
+            for h in hits:
+                addr, _early, c1, _fr = h
+                if not np.any(cram[:, addr] == c1):   # latched value never occurs
+                    kept.append(h)
+            print("  %d of %d candidates survive (their latched value never"
+                  % (len(kept), len(hits)))
+            print("  appears in a run that did not reach the state).")
+            print()
+            hits = kept
         if not hits:
             print("No latching address found -- no value that is absent early")
             print("and then holds steady to the end. If the ending is short,")

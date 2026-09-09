@@ -436,21 +436,33 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
         e for e in (getattr(pygame, n, None)
                     for n in ("WINDOWEXPOSED", "WINDOWSHOWN", "VIDEOEXPOSE"))
         if e is not None)
+    # RETRO_WARMUP_SECONDS forces a MINIMUM active warm-up (default 0.5s). Turn
+    # it up (e.g. 8) to test whether the gray screen is purely a "compositor
+    # not ready in time" race. The warm-up keeps pumping and flipping the whole
+    # time -- and CYCLES the fill colour -- so if the window is painting at all
+    # you will see it flash; a window that stays gray through a visibly cycling
+    # warm-up is not a timing problem and more seconds will not help.
+    warmup_min = float(os.environ.get("RETRO_WARMUP_SECONDS", "0.5"))
+    warmup_max = max(warmup_min + 0.5, 3.0)
     warmup_start = time.time()
     exposed = False
+    ticks = 0
     while True:
         elapsed = time.time() - warmup_start
         for ev in pygame.event.get():
             if expose_types and ev.type in expose_types:
                 exposed = True
-        screen.fill((12, 12, 16))
+        # Alternating colour: a real on-screen flash proves flips are landing.
+        screen.fill((18, 90, 140) if (ticks // 8) % 2 else (140, 60, 18))
         pygame.display.flip()
-        if exposed and elapsed > 0.25:   # painted for real; give it one frame
-            break
-        if elapsed > 3.0:                # backend never reported it -- proceed
-            print("[warn] window never reported 'exposed'; painting anyway")
+        ticks += 1
+        if elapsed >= warmup_min and (exposed or elapsed >= warmup_max):
             break
         pygame.time.wait(20)
+    print(f"[warmup] {elapsed:.2f}s active, expose_event="
+          f"{'YES' if exposed else 'no'}, sdl_video_driver="
+          f"{pygame.display.get_driver()} "
+          f"(set RETRO_WARMUP_SECONDS to change the minimum)")
 
     audio = AudioStreamer(env.unwrapped.em.get_audio_rate())
 

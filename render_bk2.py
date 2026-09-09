@@ -28,6 +28,7 @@ Usage:
 """
 import os
 import sys
+import time
 
 
 def render(bk2_path, mp4_path=None):
@@ -42,27 +43,46 @@ def render(bk2_path, mp4_path=None):
     if mp4_path is None:
         mp4_path = os.path.splitext(bk2_path)[0] + ".mp4"
 
-    emulator, movie, _duration = pm.load_movie(bk2_path)
-    players = movie.players
-    inner_step = emulator.step
+    # playback_movie starts ffmpeg as a TCP LISTENER, sleeps a fixed 0.3s, then
+    # connects exactly ONCE. When ffmpeg needs longer than that to bind -- a
+    # loaded machine, a cold page cache -- the connect is refused and the whole
+    # render dies with ConnectionRefusedError, costing the run its videos even
+    # though the .bk2 is perfectly good. That is a startup race, not a real
+    # failure, so retry it with more room each time. The movie must be RELOADED
+    # per attempt: a failed run leaves its playback position advanced.
+    attempts = 4
+    for attempt in range(attempts):
+        emulator, movie, _duration = pm.load_movie(bk2_path)
+        players = movie.players
+        inner_step = emulator.step
 
-    def step(action):
-        obs, reward, terminated, truncated, info = inner_step(action)
-        if players > 1 and not hasattr(reward, "__len__"):
-            # The scalar is a whole-game reward; there is nothing to split it
-            # by. Report it against player 1 and zero for the rest -- this only
-            # feeds playback_movie's score column, which nothing here reads.
-            reward = [reward] + [0.0] * (players - 1)
-        return obs, reward, terminated, truncated, info
+        # Bind per-attempt values as defaults: a plain closure would capture
+        # the loop variables and read whichever attempt happened to run last.
+        def step(action, _inner=inner_step, _players=players):
+            obs, reward, terminated, truncated, info = _inner(action)
+            if _players > 1 and not hasattr(reward, "__len__"):
+                # The scalar is a whole-game reward; there is nothing to split
+                # it by. Report it against player 1 and zero for the rest --
+                # this only feeds playback_movie's score column, which nothing
+                # here reads.
+                reward = [reward] + [0.0] * (_players - 1)
+            return obs, reward, terminated, truncated, info
 
-    emulator.step = step
-    try:
-        pm.playback_movie(emulator, movie, video_file=mp4_path)
-    finally:
+        emulator.step = step
         try:
-            emulator.close()
-        except Exception:                                       # noqa: BLE001
-            pass
+            pm.playback_movie(emulator, movie, video_file=mp4_path)
+            break
+        except ConnectionRefusedError:
+            if attempt == attempts - 1:
+                raise
+            print("[render] ffmpeg was not listening yet (attempt %d/%d); "
+                  "retrying with more room..." % (attempt + 1, attempts))
+            time.sleep(1.0 * (attempt + 1))
+        finally:
+            try:
+                emulator.close()
+            except Exception:                                   # noqa: BLE001
+                pass
     return mp4_path if os.path.exists(mp4_path) else None
 
 

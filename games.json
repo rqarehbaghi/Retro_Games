@@ -238,76 +238,73 @@
           "evidence": "A game-state enum: 0 before play, 0xF0 (240) for ALL active play, 0xF1 (241) at game over. In the top-out recording (studio_out/20260908-012346_tetris-time) it holds 240 through play and flips to 241 at frame 2480 (00:41.3, the exact frame the tile score at 0x0418 freezes and the piece stops falling), then holds 241 to the end. In a SECOND recording that clears level 0 into level 1 and plays on without topping out (studio_out/20260907-231546_tetris-time) it is a steady 240 for 17000+ frames across BOTH level transitions and NEVER reaches 241 -- so 241 is game-over specific, not per-level. Found with tools/find_game_vars.py --find-latch --after 2400 --control <the second recording>: the --control cross-check dropped 124 of 151 single-recording candidates whose latched value also occurs in a run that never ended. Test: game over when 0x0631 == 241 (equivalently 240->241). CORRECTION: an earlier version recorded 0x03B7 (1 in play, 0 at this top-out), but the second recording proved 0x03B7 is level parity -- it is 1 on level 0 and 0 on level 1, flipping at the level transition, not at game over. It was verified on only one recording, where the top-out happened to be on level 0, so game-over and level-0-end were indistinguishable. REJECTED here: 0x0258 (a post-game-over counter that ramps 0->1->2) and 0x063A (steps 0->224->230, two-stage, not a clean flag)."
         }
       },
-      "two_player_notes": "The 2-player HUD is ONE shared tile block: P1 occupies the same addresses as in 1-player and P2 sits immediately after each P1 field. Layout: 0x0418-0x041D P1 score (6), 0x041E-0x0423 P2 score (6), 0x0424 gap, 0x0425-0x0427 P1 lines (3), 0x0428 gap, 0x0429-0x042B P2 lines (3), 0x042C-0x042D P1 level (2). Raw per-player line counters also exist as an adjacent pair in zero page: P1 0x006C, P2 0x006D. NOTE: these were only findable after fixing the tools replay bug (player-0 keys only) that made every 2-player .bk2 replay as a game that never happened -- see commit f970f5b.",
+      "two_player_notes": "The 2-player HUD is ONE shared tile block; the LEFT column keeps the same addresses the game uses in 1-player and the RIGHT column follows each left field. Layout: 0x0418 left score (6) / 0x041E right score (6) / 0x0424 gap / 0x0425 left lines (3) / 0x0428 gap / 0x0429 right lines (3) / 0x042C left level (2) / 0x042E right level (2). Raw per-player line counters also sit as an adjacent pair: 0x006C left, 0x006D right. KEYED BY SCREEN SIDE ON PURPOSE: which physical controller drives which side is NOT established. Muting either controller index in the replay leaves BOTH sides at zero (the game needs both players to get through the menu), so it could not be determined that way, and the owner labelled the LEFT column \"user1\" in the 20260908 run but the RIGHT column \"P1\" in the 20260909 run. These addresses were only findable after fixing the tools replay bug in commit f970f5b.",
       "two_player": {
-        "score_p1": {
+        "score_left": {
           "source": "tiles",
           "address": "0x0418",
           "length": 6,
           "digit_offset": 48,
           "verified": true,
-          "evidence": "Digit tiles, MSD first, byte = digit + 48. VERIFIED on the 2-player run studio_out/20260908-193739_tetris-time at 7 frames (3005/4000/5108/6000/7200/8594/9200), ground truth read from frames extracted with ffmpeg select=eq(n,N) off the run_source.mp4 (the video is 1:1 with bk2 frames). Decoded 10,20,26,51,64,89,166 == on-screen P1 SCORE at all 7 frames."
+          "evidence": "Digit tiles, MSD first, byte = digit + 48. Verified on TWO independent 2-player runs: studio_out/20260908-193739_tetris-time at 7 frames, and studio_out/20260909-001721_tetris-time (levels 5 and 8) where a frame rendered straight from the replay reads \"486 SCORE 1134 / 2 LINES 0 / 5 LEVEL 8\" and every address below decodes exactly that. Decoded 10,20,26,51,64,89,166 (run 1) and 486 (run 2) == on-screen LEFT SCORE."
         },
-        "score_p2": {
+        "score_right": {
           "source": "tiles",
           "address": "0x041E",
           "length": 6,
           "digit_offset": 48,
           "verified": true,
-          "evidence": "Digit tiles, MSD first, byte = digit + 48. VERIFIED on the 2-player run studio_out/20260908-193739_tetris-time at 7 frames (3005/4000/5108/6000/7200/8594/9200), ground truth read from frames extracted with ffmpeg select=eq(n,N) off the run_source.mp4 (the video is 1:1 with bk2 frames). Decoded 21,29,41,45,85,283,323 == on-screen P2 SCORE at all 7 frames."
+          "evidence": "Digit tiles, MSD first, byte = digit + 48. Verified on TWO independent 2-player runs: studio_out/20260908-193739_tetris-time at 7 frames, and studio_out/20260909-001721_tetris-time (levels 5 and 8) where a frame rendered straight from the replay reads \"486 SCORE 1134 / 2 LINES 0 / 5 LEVEL 8\" and every address below decodes exactly that. Decoded 21,29,41,45,85,283,323 (run 1) and 1134 (run 2) == on-screen RIGHT SCORE."
         },
-        "lines_p1": {
+        "lines_left": {
           "source": "tiles",
           "address": "0x0425",
           "length": 3,
           "digit_offset": 48,
           "verified": true,
-          "evidence": "Digit tiles, MSD first, byte = digit + 48. VERIFIED on the 2-player run studio_out/20260908-193739_tetris-time at 7 frames (3005/4000/5108/6000/7200/8594/9200), ground truth read from frames extracted with ffmpeg select=eq(n,N) off the run_source.mp4 (the video is 1:1 with bk2 frames). Decoded 1,1,2,3,3,3,3 == on-screen P1 LINES. Corroborated by a raw counter at 0x006C with identical values."
+          "evidence": "Digit tiles, MSD first, byte = digit + 48. Verified on TWO independent 2-player runs: studio_out/20260908-193739_tetris-time at 7 frames, and studio_out/20260909-001721_tetris-time (levels 5 and 8) where a frame rendered straight from the replay reads \"486 SCORE 1134 / 2 LINES 0 / 5 LEVEL 8\" and every address below decodes exactly that. Decoded 1,1,2,3,3,3,3 (run 1) and 2 (run 2) == on-screen LEFT LINES. Raw counter 0x006C agrees."
         },
-        "lines_p2": {
+        "lines_right": {
           "source": "tiles",
           "address": "0x0429",
           "length": 3,
           "digit_offset": 48,
           "verified": true,
-          "evidence": "Digit tiles, MSD first, byte = digit + 48. VERIFIED on the 2-player run studio_out/20260908-193739_tetris-time at 7 frames (3005/4000/5108/6000/7200/8594/9200), ground truth read from frames extracted with ffmpeg select=eq(n,N) off the run_source.mp4 (the video is 1:1 with bk2 frames). Decoded 2,3,5,5,6,7,7 == on-screen P2 LINES. Corroborated by a raw counter at 0x006D with identical values."
+          "evidence": "Digit tiles, MSD first, byte = digit + 48. Verified on TWO independent 2-player runs: studio_out/20260908-193739_tetris-time at 7 frames, and studio_out/20260909-001721_tetris-time (levels 5 and 8) where a frame rendered straight from the replay reads \"486 SCORE 1134 / 2 LINES 0 / 5 LEVEL 8\" and every address below decodes exactly that. Decoded 2,3,5,5,6,7,7 (run 1) and 0 (run 2) == on-screen RIGHT LINES. Raw counter 0x006D agrees."
         },
-        "lines_p1_counter": {
-          "source": "ram",
-          "address": "0x006C",
-          "verified": true,
-          "evidence": "Raw byte per-player line counter; exact match to P1 LINES at all 7 frames. P2 is the adjacent byte."
-        },
-        "lines_p2_counter": {
-          "source": "ram",
-          "address": "0x006D",
-          "verified": true,
-          "evidence": "Raw byte, adjacent to P1; exact match to P2 LINES at all 7 frames."
-        },
-        "level_p1": {
+        "level_left": {
           "source": "tiles",
           "address": "0x042C",
           "length": 2,
           "digit_offset": 48,
           "verified": true,
-          "evidence": "Same address as the 1-player level, which was verified on a run that advanced level 0->1 (studio_out/20260907-231546). Reads 0 for both players throughout the 2-player run, consistent but not independently exercised there."
+          "evidence": "Digit tiles, MSD first, byte = digit + 48. Verified on TWO independent 2-player runs: studio_out/20260908-193739_tetris-time at 7 frames, and studio_out/20260909-001721_tetris-time (levels 5 and 8) where a frame rendered straight from the replay reads \"486 SCORE 1134 / 2 LINES 0 / 5 LEVEL 8\" and every address below decodes exactly that. Reads 5 in run 2, matching the on-screen LEFT LEVEL. Run 1 could not test it (both players stayed level 0)."
         },
-        "level_p2": {
+        "level_right": {
           "source": "tiles",
+          "address": "0x042E",
           "length": 2,
           "digit_offset": 48,
-          "verified": false,
-          "candidates": [
-            "0x042E",
-            "0x042F"
-          ],
-          "evidence": "NOT VERIFIED. Both players stayed on level 0 for the whole 2-player run, so there is no variation to identify it. Layout is ambiguous: the score fields are contiguous (no gap) but the lines fields have a 1-byte gap, so P2 level is either 0x042E (contiguous) or 0x042F (gap). Record a 2-player run where a player reaches level 1+ and re-check."
+          "verified": true,
+          "evidence": "Digit tiles, MSD first, byte = digit + 48. Verified on TWO independent 2-player runs: studio_out/20260908-193739_tetris-time at 7 frames, and studio_out/20260909-001721_tetris-time (levels 5 and 8) where a frame rendered straight from the replay reads \"486 SCORE 1134 / 2 LINES 0 / 5 LEVEL 8\" and every address below decodes exactly that. Reads 8 in run 2, matching the on-screen RIGHT LEVEL. This settles an earlier ambiguity: 0x042E is the right level, NOT 0x042F (0x042F straddles the field and decodes 80)."
         },
-        "game_over_p1": {
-          "verified": false,
-          "evidence": "Not yet searched on the fixed replay. P2 tops out between frames 8594 and 9200; P1 later."
+        "lines_left_counter": {
+          "source": "ram",
+          "address": "0x006C",
+          "verified": true,
+          "evidence": "Raw byte line counter for the LEFT player; exact match at all 7 frames of run 1."
         },
-        "game_over_p2": {
+        "lines_right_counter": {
+          "source": "ram",
+          "address": "0x006D",
+          "verified": true,
+          "evidence": "Raw byte, adjacent to the left counter; exact match for the RIGHT player at all 7 frames of run 1."
+        },
+        "game_over_left": {
+          "verified": false,
+          "evidence": "Not yet searched on the fixed replay."
+        },
+        "game_over_right": {
           "verified": false,
           "evidence": "Not yet searched on the fixed replay."
         }

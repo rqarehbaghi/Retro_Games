@@ -153,6 +153,38 @@ def find_value(ram, obs, tol=3):
     return hits
 
 
+def find_latch(ram, tail_frames=30, head_frac=0.25, after=0):
+    """Find addresses that LATCH: a value absent from early play that then
+    holds constant to the very end of the recording. That is the shape of a
+    game-over / course-clear / level flag -- one steady value all game, then a
+    different steady value for the end sequence (SMB3's course_clear 0x00C4 is
+    exactly this: 0 all level, 255 for the clear). Returns
+    (addr, early_value, latched_value, latch_frame), latch_frame being where
+    the final constant run begins. A flag that latches LATEST -- nearest the
+    real ending -- is the likeliest game-over signal, so results are sorted
+    that way. Confirm the top one with --watch against the video."""
+    F, A = ram.shape
+    head = max(1, int(F * head_frac))
+    tail_frames = min(tail_frames, F - 1)
+    hits = []
+    for a in range(A):
+        col = ram[:, a]
+        c1 = int(col[-1])
+        if not np.all(col[F - tail_frames:] == c1):      # tail must be flat
+            continue
+        if np.any(col[:head] == c1):                     # c1 must be NEW
+            continue
+        start = F - tail_frames                          # extend the final run
+        while start > 0 and int(col[start - 1]) == c1:
+            start -= 1
+        if start < after:
+            continue
+        early = int(np.bincount(col[:head]).argmax())    # typical early value
+        hits.append((a, early, c1, int(start)))
+    hits.sort(key=lambda h: -h[3])
+    return hits
+
+
 def parse_watch(term):
     """'0x0418' -> (addr, 'raw', 1);  '0x0418:tiles6' -> (addr, 'tiles', 6)."""
     term = term.strip()
@@ -319,19 +351,41 @@ def main():
     p.add_argument("--watch", default=None, help="Comma-separated addresses to print over time instead of searching. Append :tilesN to decode N display-digit tiles into a number, e.g. 0x0418:tiles6 for a 6-digit HUD score.")
     p.add_argument("--find-value", default=None, metavar="FRAME:VALUE,...", help="Discovery search: given values read off the HUD at known frames (e.g. \"3613:19,9034:405,14454:6411\"), find the address+encoding that holds them. Tries binary, BCD and digit-tiles. Get frame numbers from the video timestamp x 60.0988.")
     p.add_argument("--tol", type=int, default=3, help="Frame tolerance for --find-value, since a timestamp->frame is not exact (default: %(default)s)")
+    p.add_argument("--find-latch", action="store_true", help="Discovery search for a game-over / course-clear / level FLAG: an address whose value is absent from early play and then holds steady to the end of the recording. Record the winner in games.json the way course_clear is.")
+    p.add_argument("--after", type=int, default=0, help="For --find-latch, only report flags that latch at or after this frame -- pass the frame the ending starts to cut coincidental early latches (default: %(default)s).")
     p.add_argument("--compare", default=None, help="Two addresses (e.g. 0x25A2,0x2167) to diff frame by frame. Use when a search returns several candidates that look equally good: identical everywhere means one is a copy of the other (either works); any divergence tells you which is the real variable and which is a display mirror.")
     p.add_argument("--every", type=int, default=60, help="Sample interval for --watch (default: %(default)s)")
     p.add_argument("--top", type=int, default=15)
     p.add_argument("--run-frames", type=int, default=16, help="Consecutive frames of run+direction that count as a sustained sprint for --find meter (default: %(default)s)")
     args = p.parse_args()
 
-    if not args.find and not args.watch and not args.compare and not args.find_value:
+    if not (args.find or args.watch or args.compare or args.find_value or args.find_latch):
         raise SystemExit("Pass --find {coins,meter,timer}, --find-value FRAME:VALUE,..., --watch 0xADDR, or --compare 0xA,0xB")
 
     print(f"Replaying {args.demo} ...")
     ram, infos, presses, buttons = replay(args.demo)
     n = ram.shape[0]
     print(f"{n} frames, RAM size {ram.shape[1]} bytes.\n")
+
+    if args.find_latch:
+        hits = find_latch(ram, after=args.after)
+        if not hits:
+            print("No latching address found -- no value that is absent early")
+            print("and then holds steady to the end. If the ending is short,")
+            print("the tail may not be flat; try a longer recording.")
+            return
+        print("Latching flags (a NEW value that holds to the end -- likely a")
+        print("game-over / clear signal; latest-latching first):")
+        print()
+        print("  %-8s  %6s -> %-6s  %8s  %s" % ("ADDR", "EARLY", "LATCH", "FRAME", "VIDEO"))
+        for a, early, c1, fr in hits[:args.top]:
+            secs = fr / 60.0988
+            print("  0x%04X  %6d -> %-6d  %8d  %02d:%06.3f"
+                  % (a, early, c1, fr, int(secs // 60), secs - 60 * int(secs // 60)))
+        print()
+        print("Verify the top one: --watch 0x%04X -- it should flip exactly" % hits[0][0])
+        print("when the game ends, and stay flipped.")
+        return
 
     if args.find_value:
         obs = []

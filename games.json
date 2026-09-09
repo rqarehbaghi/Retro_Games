@@ -228,6 +228,14 @@
           "digit_offset": 48,
           "verified": true,
           "evidence": "2 digit-tiles; == HUD LEVEL (0->1). A binary copy also sits at 0x01E3."
+        },
+        "game_over": {
+          "source": "ram",
+          "address": "0x03B7",
+          "verified": true,
+          "play_value": 1,
+          "over_value": 0,
+          "evidence": "A one-way in-play flag: 255 at boot, then a rock-steady 1 for the whole game (frames 60-2460 of the recording, unchanged across every piece lock while the piece counter at 0x0208 cycled under it), then 0 from the top-out at frame ~2484 (00:41.3, the exact frame the tile SCORE at 0x0418 freezes at 166) and held 0 to the end of the tape. Found with tools/find_game_vars.py --find-latch --after 2400 and confirmed with --watch on studio_out/20260908-012346_tetris-time (a run played to a deliberate top-out with no line clears). 1 = playing, 0 = game over -- the natural episode-done signal. REJECTED: 0x03C2 (7->0) and 0x02AF (32->0) latch at the same frame but wobble during early play (10/9/8/7 and 33/32/35/37) so they are not clean booleans; 0x00F1 cycles through 243/35/21/251 as a multi-phase mode byte, not a done flag."
         }
       }
     }

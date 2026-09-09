@@ -660,8 +660,12 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
             # with a working pad is the signature of an unfocused window, not a
             # broken mapping -- worth stating outright rather than inferring.
             focused = bool(pygame.key.get_focused())
+            # obs stats: the emulator frame we are about to blit. mean/std
+            # near 0 means the core handed back a BLANK frame (gray is upstream
+            # of pygame entirely); a large std means obs is a real picture and
+            # the gray is in the surface/blit path.
             print("[%5.1fs] fps %4.1f steps %6d resets %d | focus %s | keys %d "
-                  "| pad1 %s | pad2 %s | SENT %s | hpos=%s"
+                  "| pad1 %s | pad2 %s | SENT %s | hpos=%s | obs mean=%.1f std=%.1f"
                   % (_now - match_start_time,
                      diag_frames / max(1e-6, _now - diag_at),
                      step_count, resets, "YES" if focused else "NO ",
@@ -669,7 +673,8 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
                      sorted(map(str, diag_pad1)) or "-",
                      sorted(map(str, diag_pad2)) or "-",
                      sorted(diag_sent) or "-",
-                     info.get("hpos")))
+                     info.get("hpos"),
+                     float(np.mean(obs)), float(np.std(obs))))
             if not focused and not warned_focus:
                 warned_focus = True
                 print("      ^ the game window does NOT have keyboard focus."

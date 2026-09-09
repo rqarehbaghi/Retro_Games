@@ -687,11 +687,19 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
             frame_stack.append(process_frame(obs))
 
         # Render Game Frame to Pygame Surface
-        frame_surface = pygame.surfarray.make_surface(np.transpose(obs, (1, 0, 2)))
-        frame_surface = pygame.transform.scale(frame_surface, (window_w, window_h))
-        if fullscreen:
-            screen.fill((10, 12, 16))
-        screen.blit(frame_surface, (offset_x, offset_y))
+        if os.environ.get("RETRO_DIAG_FILL"):
+            # Diagnostic: draw the same cycling fill the warm-up used, IN the
+            # game loop, skipping the emulator frame. If the game area cycles
+            # blue/orange, in-loop flips present fine and the gray is the frame
+            # blit (surfarray/make_surface/scale). If it stays gray, the loop's
+            # flip itself stopped presenting.
+            screen.fill((18, 90, 140) if int(time.time() * 6) % 2 else (140, 60, 18))
+        else:
+            frame_surface = pygame.surfarray.make_surface(np.transpose(obs, (1, 0, 2)))
+            frame_surface = pygame.transform.scale(frame_surface, (window_w, window_h))
+            if fullscreen:
+                screen.fill((10, 12, 16))
+            screen.blit(frame_surface, (offset_x, offset_y))
 
         # Render Header / Scoreboard
         pygame.draw.rect(screen, (20, 24, 33), (offset_x, offset_y + window_h, window_w, 60))

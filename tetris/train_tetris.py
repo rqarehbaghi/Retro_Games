@@ -2,11 +2,15 @@
 """
 Train a bot to play TetrisTime as PLAYER 2, and watch a checkpoint play.
 
-    # train (checkpoints land in ./checkpoints_tetris)
-    python tetris/train_tetris.py --timesteps 500000 --n-envs 4
+    # what states can I start from?
+    python tetris/train_tetris.py --list-states
 
-    # watch what a checkpoint does
-    python tetris/train_tetris.py --play checkpoints_tetris/tetris_100000_steps.zip
+    # train (checkpoints land in ./checkpoints_tetris). level8_2p is the one to
+    # use: level 0 gravity is ~960 frames per piece, so episodes barely finish.
+    python tetris/train_tetris.py --state level8_2p --timesteps 500000 --n-envs 4
+
+    # watch what a checkpoint does, from the same state it trained on
+    python tetris/train_tetris.py --state level8_2p         --play checkpoints_tetris/tetris_100000_steps.zip
 
 Why SubprocVecEnv rather than DummyVecEnv: stable-retro allows exactly ONE
 emulator per process, so parallel environments have to be separate processes.
@@ -44,6 +48,12 @@ def _factory(seed, **kw):
     return _init
 
 
+def list_states():
+    """The .state files the integration ships, i.e. what --state can name."""
+    d = os.path.join(ROOT, "integrations", "TetrisTime-Nes-v0")
+    return sorted(f[:-6] for f in os.listdir(d) if f.endswith(".state"))
+
+
 def build_envs(n_envs, **kw):
     fns = [_factory(i, **kw) for i in range(n_envs)]
     # One emulator per PROCESS: more than one env means more than one process.
@@ -53,7 +63,10 @@ def build_envs(n_envs, **kw):
 
 
 def train(args):
-    env = build_envs(args.n_envs, player=args.player, frameskip=args.frameskip)
+    print("start state: %s   (available: %s)"
+          % (args.state or "games.json default", ", ".join(list_states())))
+    env = build_envs(args.n_envs, player=args.player, frameskip=args.frameskip,
+                     state=args.state)
     if args.resume and os.path.exists(args.resume):
         print("resuming from", args.resume)
         model = PPO.load(args.resume, env=env)
@@ -78,7 +91,9 @@ def train(args):
 
 
 def play(args):
-    env = build_envs(1, player=args.player, frameskip=args.frameskip)
+    print("start state:", args.state or "games.json default")
+    env = build_envs(1, player=args.player, frameskip=args.frameskip,
+                     state=args.state)
     model = PPO.load(args.play, env=env)
     obs = env.reset()
     ep, steps, best = 0, 0, {}
@@ -103,6 +118,13 @@ def main():
     p.add_argument("--n-envs", type=int, default=1, help="parallel emulators (separate processes)")
     p.add_argument("--player", type=int, default=2, help="which player the bot drives (default: %(default)s)")
     p.add_argument("--frameskip", type=int, default=4)
+    p.add_argument("--state", default=None, metavar="NAME",
+                   help="Which save state to start every episode from, e.g. level8_2p. "
+                        "Defaults to the start_state_2p recorded in games.json (level0_2p). "
+                        "PREFER level8_2p for training: level 0 gravity is ~960 frames per "
+                        "piece, so episodes barely finish, while level 8 tops out ~5x sooner "
+                        "and gives a real learning signal. Use --list-states to see them.")
+    p.add_argument("--list-states", action="store_true", help="Print the available save states and exit")
     p.add_argument("--n-steps", type=int, default=512)
     p.add_argument("--batch-size", type=int, default=256)
     p.add_argument("--lr", type=float, default=2.5e-4)
@@ -114,6 +136,10 @@ def main():
     p.add_argument("--play", default=None, metavar="CHECKPOINT.zip")
     p.add_argument("--episodes", type=int, default=5)
     args = p.parse_args()
+    if args.list_states:
+        for n in list_states():
+            print(n)
+        return
     play(args) if args.play else train(args)
 
 

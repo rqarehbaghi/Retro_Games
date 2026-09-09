@@ -269,9 +269,15 @@ class AudioStreamer:
     If the consumer lags or audio blocks queue up, pending samples are capped so
     audio never falls behind the action on screen."""
 
-    def __init__(self, rate):
+    def __init__(self, rate, enabled=True):
         self.ok = False
         self.pending = []
+        if not enabled:
+            # RETRO_NO_AUDIO diagnostic: skip the mixer quit/init entirely. That
+            # post-display re-init of the SDL audio subsystem is the suspect for
+            # the WSLg gray screen, so this isolates it.
+            print("Audio: off (RETRO_NO_AUDIO).")
+            return
         try:
             pygame.mixer.quit()      # drop the default 44.1k mixer pygame.init made
             # buffer=256 reduces the hardware audio buffer latency to ~5-8ms
@@ -464,7 +470,8 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
           f"{pygame.display.get_driver()} "
           f"(set RETRO_WARMUP_SECONDS to change the minimum)")
 
-    audio = AudioStreamer(env.unwrapped.em.get_audio_rate())
+    audio = AudioStreamer(env.unwrapped.em.get_audio_rate(),
+                          enabled=not os.environ.get("RETRO_NO_AUDIO"))
 
     print(f"\n=== MATCH STARTED: {game} ===")
     print(f"Mode: {mode.upper()} | Active Players: {num_players}")

@@ -317,19 +317,33 @@
           "evidence": "Raw byte, adjacent to P1 counter; exact match for P2 at all 7 frames of run 1."
         },
         "game_over_p1": {
-          "verified": false,
-          "evidence": "Not yet searched on the fixed replay."
+          "source": "ram",
+          "address": "0x004A",
+          "verified": true,
+          "column": "left",
+          "alive_value": 1,
+          "over_value": 0,
+          "evidence": "Pure boolean per-player alive flag, an adjacent pair mirroring the lines counters at 0x006C/0x006D. On studio_out/20260908-193739 (fixed 2-player replay) both read 1 from frame 373 (play starts) and drop to 0 exactly at that player.s top-out -- 0x004A at frame 9262 and 0x004B at 8634, matching where each player.s score tiles freeze (204 and 323) -- with no flicker after. Only 0/1 ever observed. The P1 and P2 candidate sets shared no address, so these are per-player, not a shared flag. 0x004A is P1 (left)."
         },
         "game_over_p2": {
-          "verified": false,
-          "evidence": "Not yet searched on the fixed replay."
+          "source": "ram",
+          "address": "0x004B",
+          "verified": true,
+          "column": "right",
+          "alive_value": 1,
+          "over_value": 0,
+          "evidence": "Pure boolean per-player alive flag, an adjacent pair mirroring the lines counters at 0x006C/0x006D. On studio_out/20260908-193739 (fixed 2-player replay) both read 1 from frame 373 (play starts) and drop to 0 exactly at that player.s top-out -- 0x004A at frame 9262 and 0x004B at 8634, matching where each player.s score tiles freeze (204 and 323) -- with no flicker after. Only 0/1 ever observed. The P1 and P2 candidate sets shared no address, so these are per-player, not a shared flag. 0x004B is P2 (right)."
         }
       },
       "training": {
         "start_state": "level0_1p",
         "start_state_notes": "integrations/TetrisTime-Nes-v0/level0_1p.state -- a 1-player game already underway at level 0 (score 0, lines 0, first piece falling), so training never has to drive the boot screen and menus. Captured from studio_out/20260908-012346 at frame 1515, chosen because 0x0631 first reads 240 (playing) at frame 1485. Load with retro.make(state=level0_1p).",
         "episode_end": "game_over 0x0631 == 241",
-        "ignore_while": "level_transition 0x01D2 == 1"
+        "ignore_while": "level_transition 0x01D2 == 1",
+        "start_state_2p": "level0_2p",
+        "start_state_2p_notes": "integrations/TetrisTime-Nes-v0/level0_2p.state -- a TWO-player game already underway at level 0 (both players alive, all counters 0), captured at frame 433 of studio_out/20260908-193739. Train the bot as PLAYER 2 from this state: it then learns on exactly the screen and controls it will use at deploy time, so there is no 1P->2P transfer problem. VERIFIED: loading it with players=2 and driving only the P2 half of the 18-bit action (bits 9..17) changes ONLY the right half of the screen (left-half pixel delta 0, right-half 125792). P1 can be left idle; its play does not affect P2 reward.",
+        "controls": "Per player slice, buttons are [B, -, SELECT, START, UP, DOWN, LEFT, RIGHT, A]: LEFT/RIGHT move the piece, DOWN soft-drops it, A rotates clockwise and B counter-clockwise. P2 occupies bits 9..17 of the joint action.",
+        "episode_end_p2": "game_over_p2 0x004B == 0"
       }
     }
   }

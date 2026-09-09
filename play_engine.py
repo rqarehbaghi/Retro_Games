@@ -695,7 +695,16 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
             # flip itself stopped presenting.
             screen.fill((18, 90, 140) if int(time.time() * 6) % 2 else (140, 60, 18))
         else:
+            # obs is (H, W, 3) RGB. make_surface builds a surface in the ARRAY's
+            # pixel format; blitting that to the display surface only comes out
+            # right when the two formats line up, which under WSLg's software
+            # backend they do not always -- the frame then blits as a blank gray
+            # (the "works once, then gray" the owner saw was the runs where the
+            # formats happened to match). .convert() copies the frame into the
+            # display's exact format so the blit is correct on EVERY run. It
+            # needs the display up, which it is by here.
             frame_surface = pygame.surfarray.make_surface(np.transpose(obs, (1, 0, 2)))
+            frame_surface = frame_surface.convert()
             frame_surface = pygame.transform.scale(frame_surface, (window_w, window_h))
             if fullscreen:
                 screen.fill((10, 12, 16))

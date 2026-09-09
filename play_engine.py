@@ -39,6 +39,7 @@ Controls (Player 1 Human):
 """
 import argparse
 import glob
+import json
 import os
 import subprocess
 import sys
@@ -238,6 +239,27 @@ def make_p1_action(env_buttons, held_keys, pad=None):
 def make_p2_action(env_buttons, held_keys, pad=None):
     """Player 2 (second human): the numeric keypad (KEY_MAPPING_P2) plus pad 2."""
     return keys_to_action(env_buttons, held_keys, KEY_MAPPING_P2, pad)
+
+
+def resolve_ai_combos(game):
+    """Which discrete action table the Player 2 model was trained with.
+
+    A model only ever emits INDICES into the table it learned on, so decoding
+    them through a different table silently sends the wrong buttons -- an SMB3
+    index would ask a Tetris bot to jump. games.json records the set per game
+    ("training": {"action_set": ...}); anything unrecorded keeps train.py's
+    ACTION_TABLE, which is what every existing checkpoint uses."""
+    try:
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "games.json"), encoding="utf-8") as fh:
+            entry = (json.load(fh).get("games") or {}).get(game) or {}
+        name = ((entry.get("training") or {}).get("action_set") or "").lower()
+    except Exception:                                            # noqa: BLE001
+        name = ""
+    if name == "tetris":
+        from tetris.tetris_env import TETRIS_ACTIONS
+        return list(TETRIS_ACTIONS), "tetris (%d actions)" % len(TETRIS_ACTIONS)
+    return AI_COMBOS, "train.ACTION_TABLE (%d actions)" % len(AI_COMBOS)
 
 
 def discretize_ai_action(action_idx, env_buttons, combos=AI_COMBOS):
@@ -499,11 +521,23 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
     print("---------------------------------------------------------------")
 
     # 2. Load trained PPO model for Player 2
+    ai_combos, ai_combos_name = resolve_ai_combos(game)
     model = None
     if not p2_human:
         if model_path and os.path.exists(model_path):
             print(f"Loading trained AI policy from: {model_path}")
             model = PPO.load(model_path)
+            print(f"AI action set: {ai_combos_name}")
+            # A checkpoint trained on a different table would still run, picking
+            # plausible-looking indices that mean the wrong buttons. Catch it.
+            trained_n = getattr(getattr(model, "action_space", None), "n", None)
+            if trained_n is not None and int(trained_n) != len(ai_combos):
+                print("")
+                print("This checkpoint expects %d discrete actions but %s uses %d (%s)."
+                      % (int(trained_n), game, len(ai_combos), ai_combos_name))
+                print("It was trained for a different game or action set, so its")
+                print("choices would map to the wrong buttons.")
+                sys.exit("Use a checkpoint trained on this game.")
         else:
             print("No checkpoint model found — AI will use exploratory random policy.")
 
@@ -576,7 +610,8 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
         elif model is not None:
             stacked_obs = np.array(frame_stack)  # shape (4, 84, 84)
             p2_discrete_action, _ = model.predict(stacked_obs, deterministic=True)
-            p2_action = discretize_ai_action(int(p2_discrete_action), buttons)
+            p2_action = discretize_ai_action(int(p2_discrete_action), buttons,
+                                             combos=ai_combos)
         else:
             # No trained model: pick a random *valid* action from the same
             # table (a coherent combo), not independent per-button coin flips

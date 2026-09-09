@@ -236,6 +236,14 @@
           "play_value": 240,
           "over_value": 241,
           "evidence": "A game-state enum: 0 before play, 0xF0 (240) for ALL active play, 0xF1 (241) at game over. In the top-out recording (studio_out/20260908-012346_tetris-time) it holds 240 through play and flips to 241 at frame 2480 (00:41.3, the exact frame the tile score at 0x0418 freezes and the piece stops falling), then holds 241 to the end. In a SECOND recording that clears level 0 into level 1 and plays on without topping out (studio_out/20260907-231546_tetris-time) it is a steady 240 for 17000+ frames across BOTH level transitions and NEVER reaches 241 -- so 241 is game-over specific, not per-level. Found with tools/find_game_vars.py --find-latch --after 2400 --control <the second recording>: the --control cross-check dropped 124 of 151 single-recording candidates whose latched value also occurs in a run that never ended. Test: game over when 0x0631 == 241 (equivalently 240->241). CORRECTION: an earlier version recorded 0x03B7 (1 in play, 0 at this top-out), but the second recording proved 0x03B7 is level parity -- it is 1 on level 0 and 0 on level 1, flipping at the level transition, not at game over. It was verified on only one recording, where the top-out happened to be on level 0, so game-over and level-0-end were indistinguishable. REJECTED here: 0x0258 (a post-game-over counter that ramps 0->1->2) and 0x063A (steps 0->224->230, two-stage, not a clean flag)."
+        },
+        "level_transition": {
+          "source": "ram",
+          "address": "0x01D2",
+          "verified": true,
+          "play_value": 0,
+          "transition_value": 1,
+          "evidence": "1 ONLY while the level-change animation runs, 0 during play. In the 1-player run studio_out/20260907-231546 (19875 frames) it is 0 for every frame except a single run, frames 13870-14596, which starts one frame after the level tile 0x042C goes 0->1 at 13869 and covers the clear bonus (score 811->4931). It does NOT fire at game over: across the whole top-out run studio_out/20260908-012346 it is 0 at every frame. Rejected 0x0029, 0x03F1, 0x0520 and 0x0524, which mark the same window but also trip during boot/menu. USE: while this is 1 the game is animating, not being played -- do not count it as play time, do not shape reward from it, and do not read a top-out from it."
         }
       },
       "two_player_notes": "The 2-player HUD is ONE shared tile block. PLAYER 1 IS THE LEFT COLUMN and keeps the same addresses the game uses in 1-player; PLAYER 2 IS THE RIGHT COLUMN and follows each P1 field. Layout: 0x0418 P1 score (6) / 0x041E P2 score (6) / 0x0424 gap / 0x0425 P1 lines (3) / 0x0428 gap / 0x0429 P2 lines (3) / 0x042C P1 level (2) / 0x042E P2 level (2). Raw per-player line counters also sit as an adjacent pair: 0x006C P1, 0x006D P2. The P1=left / P2=right mapping is confirmed by the owner and consistent across both runs (run 1: P1 10/1 left, P2 21/2 right; run 2: P1 level 5 left, P2 level 8 right). These addresses were only findable after fixing the tools replay bug in f970f5b.",
@@ -316,6 +324,12 @@
           "verified": false,
           "evidence": "Not yet searched on the fixed replay."
         }
+      },
+      "training": {
+        "start_state": "level0_1p",
+        "start_state_notes": "integrations/TetrisTime-Nes-v0/level0_1p.state -- a 1-player game already underway at level 0 (score 0, lines 0, first piece falling), so training never has to drive the boot screen and menus. Captured from studio_out/20260908-012346 at frame 1515, chosen because 0x0631 first reads 240 (playing) at frame 1485. Load with retro.make(state=level0_1p).",
+        "episode_end": "game_over 0x0631 == 241",
+        "ignore_while": "level_transition 0x01D2 == 1"
       }
     }
   }

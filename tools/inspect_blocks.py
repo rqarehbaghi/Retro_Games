@@ -27,6 +27,7 @@ Usage:
     python inspect_blocks.py --video ./run.mp4 --shots ./block_shots
     python inspect_blocks.py --demo ./human_demos/run.bk2 --shots ./block_shots
 """
+import sys
 import argparse
 import os
 
@@ -38,6 +39,17 @@ except ImportError:
     raise SystemExit("inspect_blocks.py needs opencv: pip install opencv-python")
 
 from train import QBLOCK_HUD_FRAC, detect_qblocks
+
+# Custom integrations (games in this repo's integrations/, e.g. TetrisTime) are
+# only visible to retro.make after they are registered. tools/ sits one level
+# down, so reach the repo root for the helper.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+try:
+    import custom_integrations
+    custom_integrations.register()
+except Exception:                                                # noqa: BLE001
+    pass
+
 
 
 def frames_from_video(path):

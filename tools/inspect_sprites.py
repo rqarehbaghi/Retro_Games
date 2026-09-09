@@ -30,12 +30,24 @@ Usage:
     # Which tile IDs show up most, and where they tend to appear
     python inspect_sprites.py --demo <file>.bk2 --summary
 """
+import sys
 import argparse
 import os
 from collections import Counter, defaultdict
 
 import numpy as np
 import stable_retro as retro
+
+# Custom integrations (games in this repo's integrations/, e.g. TetrisTime) are
+# only visible to retro.make after they are registered. tools/ sits one level
+# down, so reach the repo root for the helper.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+try:
+    import custom_integrations
+    custom_integrations.register()
+except Exception:                                                # noqa: BLE001
+    pass
+
 
 try:
     import cv2

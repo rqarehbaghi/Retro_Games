@@ -27,12 +27,24 @@ that's longer than 255 units.
 Usage:
     python inspect_progress.py --game SuperMarioBros3-Nes-v0
 """
+import sys
 import argparse
 import json
 import os
 
 import numpy as np
 import stable_retro as retro
+
+# Custom integrations (games in this repo's integrations/, e.g. TetrisTime) are
+# only visible to retro.make after they are registered. tools/ sits one level
+# down, so reach the repo root for the helper.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+try:
+    import custom_integrations
+    custom_integrations.register()
+except Exception:                                                # noqa: BLE001
+    pass
+
 
 
 def load_known_vars(game, config="games.json"):

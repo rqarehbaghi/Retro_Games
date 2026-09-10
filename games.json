@@ -564,7 +564,9 @@
           "batch_size": 256,
           "ent_coef": 0.01,
           "gamma": 0.99
-        }
+        },
+        "use_data_json": false,
+        "use_data_json_why": "This integration was made by hand: data.json is {\"info\": {}} and scenario.json declares no done and no reward, so retro has nothing to contribute -- info is always empty and its done never fires. Everything real comes from this file instead: RAM variables for values and episode_end (game_over_p2 == 0) for the ending. Leaving it on would only be misleading."
       },
       "rewards": {
         "terms": [

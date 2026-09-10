@@ -128,7 +128,7 @@ def _describe_rest(spec):
         print("   (none -- every step scores 0, nothing can be learned)")
     if not spec.use_data_json:
         from rl.vars import GameVars
-        gv = GameVars(game, entry=spec.entry)
+        gv = GameVars(spec.game, entry=spec.entry)
         blind = sorted({t["var"] for t in spec.terms if t.get("var")
                         and (gv.spec.get(t["var"]) or {}).get("source")
                         in ("info", "info16")})

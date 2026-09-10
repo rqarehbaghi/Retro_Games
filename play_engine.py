@@ -284,35 +284,20 @@ def process_frame(rgb_frame, target_size=84):
 def make_frame_processor(game):
     """Build frames the way THIS game's model was trained to see them.
 
-    A policy is only valid on the observation it learned from, and that is now
-    described per game in games.json -- the crop and the size. Building a fixed
-    84x84 of the whole screen here, as this did, silently hands the model a
-    different picture than it trained on: for a two-player game the crop is what
-    removes the opponent's half, so without it the agent is looking at somebody
-    else's board. When the shapes differ SB3 raises; when they happen to match
-    it would just play badly for no visible reason.
+    Delegates to rl.env.make_observer, which is what training uses, so the two
+    cannot drift apart. That has bitten twice already: once when the crop and
+    size changed under a checkpoint, and once when the observation KIND changed
+    from a picture to a grid and this still produced an image.
 
-    Returns (process, expected_shape) so the caller can check the checkpoint.
+    Returns (process, expected_shape); process takes (frame, ram).
     """
-    crop = None
-    width = height = 84
     try:
-        from rl.env import TrainingSpec
-        o = TrainingSpec(game).observation or {}
-        crop = o.get("crop")
-        width = int(o.get("width", 84))
-        height = int(o.get("height", 84))
-    except Exception:                                            # noqa: BLE001
-        pass
-
-    def process(rgb_frame):
-        if crop:
-            x, y, w, h = [int(v) for v in crop]
-            rgb_frame = rgb_frame[y:y + h, x:x + w]
-        gray = cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2GRAY)
-        return cv2.resize(gray, (width, height), interpolation=cv2.INTER_AREA)
-
-    return process, (4, height, width)
+        from rl.env import make_observer
+        return make_observer(game)
+    except Exception as exc:                                     # noqa: BLE001
+        print("Could not build the trained observation (%s); "
+              "falling back to 84x84 grayscale." % exc)
+        return (lambda frame, ram=None: process_frame(frame)), (4, 84, 84)
 
 
 class AudioStreamer:
@@ -638,7 +623,7 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
     # 3. Setup Frame Stack buffer (4 frames of 84x84 grayscale) ONLY if AI needs it
     frame_stack = deque(maxlen=4)
     if model is not None:
-        init_frame = ai_frame(obs)
+        init_frame = ai_frame(obs, env.unwrapped.get_ram())
         for _ in range(4):
             frame_stack.append(init_frame)
 
@@ -702,7 +687,11 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
         if p2_human:
             p2_action = make_p2_action(buttons, combined, pad2)
         elif model is not None:
-            stacked_obs = np.array(frame_stack)  # shape (4, 84, 84)
+            # An image stacks as channels; a vector observation concatenates.
+            if len(ai_expected_shape) == 1:
+                stacked_obs = np.concatenate(list(frame_stack)).astype(np.float32)
+            else:
+                stacked_obs = np.array(frame_stack)
             p2_discrete_action, _ = model.predict(stacked_obs, deterministic=True)
             p2_action = discretize_ai_action(int(p2_discrete_action), buttons,
                                              combos=ai_combos)
@@ -792,7 +781,7 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
 
         # Update Frame Stack for AI (only when active)
         if model is not None:
-            frame_stack.append(ai_frame(obs))
+            frame_stack.append(ai_frame(obs, env.unwrapped.get_ram()))
 
         # Render Game Frame to Pygame Surface
         frame_surface = pygame.surfarray.make_surface(np.transpose(obs, (1, 0, 2)))
@@ -833,7 +822,7 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
             # Refill the AI's frame-stack from the fresh round so it doesn't
             # keep reacting to stale frames from the round that just ended.
             if model is not None:
-                reset_frame = ai_frame(obs)
+                reset_frame = ai_frame(obs, env.unwrapped.get_ram())
                 frame_stack.clear()
                 for _ in range(4):
                     frame_stack.append(reset_frame)

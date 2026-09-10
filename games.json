@@ -623,7 +623,11 @@
           "gamma": 0.99
         },
         "use_data_json": false,
-        "use_data_json_why": "This integration was made by hand: data.json is {\"info\": {}} and scenario.json declares no done and no reward, so retro has nothing to contribute -- info is always empty and its done never fires. Everything real comes from this file instead: RAM variables for values and episode_end (game_over_p2 == 0) for the ending. Leaving it on would only be misleading."
+        "use_data_json_why": "This integration was made by hand: data.json is {\"info\": {}} and scenario.json declares no done and no reward, so retro has nothing to contribute -- info is always empty and its done never fires. Everything real comes from this file instead: RAM variables for values and episode_end (game_over_p2 == 0) for the ending. Leaving it on would only be misleading.",
+        "feature_gate": {
+          "var": "piece_row_p2",
+          "why": "Board features are recomputed only when the piece row DROPS -- a new piece spawning, meaning the previous one has locked -- and held constant in between. Sampling the board every step includes the falling piece, and the gap beneath it reads as holes that appear and vanish as it descends: measured, the holes term swung by +-8 PER STEP against a terminal of -10, so one step of that noise outweighed dying and the agent was graded on where a piece happened to be mid-air. Survival fell from ~1480 frames to ~1288 when the 22-row board was introduced without this."
+        }
       },
       "rewards": {
         "terms": [

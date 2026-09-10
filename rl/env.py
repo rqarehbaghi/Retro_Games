@@ -92,6 +92,10 @@ class TrainingSpec:
                 self.holds.append(None)
         self.observation = dict(t.get("observation") or {})
         self.grid = dict(self.observation.get("grid") or {})
+        # Board features are only meaningful once a piece has LANDED.
+        # feature_gate names a variable whose DROP marks a new piece
+        # (the previous one just locked).
+        self.feature_gate = t.get("feature_gate")
         self.episode_end = t.get("episode_end")     # {"var":..., "equals":...}
         self.skip_while = t.get("skip_while")       # {"var":..., "equals":...}
         self.max_steps = int(t.get("max_steps", 20000))
@@ -123,13 +127,16 @@ class TrainingSpec:
 class RewardModel:
     """Turns a spec's declared terms into a number, every step."""
 
-    def __init__(self, terms, vars, feature_fn, player):
+    def __init__(self, terms, vars, feature_fn, player, gate=None):
         self.terms = terms
         self.vars = vars
         self.feature_fn = feature_fn
         self.player = player
+        self.gate = gate            # {"var": ...} whose DROP means "a piece landed"
         self.prev_vars = {}
         self.prev_feats = {}
+        self._gate_val = None
+        self._held = {}
 
     def _values(self, ram, info):
         needed = {t["var"] for t in self.terms if t.get("var")}
@@ -148,9 +155,34 @@ class RewardModel:
         except Exception:                                        # noqa: BLE001
             return {}
 
+    def _gated_features(self, ram, info, frame, spec):
+        """Score the board only once a piece has come to rest.
+
+        A board sampled every step includes the FALLING piece, and the empty
+        space under it reads as holes that appear and vanish as it descends.
+        Measured, that made the holes term swing by +-8 per step against a
+        terminal of -10: one step of noise outweighed dying, and the agent was
+        being graded almost entirely on where a piece happened to be mid-air.
+
+        With a gate, the features are recomputed only when the gate variable
+        DROPS -- a new piece spawning, meaning the last one just locked -- and
+        held constant in between, so the deltas are zero until the stack
+        actually changes. Without a gate configured this is the old behaviour.
+        """
+        if not self.gate:
+            return self.features(ram, info, frame, spec)
+        val = self.vars.read(self.gate.get("var"), ram, info)
+        fresh = (self._gate_val is None or val is None or val < self._gate_val)
+        self._gate_val = val
+        if fresh or not self._held:
+            self._held = self.features(ram, info, frame, spec)
+        return dict(self._held)
+
     def reset(self, ram, info, frame=None, spec=None):
         self.prev_vars = self._values(ram, info)
-        self.prev_feats = self.features(ram, info, frame, spec)
+        self._gate_val = None
+        self._held = {}
+        self.prev_feats = self._gated_features(ram, info, frame, spec)
 
     def rebaseline(self, ram, info, frame=None, spec=None):
         """Forget the last values without paying for the change.
@@ -169,7 +201,7 @@ class RewardModel:
 
     def step(self, ram, info, terminated, frame=None, spec=None):
         now = self._values(ram, info)
-        feats = self.features(ram, info, frame, spec)
+        feats = self._gated_features(ram, info, frame, spec)
         total = 0.0
         self.breakdown = {}          # per-term contribution, for --explain-reward
         for t in self.terms:
@@ -249,7 +281,7 @@ class GenericRetroEnv(gym.Env):
             self._warn_data_json_off(s)
         self.reward_model = RewardModel(s.terms, self.vars,
                                         feature_hooks.get(s.features_name),
-                                        s.player)
+                                        s.player, gate=s.feature_gate)
         if not s.terms:
             print("WARNING: %s declares no rewards.terms in games.json, so every "
                   "step scores 0 and nothing can be learned." % game)
@@ -461,3 +493,56 @@ def make_env(game, overrides=None, warp=True, render_mode="rgb_array"):
                         height=int(obs_cfg.get("height", 84)),
                         crop=obs_cfg.get("crop"))
     return env
+
+def make_observer(game, overrides=None, n_stack=4):
+    """Build observations the way TRAINING builds them, for anything outside it.
+
+    A policy is only valid on the observation it learned from. play_engine used
+    to construct its own -- a fixed grayscale image -- which silently diverged
+    the moment the crop, the size, or the whole observation KIND changed here.
+    Both now come from this one function, so they cannot drift apart.
+
+    Returns (process, stacked_shape):
+        process(frame, ram) -> one observation
+        stacked_shape        what the model sees after n_stack of them
+    """
+    spec = TrainingSpec(game, overrides)
+    o = spec.observation or {}
+    kind = o.get("kind", "pixels")
+    vars = GameVars(game, entry=spec.entry)
+    player = spec.player
+
+    if kind == "grid":
+        from rl import features as fh
+        gs = dict(spec.grid or {})
+        rows = int(gs.get("rows", 22)); cols = int(gs.get("cols", 10))
+
+        def process(frame, ram):
+            g = fh.grid_from_frame(frame, gs).astype(np.float32).ravel()
+            def rd(name, default=0):
+                v = vars.read("%s_p%d" % (name, player), ram, {}, default)
+                return default if v is None else int(v)
+            onehot = np.zeros(7, dtype=np.float32)
+            t = rd("piece_type", 0)
+            if 0 <= t < 7:
+                onehot[t] = 1.0
+            extra = np.concatenate([onehot, np.array([
+                rd("piece_rot", 0) / 3.0,
+                rd("piece_col", 0) / max(1, cols),
+                rd("piece_row", 0) / 24.0], dtype=np.float32)])
+            return np.concatenate([g, extra]).astype(np.float32)
+
+        # A vector observation is stacked by CONCATENATION, not as channels.
+        return process, ((rows * cols + 10) * n_stack,)
+
+    crop = o.get("crop")
+    width = int(o.get("width", 84)); height = int(o.get("height", 84))
+
+    def process(frame, ram=None):
+        if crop:
+            x, y, w, h = [int(v) for v in crop]
+            frame = frame[y:y + h, x:x + w]
+        gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+        return cv2.resize(gray, (width, height), interpolation=cv2.INTER_AREA)
+
+    return process, (n_stack, height, width)

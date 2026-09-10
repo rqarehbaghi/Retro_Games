@@ -281,6 +281,40 @@ def process_frame(rgb_frame, target_size=84):
     return resized
 
 
+def make_frame_processor(game):
+    """Build frames the way THIS game's model was trained to see them.
+
+    A policy is only valid on the observation it learned from, and that is now
+    described per game in games.json -- the crop and the size. Building a fixed
+    84x84 of the whole screen here, as this did, silently hands the model a
+    different picture than it trained on: for a two-player game the crop is what
+    removes the opponent's half, so without it the agent is looking at somebody
+    else's board. When the shapes differ SB3 raises; when they happen to match
+    it would just play badly for no visible reason.
+
+    Returns (process, expected_shape) so the caller can check the checkpoint.
+    """
+    crop = None
+    width = height = 84
+    try:
+        from rl.env import TrainingSpec
+        o = TrainingSpec(game).observation or {}
+        crop = o.get("crop")
+        width = int(o.get("width", 84))
+        height = int(o.get("height", 84))
+    except Exception:                                            # noqa: BLE001
+        pass
+
+    def process(rgb_frame):
+        if crop:
+            x, y, w, h = [int(v) for v in crop]
+            rgb_frame = rgb_frame[y:y + h, x:x + w]
+        gray = cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2GRAY)
+        return cv2.resize(gray, (width, height), interpolation=cv2.INTER_AREA)
+
+    return process, (4, height, width)
+
+
 class AudioStreamer:
     """Play the emulator's per-frame audio through pygame.mixer, in real time.
 
@@ -576,6 +610,17 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
             print(f"AI action set: {ai_combos_name}")
             # A checkpoint trained on a different table would still run, picking
             # plausible-looking indices that mean the wrong buttons. Catch it.
+            got = getattr(getattr(model, "observation_space", None), "shape", None)
+            if got is not None and tuple(got) != tuple(ai_expected_shape):
+                print("")
+                print("This checkpoint expects observations of %s but %s is "
+                      "configured to produce %s." % (tuple(got), game,
+                                                     tuple(ai_expected_shape)))
+                print("The observation in games.json changed since it was trained "
+                      "(crop or size), so the policy would be looking at a")
+                print("different picture than it learned from. Retrain, or restore "
+                      "the observation it was trained with.")
+                sys.exit("Checkpoint and games.json observation do not match.")
             trained_n = getattr(getattr(model, "action_space", None), "n", None)
             if trained_n is not None and int(trained_n) != len(ai_combos):
                 print("")
@@ -588,9 +633,10 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
             print("No checkpoint model found — AI will use exploratory random policy.")
 
     # 3. Setup Frame Stack buffer (4 frames of 84x84 grayscale) ONLY if AI needs it
+    ai_frame, ai_expected_shape = make_frame_processor(game)
     frame_stack = deque(maxlen=4)
     if model is not None:
-        init_frame = process_frame(obs)
+        init_frame = ai_frame(obs)
         for _ in range(4):
             frame_stack.append(init_frame)
 
@@ -744,7 +790,7 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
 
         # Update Frame Stack for AI (only when active)
         if model is not None:
-            frame_stack.append(process_frame(obs))
+            frame_stack.append(ai_frame(obs))
 
         # Render Game Frame to Pygame Surface
         frame_surface = pygame.surfarray.make_surface(np.transpose(obs, (1, 0, 2)))
@@ -785,7 +831,7 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
             # Refill the AI's frame-stack from the fresh round so it doesn't
             # keep reacting to stale frames from the round that just ended.
             if model is not None:
-                reset_frame = process_frame(obs)
+                reset_frame = ai_frame(obs)
                 frame_stack.clear()
                 for _ in range(4):
                     frame_stack.append(reset_frame)

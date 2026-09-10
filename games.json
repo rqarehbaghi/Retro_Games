@@ -600,16 +600,16 @@
         "features": "tetris",
         "observation": {
           "kind": "pixels",
-          "width": 80,
-          "height": 160,
+          "width": 88,
+          "height": 208,
           "crop": [
-            153,
-            41,
-            79,
-            175
+            150,
+            2,
+            90,
+            214
           ],
-          "crop_why": "Player 2 owns only the right strip of a two-player screen. Measured by running two rollouts identical except for P2 inputs and taking the bounding box of the pixels that differed: x 153-231, y 41-215. It includes P2 NEXT box, which the agent needs. Without the crop, three quarters of the observation was the idle opponent, the HUD and the decorative middle, and P2 own cells were about two pixels wide after the 84x84 downscale.",
-          "size_why": "80x160, not the usual square 84x84. The crop is 79x175 -- a tall strip -- so squashing it into a square compresses the VERTICAL by about 2x, which is the axis this game cares about most: stack height and how deep a hole is buried. 80x160 matches the ROM native 8-pixel tiles in both directions (10 columns x 8 = 80, ~20 rows x 8 = 160), so cells stay square. Measured cost is about 15% throughput (250-280 fps -> 200-253). 84x84 was an Atari convention inherited, not a choice made for this crop."
+          "crop_why": "Player 2 owns the right strip of a two-player screen. x150-239 covers its well (10 cells x 8px = 80, plus border) and y2-215 runs from the NEXT preview down to the floor. The gap between the screen midpoint and x150 is the decorative centre channel and P1 border, which belong to neither player. CORRECTION: an earlier crop was [153,41,79,175], measured by differential rollouts (two runs identical except for P2 inputs, bounding box of the differing pixels). That method finds only what P2 CONTROLS, so it captured the well and silently excluded the NEXT box -- the next piece does not change with how you move the current one. It was wrongly described as including NEXT. Knowing the upcoming piece is needed to plan a placement, so the crop now starts at the top of the screen.",
+          "size_why": "88x208 keeps the ROM native 8-pixel tiles roughly square (11 cells x 8 = 88, 26 rows x 8 = 208) over a 90x214 crop. Not the usual square 84x84: this crop is a tall strip, and squashing it into a square compresses the vertical, which is the axis this game cares about most."
         },
         "skip_while": {
           "var": "level_transition",

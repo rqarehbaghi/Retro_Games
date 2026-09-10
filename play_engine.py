@@ -341,6 +341,53 @@ class AudioStreamer:
             pass
 
 
+def _available_states(game):
+    """The .state names this game's integration ships."""
+    try:
+        import custom_integrations
+        d = os.path.join(custom_integrations.INTEGRATIONS_DIR, game)
+        return sorted(f[:-6] for f in os.listdir(d) if f.endswith(".state"))
+    except Exception:                                            # noqa: BLE001
+        return []
+
+
+def _resolve_state(game, state, players):
+    """Pick the save state to start from, and fail readably if there is none.
+
+    retro.State.DEFAULT only works when the integration's metadata.json names a
+    default_state. A hand-made integration usually has an empty metadata.json,
+    and then retro resolves the path to None and dies inside gzip.open with
+    "filename must be a str or bytes object" -- which says nothing about the
+    real problem. So resolve it here: an explicit name is checked against the
+    states that exist, and otherwise games.json's training entry supplies one.
+    """
+    have = _available_states(game)
+    if state:
+        if have and state not in have:
+            print("")
+            print("No save state named '%s' for %s." % (state, game))
+            print("Available: %s" % (", ".join(have) if have else "(none)"))
+            sys.exit("Pass one of those with --state, or --boot-screen to start "
+                     "from the title screen.")
+        return state
+    # No explicit choice: take the one games.json recommends for this mode.
+    try:
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "games.json"), encoding="utf-8") as fh:
+            tr = (((json.load(fh).get("games") or {}).get(game) or {})
+                  .get("training") or {})
+    except Exception:                                            # noqa: BLE001
+        tr = {}
+    pick = tr.get("start_state_2p" if players >= 2 else "start_state")
+    if pick and (not have or pick in have):
+        print("State: '%s' (from games.json; override with --state)" % pick)
+        return pick
+    if have:
+        print("State: '%s' (first available; override with --state)" % have[0])
+        return have[0]
+    return retro.State.DEFAULT
+
+
 def _boot_state_name(game, name="boot"):
     """Return `name` if integrations/<game>/<name>.state exists, so
     retro.make(state=name) loads it. Cold boot (State.NONE) starts from the
@@ -381,7 +428,7 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
                   "screen is gray, run: python tools/capture_boot_state.py "
                   f"--game {game}")
     else:
-        state_val = state or retro.State.DEFAULT
+        state_val = _resolve_state(game, state, players)
 
     # 1. Initialize stable-retro with 2 players.
     #

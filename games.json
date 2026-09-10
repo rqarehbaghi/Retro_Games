@@ -602,15 +602,16 @@
           "kind": "grid",
           "grid": {
             "x": 153,
-            "y": 48,
+            "y": 56,
             "cell": 8,
             "cols": 10,
-            "rows": 22,
+            "rows": 20,
             "threshold": 40,
             "mask_piece": true,
-            "row_offset": 5,
+            "row_offset": 6,
             "col_offset": 3,
-            "mask_why": "The falling piece is drawn into the sampled board, so the gap under it reads as holes that appear and vanish as it descends -- measured at +-8 per step on the holes term against a terminal of -10. It is masked out using its RAM row/column. The offsets were calibrated by diffing consecutive frames, since the cells a falling piece VACATES are exactly the piece: ramRow 10 -> grid row 5, ramCol 7 -> grid cols 4..6, hence row-5 and col-3."
+            "mask_why": "The falling piece is drawn into the sampled board, so the gap under it reads as holes that appear and vanish as it descends -- measured at +-8 per step on the holes term against a terminal of -10. It is masked out using its RAM row/column. The offsets were calibrated by diffing consecutive frames, since the cells a falling piece VACATES are exactly the piece: ramRow 10 -> grid row 5, ramCol 7 -> grid cols 4..6, hence row-5 and col-3.",
+            "bounds_why": "y=56 with 20 rows, NOT y=48 with 22. Verified against an EMPTY board, which must read as entirely empty: at y=48 the top sampled row picked up border/HUD bleed, so those columns read as filled at the top and every empty cell beneath them counted as a hole -- an empty board reported 120 holes and height 136. Row 21 was the well FLOOR, not blocks, which gave every column a permanent base height. The shaping was therefore dominated by artifacts and the handful of real holes were lost in them. y=56 stays aligned to the ROM 8-pixel block grid and covers y56..215, excluding both. row_offset moves 5 -> 6 because the grid origin dropped by one row."
           },
           "grid_why": "The board is sampled from the RENDERED frame, one probe per cell. The RAM well layout could not be mapped: the blocks at 0x0600/0x0700 are neither mirrors nor halves, the best stride/base decode reproduced 3 of 22 rows against the screen, and any 13-row read compresses a stack that is really 22 rows. Sampling the drawn cells agrees with the screen by construction. x153 y48 cell 8 covers P2 well: 10 columns and 22 rows of 8-pixel tiles.",
           "why_not_pixels": "Raw pixels were tried and did not learn. Three fixes -- cropping to P2, keeping the aspect square, and reading the whole board -- left survival flat at about 1500 frames across 1.5M+ timesteps. A CNN has to rediscover that the blobs form a 10-wide grid before it can learn placement; handing it the grid removes that problem. The observation is the board flattened plus the piece being placed (type one-hot, rotation, column, row), because the piece is not part of the board."

@@ -228,7 +228,7 @@ def play_model(game, state, model_path, tracker, every, max_frames, record_dir):
     from stable_baselines3 import PPO
     from stable_baselines3.common.vec_env import DummyVecEnv, VecFrameStack
 
-    from train import wrap_for_model
+    from train_smb3_legacy import wrap_for_model
 
     base = retro.make(game=game, state=state or retro.State.DEFAULT,
                       record=record_dir, render_mode="rgb_array")
@@ -381,7 +381,7 @@ def main():
             game = retro.Movie(args.demo).get_game()
         except Exception:
             pass
-    from train import describe_value_sources, reject_known_bad
+    from train_smb3_legacy import describe_value_sources, reject_known_bad
     describe_value_sources(
         game,
         progress_address=args.progress_address,

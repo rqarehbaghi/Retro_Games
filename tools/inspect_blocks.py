@@ -38,7 +38,7 @@ try:
 except ImportError:
     raise SystemExit("inspect_blocks.py needs opencv: pip install opencv-python")
 
-from train import QBLOCK_HUD_FRAC, detect_qblocks
+from train_smb3_legacy import QBLOCK_HUD_FRAC, detect_qblocks
 
 # Custom integrations (games in this repo's integrations/, e.g. TetrisTime) are
 # only visible to retro.make after they are registered. tools/ sits one level

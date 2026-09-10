@@ -27,7 +27,7 @@ import sys
 import tempfile
 
 from play_and_record import find_new_bk2, play_agent_episode, render_to_mp4
-from train import safe_name
+from train_smb3_legacy import safe_name
 
 def find_font():
     """Finds an available TrueType font for drawtext filter."""

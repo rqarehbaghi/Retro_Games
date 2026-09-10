@@ -105,7 +105,7 @@ def play_agent_episode(game, state, model_path, max_steps, record_dir, render,
         from gymnasium import spaces
         from stable_baselines3 import PPO
         from stable_baselines3.common.vec_env import DummyVecEnv, VecFrameStack
-        from train import ACTION_TABLE, wrap_for_model
+        from train_smb3_legacy import ACTION_TABLE, wrap_for_model
 
         # Load FIRST and mirror whatever observation the checkpoint expects.
         # A model trained with --sprites uses MultiInputPolicy and wants a dict

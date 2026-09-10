@@ -47,7 +47,7 @@ import torch.nn.functional as F
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv, VecFrameStack
 
-from train import ACTION_TABLE, VariableHoldDiscretizer, WarpFrame, jump_action_indices
+from train_smb3_legacy import ACTION_TABLE, VariableHoldDiscretizer, WarpFrame, jump_action_indices
 
 
 def warp(frame, size=84):

@@ -33,7 +33,7 @@ Any flag still overrides the file, for trying a weight before committing to it:
 """
 import argparse
 
-from train import ACTION_TABLE, DEFAULT_GAME_CONFIG, load_game_config, make_env
+from train_smb3_legacy import ACTION_TABLE, DEFAULT_GAME_CONFIG, load_game_config, make_env
 
 NOOP = 0
 RUN_RIGHT = 3        # ["RIGHT", "B"]

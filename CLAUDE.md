@@ -59,7 +59,18 @@ python restyle.py ./studio_out/<folder>
 - `tts.py` — Qwen3-TTS speech and the ducking mux
 - `restyle.py` — re-render from an edited `overlays.json`
 - `games.json` — verified RAM addresses per game, with the evidence for each
-- `train.py` — the deferred RL PPO training pipeline
+- `train.py` — the GENERIC PPO trainer: one CLI for any game, with everything
+  game-shaped (button map, save state, episode end, reward terms) read from
+  `games.json`. `--describe` prints a game's whole setup; `--no-data-json`
+  ignores retro's integration file so a game is defined only by this repo.
+- `rl/` — what train.py is built on: `vars.py` reads any variable encoding out
+  of `games.json`, `env.py` turns a game's declared reward TERMS into a Gym env,
+  `features.py` holds the per-game hooks for values that must be computed
+  (Tetris's holes/bumpiness) rather than simply read
+- `train_smb3_legacy.py` — the original SMB3-only trainer, kept verbatim. Its
+  tuned wrappers (auto-advance, stuck/backtrack, sprite observations) are not
+  all expressible as declarative terms yet, and other modules still import
+  `ACTION_TABLE` from it
 - `tools/` — RAM discovery and inspection utilities (`find_game_vars.py`, `audit_ram.py`, etc.),
   `tools/probe_pad.py` (the unified gamepad diagnostic: OS/WSL `/dev/input` permission audit,
   SDL enumeration, then a live button/axis/auto-fire probe), and `tools/import_fixer.py`
@@ -224,7 +235,7 @@ first.
   found by rendering a frame and looking, or by measuring audio levels — not by
   reading. Render and check.
 - **Never invent a RAM address or a timing constant.** `games.json` records the
-  evidence for every address, and `KNOWN_BAD_ADDRESSES` in `train.py` records
+  evidence for every address, and `KNOWN_BAD_ADDRESSES` in `train_smb3_legacy.py` records
   the ones that were tried and disproven. Several bugs came from numbers that
   were guessed and then asserted as fact.
 - **A model failure must never cost a recording.** Availability of the writer,

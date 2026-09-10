@@ -63,7 +63,7 @@ def main():
         from stable_baselines3 import PPO
         from stable_baselines3.common.vec_env import DummyVecEnv, VecFrameStack
 
-        from train import wrap_for_model
+        from train_smb3_legacy import wrap_for_model
 
         base = retro.make(game=args.game, state=args.state or retro.State.DEFAULT, render_mode=render_mode)
         # Load first so the wrapper stack matches the checkpoint's observation.

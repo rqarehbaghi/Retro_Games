@@ -61,7 +61,7 @@ from stable_baselines3 import PPO
 # real table and derive the same (index -> button combo) mapping the model
 # was trained with. The per-action hold length is irrelevant here because we
 # re-query the policy every frame.
-from train import ACTION_TABLE
+from train_smb3_legacy import ACTION_TABLE
 
 AI_COMBOS = [combo for combo, _hold in ACTION_TABLE]
 
@@ -246,20 +246,19 @@ def resolve_ai_combos(game):
 
     A model only ever emits INDICES into the table it learned on, so decoding
     them through a different table silently sends the wrong buttons -- an SMB3
-    index would ask a Tetris bot to jump. games.json records the set per game
-    ("training": {"action_set": ...}); anything unrecorded keeps train.py's
-    ACTION_TABLE, which is what every existing checkpoint uses."""
+    index would ask a Tetris bot to jump. The table lives with everything else
+    game-shaped, in games.json ("training": {"action_set": [...]}), which is the
+    same list train.py builds the env from, so a checkpoint and a live match
+    cannot drift apart. A game without one keeps the legacy ACTION_TABLE.
+    """
     try:
-        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                               "games.json"), encoding="utf-8") as fh:
-            entry = (json.load(fh).get("games") or {}).get(game) or {}
-        name = ((entry.get("training") or {}).get("action_set") or "").lower()
+        from rl.env import TrainingSpec
+        spec = TrainingSpec(game)
+        if spec.entry.get("training", {}).get("action_set"):
+            return spec.actions, "games.json action_set (%d actions)" % len(spec.actions)
     except Exception:                                            # noqa: BLE001
-        name = ""
-    if name == "tetris":
-        from tetris.tetris_env import TETRIS_ACTIONS
-        return list(TETRIS_ACTIONS), "tetris (%d actions)" % len(TETRIS_ACTIONS)
-    return AI_COMBOS, "train.ACTION_TABLE (%d actions)" % len(AI_COMBOS)
+        pass
+    return AI_COMBOS, "train_smb3_legacy.ACTION_TABLE (%d actions)" % len(AI_COMBOS)
 
 
 def discretize_ai_action(action_idx, env_buttons, combos=AI_COMBOS):

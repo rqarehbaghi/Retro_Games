@@ -101,7 +101,48 @@
         "auto_advance": true,
         "timer_address": "0x05EE",
         "gamma": 0.999,
-        "power_loss_scale": 0.25
+        "power_loss_scale": 0.25,
+        "terms": [
+          {
+            "kind": "delta",
+            "var": "progress",
+            "scale": 0.25,
+            "note": "New ground covered -- the main signal. progress is info16: the integration's hpos plus the page byte, because hpos alone flatlines at the scroll threshold."
+          },
+          {
+            "kind": "delta",
+            "var": "score",
+            "scale": 0.2
+          },
+          {
+            "kind": "delta",
+            "var": "coins",
+            "scale": 40.0
+          },
+          {
+            "kind": "delta",
+            "var": "lives",
+            "scale": 100.0,
+            "note": "Lives GAINED only; positive_only keeps a death from paying a huge negative here, since the terminal term already prices dying."
+          },
+          {
+            "kind": "delta",
+            "var": "powerup",
+            "scale": 400.0
+          },
+          {
+            "kind": "event",
+            "var": "course_clear",
+            "equals": 255,
+            "scale": 800.0,
+            "note": "Read from 0x00C4, not inferred from position -- inference was measurably wrong."
+          },
+          {
+            "kind": "terminal",
+            "scale": -25.0
+          }
+        ],
+        "terms_not_ported": "stuck_penalty, backtrack_scale and speed_bonus need position HISTORY rather than a single-step delta, and auto_advance needs a wrapper. They remain only in train_smb3_legacy.py; the terms above cover progress, score, coins, lives, power, the course clear and death."
       },
       "reward_scale_reasoning": {
         "calibrate_on_achievable_not_theoretical": "The scale must make the progress an agent can ACTUALLY reach dominate, not the progress a perfect run would reach. Calibrating progress_scale against a full level (8447 units) gave 0.05, and measurement then showed why that fails: an early agent reaches the first pipe at ~120 units, worth only +6, against a 25-50 death penalty. debug_rewards measured STAND -55.9 vs RUN -46.1 -- a 9.8 margin, which the startup gate correctly rejects (it needs 20+). Death outweighed everything achievable by 8:1 and the difference between running and standing was noise.",
@@ -140,6 +181,141 @@
           "cost": "Higher gamma makes value estimation harder -- returns have more variance and explained_variance typically drops. 0.995 is a safe step; go to 0.999 only if value_loss and explained_variance stay reasonable.",
           "note_on_coin_weight": "Raising coin weight makes coins more attractive but is exploitation, not exploration -- it does not send the agent anywhere new by itself. It does compound, though: stronger reinforcement when a coin is found means more coin-seeking, which visits more places where coins are. Entropy is the direct exploration lever, gamma is the patience lever, and coin weight is the value lever. They do different jobs."
         }
+      },
+      "training": {
+        "players": 1,
+        "player": 1,
+        "frameskip": 4,
+        "action_set": [
+          {
+            "buttons": [],
+            "hold": 4
+          },
+          {
+            "buttons": [
+              "LEFT"
+            ],
+            "hold": 4
+          },
+          {
+            "buttons": [
+              "RIGHT"
+            ],
+            "hold": 4
+          },
+          {
+            "buttons": [
+              "RIGHT",
+              "B"
+            ],
+            "hold": 4
+          },
+          {
+            "buttons": [
+              "LEFT",
+              "B"
+            ],
+            "hold": 4
+          },
+          {
+            "buttons": [
+              "A"
+            ],
+            "hold": 6
+          },
+          {
+            "buttons": [
+              "A"
+            ],
+            "hold": 20
+          },
+          {
+            "buttons": [
+              "RIGHT",
+              "A"
+            ],
+            "hold": 6
+          },
+          {
+            "buttons": [
+              "RIGHT",
+              "A"
+            ],
+            "hold": 20
+          },
+          {
+            "buttons": [
+              "RIGHT",
+              "A",
+              "B"
+            ],
+            "hold": 6
+          },
+          {
+            "buttons": [
+              "RIGHT",
+              "A",
+              "B"
+            ],
+            "hold": 20
+          },
+          {
+            "buttons": [
+              "LEFT",
+              "A"
+            ],
+            "hold": 6
+          },
+          {
+            "buttons": [
+              "LEFT",
+              "A"
+            ],
+            "hold": 20
+          },
+          {
+            "buttons": [
+              "LEFT",
+              "A",
+              "B"
+            ],
+            "hold": 6
+          },
+          {
+            "buttons": [
+              "LEFT",
+              "A",
+              "B"
+            ],
+            "hold": 20
+          },
+          {
+            "buttons": [
+              "DOWN"
+            ],
+            "hold": 4
+          },
+          {
+            "buttons": [
+              "UP"
+            ],
+            "hold": 4
+          }
+        ],
+        "observation": {
+          "kind": "pixels",
+          "width": 84,
+          "height": 84
+        },
+        "max_steps": 20000,
+        "ppo": {
+          "n_steps": 128,
+          "batch_size": 256,
+          "gamma": 0.999,
+          "ent_coef": 0.01,
+          "n_epochs": 4
+        },
+        "notes": "Actions carry their own hold length because for this game it is part of the move: (['A'],6) is a short hop and (['A'],20) a full jump. Episode end comes from the integration's own scenario (this is a standard integration), so no episode_end is declared."
       }
     },
     "_template": {
@@ -338,7 +514,10 @@
       "training": {
         "start_state": "level0_1p",
         "start_state_notes": "integrations/TetrisTime-Nes-v0/level0_1p.state -- a 1-player game already underway at level 0 (score 0, lines 0, first piece falling), so training never has to drive the boot screen and menus. Captured from studio_out/20260908-012346 at frame 1515, chosen because 0x0631 first reads 240 (playing) at frame 1485. Load with retro.make(state=level0_1p).",
-        "episode_end": "game_over 0x0631 == 241",
+        "episode_end": {
+          "var": "game_over_p2",
+          "equals": 0
+        },
         "ignore_while": "level_transition 0x01D2 == 1",
         "start_state_2p": "level0_2p",
         "start_state_2p_notes": "integrations/TetrisTime-Nes-v0/level0_2p.state -- a TWO-player game already underway at level 0 (both players alive, all counters 0), captured at frame 433 of studio_out/20260908-193739. Train the bot as PLAYER 2 from this state: it then learns on exactly the screen and controls it will use at deploy time, so there is no 1P->2P transfer problem. VERIFIED: loading it with players=2 and driving only the P2 half of the 18-bit action (bits 9..17) changes ONLY the right half of the screen (left-half pixel delta 0, right-half 125792). P1 can be left idle; its play does not affect P2 reward.",
@@ -348,7 +527,89 @@
         "start_state_8_2p_notes": "integrations/TetrisTime-Nes-v0/level8_2p.state -- a two-player game underway with P2 on LEVEL 8 (P1 on level 5), captured at frame 1800 of studio_out/20260909-001721. PREFER THIS FOR TRAINING: at level 0 gravity is ~960 frames per piece, so a random policy survived 1500 steps (6000 frames) without even topping out; from level 8 the same policy tops out in 288 steps with a genuinely full board (holes 10, height 63). Roughly 5x more complete episodes per frame, and a real learning signal.",
         "well": "P2 board at 0x0600/0x0700 + 16*row + 8 (P1 at +0), 13 rows x 10 columns, FOUR BITS per cell, dropping 3 wall nibbles each side; 0 = empty. Found by driving only P2 and watching which half filled. DOUBLE BUFFERED across 0x0600 and 0x0700 and the game alternates which is current, so read both and take whichever holds more filled cells -- a stale buffer lags behind, never ahead. Holds LOCKED cells only; the falling piece is not in it.",
         "soft_drop": "DOWN increases gravity and earns drop points. It is IGNORED when held across a piece spawn, so a policy has to re-press it per piece -- measured: DOWN held for 1200 frames landed no more pieces than no input at all, while a fresh press drops a piece within ~60 frames.",
-        "action_set": "tetris"
+        "action_set": [
+          [],
+          [
+            "LEFT"
+          ],
+          [
+            "RIGHT"
+          ],
+          [
+            "DOWN"
+          ],
+          [
+            "A"
+          ],
+          [
+            "B"
+          ]
+        ],
+        "players": 2,
+        "player": 2,
+        "frameskip": 4,
+        "features": "tetris",
+        "observation": {
+          "kind": "pixels",
+          "width": 84,
+          "height": 84
+        },
+        "skip_while": {
+          "var": "level_transition",
+          "equals": 1
+        },
+        "max_steps": 20000,
+        "ppo": {
+          "n_steps": 512,
+          "batch_size": 256,
+          "ent_coef": 0.01,
+          "gamma": 0.99
+        }
+      },
+      "rewards": {
+        "terms": [
+          {
+            "kind": "delta_tiered",
+            "var": "lines_p2",
+            "tiers": [
+              0,
+              2,
+              6,
+              12,
+              25
+            ],
+            "note": "A Tetris of four lines is worth far more than four singles, which a flat per-line rate cannot express."
+          },
+          {
+            "kind": "delta",
+            "var": "score_p2",
+            "scale": 0.002,
+            "note": "Deliberately small. Soft-dropping earns drop points, and one careless episode banked 2088 of them; at 0.01 that is +21 and swamps the -10 for dying, teaching the bot to slam pieces down and ignore where they land."
+          },
+          {
+            "kind": "feature_delta",
+            "name": "holes",
+            "scale": -0.5
+          },
+          {
+            "kind": "feature_delta",
+            "name": "height",
+            "scale": -0.02
+          },
+          {
+            "kind": "feature_delta",
+            "name": "bumpiness",
+            "scale": -0.02
+          },
+          {
+            "kind": "step",
+            "scale": 0.001
+          },
+          {
+            "kind": "terminal",
+            "scale": -10.0
+          }
+        ]
       }
     }
   }

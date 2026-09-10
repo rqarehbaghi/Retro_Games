@@ -49,12 +49,27 @@ def _well_at(ram, base, player):
 
 
 def read_well(ram, player=2):
-    """One player's LOCKED board as 13x10 of 0/1, from whichever mirror is live.
+    """One player's LOCKED board as 13x10 of 0/1, from BOTH blocks together.
 
     The falling piece is NOT in here -- only cells that have come to rest.
+
+    The two blocks are not mirrors of one board, which is what an earlier
+    version assumed when it took whichever held more cells. Measured: each lock
+    writes to exactly ONE of them, alternating, so a piece that landed in the
+    other block was invisible and the shaping scored a board with pieces
+    missing. Their union tracks the real board far more closely -- it grows on
+    every lock, where either block alone stalls on the locks it did not receive.
+
+    The tradeoff is that a stale block can hold a row that has since been
+    cleared, so the union can briefly keep a cleared row. That is rare and
+    self-correcting once both blocks are written again, and far less wrong than
+    permanently missing half the pieces.
     """
     grids = [_well_at(ram, b, player) for b in WELL_BASES]
-    return max(grids, key=lambda g: int(g.sum()))
+    out = grids[0]
+    for g in grids[1:]:
+        out = out | g
+    return out
 
 
 def tetris(vars, ram, info, player=2):

@@ -165,12 +165,47 @@ def play(args, spec, overrides):
     env.close()
 
 
+def explain_reward(args, spec, overrides):
+    """Play the game and show WHERE each step's reward came from.
+
+    Reading a reward config tells you the shape; watching the terms fire tells
+    you whether the weights are sane. Every line is one decision: the terms that
+    paid anything, and the running total.
+    """
+    import random
+    from rl.env import make_env
+    env = make_env(args.game, overrides, warp=False)
+    obs, info = env.reset()
+    print("terms: %s" % ", ".join(env.unwrapped.reward_model.label(t)
+                                  for t in spec.terms))
+    print("")
+    total = 0.0
+    for i in range(args.explain_reward):
+        a = random.randrange(env.action_space.n)
+        obs, r, term, trunc, info = env.step(a)
+        total += r
+        parts = getattr(env.unwrapped.reward_model, "breakdown", {}) or {}
+        if parts or term:
+            shown = "  ".join("%s %+g" % (k, v) for k, v in parts.items())
+            print("step %4d  reward %+8.4f  total %+9.3f  | %s"
+                  % (i, r, total, shown or "(nothing paid)"))
+        if term or trunc:
+            print("")
+            print("episode ended after %d steps, total reward %+.3f" % (i + 1, total))
+            break
+    env.close()
+
+
 def main():
     p = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--game", required=True, help="stable-retro game id, e.g. TetrisTime-Nes-v0")
     p.add_argument("--config", default=None, help="games.json to read the game's setup from (default: the repo's)")
     p.add_argument("--describe", action="store_true", help="Print what games.json says about this game and exit")
+    p.add_argument("--explain-reward", type=int, default=None, metavar="STEPS",
+                   help="Play STEPS random decisions and print which reward TERM paid "
+                        "what on each one, so the weights can be judged against real "
+                        "numbers instead of read in the abstract.")
     p.add_argument("--list-states", action="store_true", help="Print the game's save states and exit")
 
     p.add_argument("--state", default=None, help="Save state every episode starts from (see --list-states)")
@@ -222,6 +257,9 @@ def main():
         return
     print("game %s | state %s | player %d/%d | %d actions"
           % (args.game, spec.state, spec.player, spec.players, len(spec.actions)))
+    if args.explain_reward:
+        explain_reward(args, spec, overrides)
+        return
     play(args, spec, overrides) if args.play else train(args, spec, overrides)
 
 

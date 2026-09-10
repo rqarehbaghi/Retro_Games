@@ -153,11 +153,19 @@ class RewardModel:
         """
         self.reset(ram, info)
 
+    @staticmethod
+    def label(t):
+        kind = t.get("kind")
+        who = t.get("var") or t.get("name") or ""
+        return ("%s %s" % (kind, who)).strip()
+
     def step(self, ram, info, terminated):
         now = self._values(ram, info)
         feats = self.features(ram, info)
         total = 0.0
+        self.breakdown = {}          # per-term contribution, for --explain-reward
         for t in self.terms:
+            before = total
             kind = t.get("kind")
             scale = float(t.get("scale", 0.0))
             if kind == "step":
@@ -197,6 +205,8 @@ class RewardModel:
                     became = int(b) == int(want) and (a is None or int(a) != int(want))
                     if became:
                         total += scale
+            if total != before:
+                self.breakdown[self.label(t)] = round(total - before, 4)
         self.prev_vars, self.prev_feats = now, feats
         return total, feats
 

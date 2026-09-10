@@ -99,6 +99,13 @@ class TrainingSpec:
         # feature_gate names a variable whose DROP marks a new piece
         # (the previous one just locked).
         self.feature_gate = t.get("feature_gate")
+        # Frames at the END of each decision with NO buttons held. Without one,
+        # two identical decisions in a row reach the game as a single sustained
+        # press: the second does nothing, and a long one triggers auto-repeat.
+        # Measured on Tetris, repeated LEFT presses moved the piece
+        # 7,6,6,5,5,4 -- half of them did not register -- while the same total
+        # frames with one release frame gave a clean 7,6,5,4,3.
+        self.release_frames = int(t.get("release_frames", 0))
         self.episode_end = t.get("episode_end")     # {"var":..., "equals":...}
         self.skip_while = t.get("skip_while")       # {"var":..., "equals":...}
         self.max_steps = int(t.get("max_steps", 20000))
@@ -380,7 +387,8 @@ class GenericRetroEnv(gym.Env):
         info = {}
         env_term = env_trunc = False
         hold = self._holds[int(action)] or self.spec_.frameskip
-        for _ in range(hold):
+        release = min(self.spec_.release_frames, max(0, hold - 1))
+        for _ in range(hold - release):
             obs, _r, term, trunc, info = self.env.step(joint)
             # Keep the integration's OWN done signal. A standard integration
             # (SMB3) publishes one through scenario.json, and a game whose
@@ -390,6 +398,15 @@ class GenericRetroEnv(gym.Env):
                 env_trunc = env_trunc or bool(trunc)
             if term or trunc:
                 break
+        # Let go, so the next decision is a fresh press rather than a hold.
+        for _ in range(release):
+            if env_term or env_trunc:
+                break
+            obs, _r, term, trunc, info = self.env.step(
+                [False] * (self.n_buttons * self.spec_.players))
+            if self.use_data_json:
+                env_term = env_term or bool(term)
+                env_trunc = env_trunc or bool(trunc)
         ram = self._ram()
 
         if self._skipping(ram, self._seen(info)):

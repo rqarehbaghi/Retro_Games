@@ -632,7 +632,9 @@
         "feature_gate": {
           "var": "piece_row_p2",
           "why": "Board features are recomputed only when the piece row DROPS -- a new piece spawning, meaning the previous one has locked -- and held constant in between. Sampling the board every step includes the falling piece, and the gap beneath it reads as holes that appear and vanish as it descends: measured, the holes term swung by +-8 PER STEP against a terminal of -10, so one step of that noise outweighed dying and the agent was graded on where a piece happened to be mid-air. Survival fell from ~1480 frames to ~1288 when the 22-row board was introduced without this."
-        }
+        },
+        "release_frames": 1,
+        "release_frames_why": "One frame of every decision is spent with no buttons held, so each decision is a fresh PRESS. Without it two identical decisions in a row reach the game as one sustained press: measured, repeated LEFT presses moved the piece 7,6,6,5,5,4 -- half did not register -- and a long hold triggers auto-repeat and skips columns. With one release frame the same four frames give a clean 7,6,5,4,3, one column per decision. This is why the bot could only slide pieces to a wall and never nudge one over a gap."
       },
       "rewards": {
         "terms": [

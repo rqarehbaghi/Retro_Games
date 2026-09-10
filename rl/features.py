@@ -151,11 +151,43 @@ def board_features(grid):
             "bumpiness": float(np.abs(np.diff(heights)).sum()) if cols > 1 else 0.0}
 
 
+def mask_piece(grid, ram, vars, player, spec):
+    """Erase the FALLING piece so the features score the settled stack only.
+
+    The board is sampled from the screen, so the piece in flight is drawn into
+    it, and the gap beneath it reads as holes that appear and vanish as it
+    descends. Measured before this: the holes term swung by +-8 per step against
+    a terminal of -10.
+
+    The piece's row and column come from the verified RAM addresses. Their
+    origin is offset from the grid, calibrated by diffing consecutive frames --
+    the cells a falling piece VACATES are exactly the piece -- which gave
+    ramRow 10 -> grid row 5 and ramCol 7 -> grid cols 4..6, i.e. row - 5 and
+    column - 3. A 4x4 box covers any tetromino; one extra row of margin absorbs
+    the row counter lagging the drawn position by a frame.
+    """
+    r = vars.read("piece_row_p%d" % player, ram, {})
+    c = vars.read("piece_col_p%d" % player, ram, {})
+    if r is None or c is None:
+        return grid
+    row0 = int(r) - int((spec or {}).get("row_offset", 5)) - 1
+    col0 = int(c) - int((spec or {}).get("col_offset", 3))
+    out = grid.copy()
+    rows, cols = out.shape
+    for y in range(max(0, row0), min(rows, row0 + 5)):
+        for x in range(max(0, col0), min(cols, col0 + 4)):
+            out[y, x] = 0
+    return out
+
+
 def tetris_pixels(vars, ram, info, player=2, frame=None, spec=None):
-    """Board heuristics measured from the rendered board."""
+    """Board heuristics measured from the SETTLED board (piece masked out)."""
     if frame is None:
         return {}
-    return board_features(grid_from_frame(frame, spec or {}))
+    g = grid_from_frame(frame, spec or {})
+    if (spec or {}).get("mask_piece", True):
+        g = mask_piece(g, ram, vars, player, spec)
+    return board_features(g)
 
 HOOKS = {"tetris": tetris, "tetris_pixels": tetris_pixels}
 

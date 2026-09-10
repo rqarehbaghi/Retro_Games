@@ -648,6 +648,12 @@
             "note": "A Tetris of four lines is worth far more than four singles, which a flat per-line rate cannot express."
           },
           {
+            "kind": "decrease_event",
+            "var": "piece_row_p2",
+            "scale": 1.5,
+            "note": "Paid once per piece LANDED (the row counter resetting for the next piece). Without it the shaping was net-negative per piece with no achievable positive: every piece costs ~1.5 in holes while surviving paid 0.001 a step, so playing longer only accumulated penalty and the best available policy was to top out sooner. Observed exactly that -- survival fell from 303 to ~200 decisions during training. At 1.5 against holes at -0.5, a piece that opens no hole is worth +1.5, one hole +1.0, and three holes breaks even, so placing WELL is what pays rather than placing less."
+          },
+          {
             "kind": "delta",
             "var": "score_p2",
             "scale": 0.002,

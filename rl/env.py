@@ -34,6 +34,9 @@ Term kinds:
     feature_delta same, on a value from the game's feature hook.
     feature_level pay scale * the feature itself, every step.
     event         pay scale the step a variable BECOMES `equals`.
+    decrease_event pay scale the step a variable DROPS -- a counter resetting,
+                  which is how "a piece just landed" or "a life was lost" shows
+                  up when there is no fixed value to match on.
     step          a flat amount per decision.
     terminal      paid once when the episode ends by the game's own end
                   condition (not on a truncation, which is our time limit and
@@ -237,6 +240,14 @@ class RewardModel:
                 else:
                     a = self.prev_feats.get(name, b)
                     total += scale * (b - a)
+            elif kind == "decrease_event":
+                # Pays when a counter DROPS. A per-piece reward needs this:
+                # a piece landing is marked by the row counter resetting for the
+                # next one, and there is no value it "becomes" to match on.
+                name = t.get("var")
+                a, b = self.prev_vars.get(name), now.get(name)
+                if a is not None and b is not None and b < a:
+                    total += scale
             elif kind == "event":
                 name = t.get("var")
                 want = t.get("equals")

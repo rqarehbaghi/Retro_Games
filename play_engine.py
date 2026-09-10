@@ -601,7 +601,10 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
     print("---------------------------------------------------------------")
 
     # 2. Load trained PPO model for Player 2
+    # Both of these describe what the model expects and are checked against
+    # the checkpoint below, so they have to exist before it is loaded.
     ai_combos, ai_combos_name = resolve_ai_combos(game)
+    ai_frame, ai_expected_shape = make_frame_processor(game)
     model = None
     if not p2_human:
         if model_path and os.path.exists(model_path):
@@ -633,7 +636,6 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
             print("No checkpoint model found — AI will use exploratory random policy.")
 
     # 3. Setup Frame Stack buffer (4 frames of 84x84 grayscale) ONLY if AI needs it
-    ai_frame, ai_expected_shape = make_frame_processor(game)
     frame_stack = deque(maxlen=4)
     if model is not None:
         init_frame = ai_frame(obs)

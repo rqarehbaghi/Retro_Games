@@ -170,7 +170,16 @@ def play(args, spec, overrides):
         obs, _r, done, info = env.step(action)
         steps += 1
         if done[0]:
-            print("episode %d: %d steps  %s" % (ep, steps, info[0]))
+            i = info[0]
+            # Report FRAMES as well as decisions. ep_len_mean counts decisions,
+            # so it is not comparable across different --frameskip values: 123
+            # decisions at frameskip 12 and 384 at frameskip 4 are the same
+            # ~1500 frames of survival. Comparing the decision counts directly
+            # makes a frameskip change look like a result.
+            print("episode %d: %4d decisions = %5d frames | score=%s lines=%s "
+                  "holes=%s height=%s"
+                  % (ep, steps, steps * spec.frameskip, i.get("score_p2", i.get("score")),
+                     i.get("lines_p2", i.get("lines")), i.get("holes"), i.get("height")))
             ep += 1
             steps = 0
     env.close()

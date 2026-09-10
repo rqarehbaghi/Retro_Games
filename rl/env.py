@@ -91,6 +91,7 @@ class TrainingSpec:
                 self.actions.append(list(a))
                 self.holds.append(None)
         self.observation = dict(t.get("observation") or {})
+        self.grid = dict(self.observation.get("grid") or {})
         self.episode_end = t.get("episode_end")     # {"var":..., "equals":...}
         self.skip_while = t.get("skip_while")       # {"var":..., "equals":...}
         self.max_steps = int(t.get("max_steps", 20000))
@@ -134,24 +135,31 @@ class RewardModel:
         needed = {t["var"] for t in self.terms if t.get("var")}
         return {n: self.vars.read(n, ram, info) for n in needed}
 
-    def features(self, ram, info):
+    def features(self, ram, info, frame=None, spec=None):
         try:
-            return self.feature_fn(self.vars, ram, info, self.player) or {}
+            return self.feature_fn(self.vars, ram, info, self.player,
+                                   frame=frame, spec=spec) or {}
+        except TypeError:
+            # A hook that predates the frame argument (RAM-only) still works.
+            try:
+                return self.feature_fn(self.vars, ram, info, self.player) or {}
+            except Exception:                                    # noqa: BLE001
+                return {}
         except Exception:                                        # noqa: BLE001
             return {}
 
-    def reset(self, ram, info):
+    def reset(self, ram, info, frame=None, spec=None):
         self.prev_vars = self._values(ram, info)
-        self.prev_feats = self.features(ram, info)
+        self.prev_feats = self.features(ram, info, frame, spec)
 
-    def rebaseline(self, ram, info):
+    def rebaseline(self, ram, info, frame=None, spec=None):
         """Forget the last values without paying for the change.
 
         Used when the game was not being played -- an animation between levels
         runs the score up on its own, and charging the agent for a jump it did
         not cause is worse than paying nothing.
         """
-        self.reset(ram, info)
+        self.reset(ram, info, frame, spec)
 
     @staticmethod
     def label(t):
@@ -159,9 +167,9 @@ class RewardModel:
         who = t.get("var") or t.get("name") or ""
         return ("%s %s" % (kind, who)).strip()
 
-    def step(self, ram, info, terminated):
+    def step(self, ram, info, terminated, frame=None, spec=None):
         now = self._values(ram, info)
-        feats = self.features(ram, info)
+        feats = self.features(ram, info, frame, spec)
         total = 0.0
         self.breakdown = {}          # per-term contribution, for --explain-reward
         for t in self.terms:
@@ -319,7 +327,7 @@ class GenericRetroEnv(gym.Env):
         obs, info = self.env.reset(**kwargs)
         obs, info = self._skip(obs, info)
         ram = self._ram()
-        self.reward_model.reset(ram, self._seen(info))
+        self.reward_model.reset(ram, self._seen(info), obs, self.spec_.grid)
         self.steps = 0
         return obs, self._info(ram, self._seen(info), self.reward_model.prev_feats)
 
@@ -344,12 +352,13 @@ class GenericRetroEnv(gym.Env):
         if self._skipping(ram, self._seen(info)):
             obs, info = self._skip(obs, info)
             ram = self._ram()
-            self.reward_model.rebaseline(ram, self._seen(info))
+            self.reward_model.rebaseline(ram, self._seen(info), obs, self.spec_.grid)
             return obs, 0.0, False, False, self._info(ram, self._seen(info),
                                                       self.reward_model.prev_feats)
 
         terminated = self._ended(ram, self._seen(info)) or env_term
-        reward, feats = self.reward_model.step(ram, self._seen(info), terminated)
+        reward, feats = self.reward_model.step(ram, self._seen(info), terminated,
+                                               obs, self.spec_.grid)
         self.steps += 1
         truncated = env_trunc or self.steps >= self.spec_.max_steps
         return obs, float(reward), bool(terminated), bool(truncated), \
@@ -393,10 +402,59 @@ class WarpFrame(gym.ObservationWrapper):
         return frame[:, :, None]
 
 
+class GridObservation(gym.ObservationWrapper):
+    """The board as numbers instead of a picture, plus the piece being placed.
+
+    Pixels were tried first and did not learn: three separate fixes to the crop,
+    the aspect and the board read left survival flat. A CNN has to rediscover
+    "these 8x8 blobs are a 10-wide grid" from scratch, which is most of the
+    problem, and Tetris then needs the piece and the board related to each
+    other. Handing over the grid removes that entirely.
+
+    The board comes from the rendered frame rather than RAM -- see
+    features.grid_from_frame for why -- and the piece (type, rotation, column,
+    row) from the verified addresses in games.json, since it is NOT in the board.
+    """
+
+    def __init__(self, env, grid_spec, vars, player):
+        super().__init__(env)
+        from rl import features as fh
+        self._grid_from_frame = fh.grid_from_frame
+        self.gspec = dict(grid_spec or {})
+        self.vars = vars
+        self.player = player
+        self.rows = int(self.gspec.get("rows", 22))
+        self.cols = int(self.gspec.get("cols", 10))
+        # board cells + piece type (one-hot 7) + rotation + column + row
+        self.extra = 7 + 3
+        self.observation_space = gym.spaces.Box(
+            low=0.0, high=1.0, shape=(self.rows * self.cols + self.extra,),
+            dtype=np.float32)
+
+    def observation(self, frame):
+        g = self._grid_from_frame(frame, self.gspec).astype(np.float32).ravel()
+        ram = self.env.unwrapped.env.unwrapped.get_ram()             if hasattr(self.env.unwrapped, "env") else self.env.unwrapped._ram()
+        p = self.player
+        def rd(name, default=0):
+            v = self.vars.read("%s_p%d" % (name, p), ram, {}, default)
+            return default if v is None else int(v)
+        onehot = np.zeros(7, dtype=np.float32)
+        t = rd("piece_type", 0)
+        if 0 <= t < 7:
+            onehot[t] = 1.0
+        extra = np.concatenate([onehot, np.array([
+            rd("piece_rot", 0) / 3.0,
+            rd("piece_col", 0) / max(1, self.cols),
+            rd("piece_row", 0) / 24.0], dtype=np.float32)])
+        return np.concatenate([g, extra]).astype(np.float32)
+
+
 def make_env(game, overrides=None, warp=True, render_mode="rgb_array"):
     """One game, configured from games.json, ready for a vectoriser."""
     env = GenericRetroEnv(game, overrides, render_mode=render_mode)
     obs_cfg = env.spec_.observation
+    if obs_cfg.get("kind") == "grid":
+        return GridObservation(env, env.spec_.grid, env.vars, env.spec_.player)
     if warp and obs_cfg.get("kind", "pixels") == "pixels":
         env = WarpFrame(env,
                         width=int(obs_cfg.get("width", 84)),

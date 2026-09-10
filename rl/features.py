@@ -102,7 +102,62 @@ def tetris(vars, ram, info, player=2):
     }
 
 
-HOOKS = {"tetris": tetris}
+
+# ---------------------------------------------------- board from pixels ---
+# The board is read from the SCREEN, not from RAM. The RAM layout for this
+# game's well resisted mapping: the two blocks at 0x0600/0x0700 are neither
+# mirrors nor halves, a decode of them reproduced only 3 of 22 rows against the
+# rendered frame, and the piece row counter reaches 21 while any 13-row decode
+# compresses the stack. Sampling the rendered cells is exact by construction --
+# it agrees with what is on screen because it IS what is on screen -- and it
+# needs no archaeology. The cost is that it only sees what is drawn, which for a
+# board is all that matters.
+def grid_from_frame(frame, spec):
+    """Binary rows x cols board sampled from the rendered frame."""
+    x0 = int(spec.get("x", 153)); y0 = int(spec.get("y", 48))
+    cell = int(spec.get("cell", 8))
+    cols = int(spec.get("cols", 10)); rows = int(spec.get("rows", 22))
+    thr = float(spec.get("threshold", 40))
+    pad = max(1, cell // 4)
+    g = np.zeros((rows, cols), dtype=np.uint8)
+    h, w = frame.shape[:2]
+    for r in range(rows):
+        y = y0 + r * cell
+        if y + cell > h:
+            break
+        for c in range(cols):
+            x = x0 + c * cell
+            if x + cell > w:
+                break
+            patch = frame[y + pad:y + cell - pad, x + pad:x + cell - pad]
+            g[r, c] = 1 if patch.mean() > thr else 0
+    return g
+
+
+def board_features(grid):
+    """Holes, height and bumpiness from a binary board."""
+    rows, cols = grid.shape
+    heights = np.zeros(cols, dtype=np.int32)
+    holes = 0
+    for c in range(cols):
+        col = grid[:, c]
+        filled = np.nonzero(col)[0]
+        if filled.size:
+            top = filled[0]
+            heights[c] = rows - top
+            holes += int((col[top:] == 0).sum())
+    return {"holes": float(holes), "height": float(heights.sum()),
+            "max_height": float(heights.max()) if cols else 0.0,
+            "bumpiness": float(np.abs(np.diff(heights)).sum()) if cols > 1 else 0.0}
+
+
+def tetris_pixels(vars, ram, info, player=2, frame=None, spec=None):
+    """Board heuristics measured from the rendered board."""
+    if frame is None:
+        return {}
+    return board_features(grid_from_frame(frame, spec or {}))
+
+HOOKS = {"tetris": tetris, "tetris_pixels": tetris_pixels}
 
 
 def get(name):

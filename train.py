@@ -52,14 +52,16 @@ def _factory(seed, game, overrides):
     return _init
 
 
-def build_envs(game, overrides, n_envs, frame_stack):
+def build_envs(game, overrides, n_envs, frame_stack, image=True):
     fns = [_factory(i, game, overrides) for i in range(n_envs)]
     # stable-retro allows ONE emulator per process, so parallel envs must be
     # separate processes; a single env stays in-process.
     vec = SubprocVecEnv(fns) if n_envs > 1 else DummyVecEnv(fns)
     if frame_stack > 1:
         vec = VecFrameStack(vec, n_stack=frame_stack)   # so motion is visible
-    return VecTransposeImage(vec)
+    # Transposing to channels-first is an IMAGE thing; a grid observation is a
+    # plain vector and must not be touched.
+    return VecTransposeImage(vec) if image else vec
 
 
 def overrides_from(args):
@@ -89,6 +91,17 @@ def describe(game, spec):
     print("actions     : %d  %s" % (len(spec.actions), spec.actions))
     o = spec.observation or {}
     kind = o.get("kind", "pixels")
+    if kind == "grid":
+        gs = spec.grid or {}
+        desc = ("grid %sx%s cells of %spx, sampled from the frame at x%s y%s, "
+                "plus the piece (type, rotation, column, row)"
+                % (gs.get("cols", 10), gs.get("rows", 22), gs.get("cell", 8),
+                   gs.get("x"), gs.get("y")))
+        print("observation : %s" % desc)
+        print("policy      : MlpPolicy (a grid is a vector, not a picture)")
+        print("features    : %s" % (spec.features_name or "(none)"))
+        _describe_rest(spec)
+        return
     desc = "%s %sx%s" % (kind, o.get("width", 84), o.get("height", 84))
     if o.get("crop"):
         x, y, w, h = o["crop"]
@@ -99,6 +112,11 @@ def describe(game, spec):
     print("observation : %s" % desc)
     print("frame stack : %s (set with --frame-stack)" % 4)
     print("features    : %s" % (spec.features_name or "(none)"))
+    _describe_rest(spec)
+    return
+
+
+def _describe_rest(spec):
     print("data.json   : %s" % ("used" if spec.use_data_json else "OFF (config only)"))
     print("episode end : %s" % (spec.episode_end or "(never -- only truncation)"))
     print("skip while  : %s" % (spec.skip_while or "(nothing)"))
@@ -139,8 +157,14 @@ def hyper(args, spec):
     return p
 
 
+def policy_for(spec):
+    """A picture needs a CNN; a grid of numbers needs an MLP."""
+    return ("MlpPolicy", False) if spec.observation.get("kind") == "grid"         else ("CnnPolicy", True)
+
+
 def train(args, spec, overrides):
-    env = build_envs(args.game, overrides, args.n_envs, args.frame_stack)
+    policy, image = policy_for(spec)
+    env = build_envs(args.game, overrides, args.n_envs, args.frame_stack, image)
     save_dir = args.save_dir or os.path.join("checkpoints", args.game)
     os.makedirs(save_dir, exist_ok=True)
     if args.resume and os.path.exists(args.resume):
@@ -149,7 +173,8 @@ def train(args, spec, overrides):
     else:
         p = hyper(args, spec)
         print("ppo:", p)
-        model = PPO("CnnPolicy", env, verbose=1, tensorboard_log=args.tb, **p)
+        print("policy:", policy)
+        model = PPO(policy, env, verbose=1, tensorboard_log=args.tb, **p)
     cb = CheckpointCallback(save_freq=max(1, args.save_every // args.n_envs),
                             save_path=save_dir, name_prefix="ckpt")
     model.learn(total_timesteps=args.timesteps, callback=cb,
@@ -161,7 +186,8 @@ def train(args, spec, overrides):
 
 
 def play(args, spec, overrides):
-    env = build_envs(args.game, overrides, 1, args.frame_stack)
+    _policy, image = policy_for(spec)
+    env = build_envs(args.game, overrides, 1, args.frame_stack, image)
     model = PPO.load(args.play, env=env)
     obs = env.reset()
     ep = steps = 0

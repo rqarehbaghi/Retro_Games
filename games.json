@@ -509,7 +509,56 @@
           "alive_value": 1,
           "over_value": 0,
           "evidence": "Pure boolean per-player alive flag, an adjacent pair mirroring the lines counters at 0x006C/0x006D. On studio_out/20260908-193739 (fixed 2-player replay) both read 1 from frame 373 (play starts) and drop to 0 exactly at that player.s top-out -- 0x004A at frame 9262 and 0x004B at 8634, matching where each player.s score tiles freeze (204 and 323) -- with no flicker after. Only 0/1 ever observed. The P1 and P2 candidate sets shared no address, so these are per-player, not a shared flag. 0x004B is P2 (right)."
-        }
+        },
+        "piece_row_p1": {
+          "source": "ram",
+          "address": "0x0060",
+          "verified": true,
+          "evidence": "Found by differential rollouts on level8_2p: two runs identical except for one P2 button, keeping the bytes that differed on every frame. The piece struct is adjacent P1/P2 pairs, the same convention as the lines counters at 0x006C/0x006D. Climbs as the piece falls and resets on spawn; reset coincided with P1 locking at frame 127."
+        },
+        "piece_row_p2": {
+          "source": "ram",
+          "address": "0x0061",
+          "verified": true,
+          "evidence": "Found by differential rollouts on level8_2p: two runs identical except for one P2 button, keeping the bytes that differed on every frame. The piece struct is adjacent P1/P2 pairs, the same convention as the lines counters at 0x006C/0x006D. Same, for P2: reached 19 then reset to 4 at frame 80 when a new P2 piece spawned."
+        },
+        "piece_col_p1": {
+          "source": "ram",
+          "address": "0x0062",
+          "verified": true,
+          "evidence": "Found by differential rollouts on level8_2p: two runs identical except for one P2 button, keeping the bytes that differed on every frame. The piece struct is adjacent P1/P2 pairs, the same convention as the lines counters at 0x006C/0x006D. Unchanged while only P2 pressed LEFT/RIGHT."
+        },
+        "piece_col_p2": {
+          "source": "ram",
+          "address": "0x0063",
+          "verified": true,
+          "evidence": "Found by differential rollouts on level8_2p: two runs identical except for one P2 button, keeping the bytes that differed on every frame. The piece struct is adjacent P1/P2 pairs, the same convention as the lines counters at 0x006C/0x006D. Went to 3 holding LEFT and 10 holding RIGHT; the 0x051x hits in the same search are the four OAM sprite X values that draw it."
+        },
+        "piece_type_p1": {
+          "source": "ram",
+          "address": "0x0064",
+          "verified": true,
+          "evidence": "Found by differential rollouts on level8_2p: two runs identical except for one P2 button, keeping the bytes that differed on every frame. The piece struct is adjacent P1/P2 pairs, the same convention as the lines counters at 0x006C/0x006D. Changes only at a spawn; observed values 0/2/6, inside the 0-6 range of the seven tetrominoes."
+        },
+        "piece_type_p2": {
+          "source": "ram",
+          "address": "0x0065",
+          "verified": true,
+          "evidence": "Found by differential rollouts on level8_2p: two runs identical except for one P2 button, keeping the bytes that differed on every frame. The piece struct is adjacent P1/P2 pairs, the same convention as the lines counters at 0x006C/0x006D. Same, for P2; changed at frame 80 with the row reset."
+        },
+        "piece_rot_p1": {
+          "source": "ram",
+          "address": "0x0068",
+          "verified": true,
+          "evidence": "Found by differential rollouts on level8_2p: two runs identical except for one P2 button, keeping the bytes that differed on every frame. The piece struct is adjacent P1/P2 pairs, the same convention as the lines counters at 0x006C/0x006D. Unchanged while only P2 pressed A."
+        },
+        "piece_rot_p2": {
+          "source": "ram",
+          "address": "0x0069",
+          "verified": true,
+          "evidence": "Found by differential rollouts on level8_2p: two runs identical except for one P2 button, keeping the bytes that differed on every frame. The piece struct is adjacent P1/P2 pairs, the same convention as the lines counters at 0x006C/0x006D. Went 0 -> 2 when P2 pressed A and stayed 0 when idle."
+        },
+        "WELL_HEIGHT_OPEN_QUESTION": "The piece row reaches 19, but read_well decodes only 13 rows, so the board is taller than what is being read and the shaping has been measuring a PARTIAL board. Evidence: at frame 80 P2 row reset 19->4 and the piece type changed (a lock and respawn) while the decoded cell count did not move -- the piece came to rest above the 13 rows being read. The two blocks at 0x0600 and 0x0700 were treated as mirrors of one board; they may instead be the TOP and BOTTOM halves of a ~26-row board. RESOLVE THIS before building a grid observation, and re-check the holes/height shaping, which may have been blind to the top of the stack."
       },
       "training": {
         "start_state": "level0_1p",

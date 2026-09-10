@@ -87,6 +87,17 @@ def describe(game, spec):
     print("available   : %s" % (", ".join(spec.states_available()) or "(none)"))
     print("frameskip   : %d" % spec.frameskip)
     print("actions     : %d  %s" % (len(spec.actions), spec.actions))
+    o = spec.observation or {}
+    kind = o.get("kind", "pixels")
+    desc = "%s %sx%s" % (kind, o.get("width", 84), o.get("height", 84))
+    if o.get("crop"):
+        x, y, w, h = o["crop"]
+        desc += "  cropped from x%d..%d y%d..%d (%dx%d source)" % (
+            x, x + w - 1, y, y + h - 1, w, h)
+    else:
+        desc += "  (whole frame -- no crop)"
+    print("observation : %s" % desc)
+    print("frame stack : %s (set with --frame-stack)" % 4)
     print("features    : %s" % (spec.features_name or "(none)"))
     print("data.json   : %s" % ("used" if spec.use_data_json else "OFF (config only)"))
     print("episode end : %s" % (spec.episode_end or "(never -- only truncation)"))

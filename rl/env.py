@@ -363,15 +363,30 @@ class GenericRetroEnv(gym.Env):
 
 
 class WarpFrame(gym.ObservationWrapper):
-    """Grayscale + resize: the standard cheap observation for pixel control."""
+    """Crop to what matters, then grayscale and resize.
 
-    def __init__(self, env, width=84, height=84):
+    The crop is the important half. A two-player screen spends most of its
+    pixels on things this agent cannot act on -- the opponent's board, the HUD,
+    the decorative middle -- and after a downscale to 84x84 the agent's own well
+    was about two pixels per cell, which is close to unreadable. Cropping to the
+    player's own area first spends the whole observation on the part that
+    matters and lands nearer six pixels per cell.
+
+    `crop` is [x, y, w, h] in the game's own pixels, declared per game in
+    games.json so nothing here knows which game it is looking at.
+    """
+
+    def __init__(self, env, width=84, height=84, crop=None):
         super().__init__(env)
         self.width, self.height = width, height
+        self.crop = [int(v) for v in crop] if crop else None
         self.observation_space = gym.spaces.Box(
             low=0, high=255, shape=(height, width, 1), dtype=np.uint8)
 
     def observation(self, frame):
+        if self.crop:
+            x, y, w, h = self.crop
+            frame = frame[y:y + h, x:x + w]
         frame = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
         frame = cv2.resize(frame, (self.width, self.height),
                            interpolation=cv2.INTER_AREA)
@@ -385,5 +400,6 @@ def make_env(game, overrides=None, warp=True, render_mode="rgb_array"):
     if warp and obs_cfg.get("kind", "pixels") == "pixels":
         env = WarpFrame(env,
                         width=int(obs_cfg.get("width", 84)),
-                        height=int(obs_cfg.get("height", 84)))
+                        height=int(obs_cfg.get("height", 84)),
+                        crop=obs_cfg.get("crop"))
     return env

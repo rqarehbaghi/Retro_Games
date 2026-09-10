@@ -552,7 +552,14 @@
         "observation": {
           "kind": "pixels",
           "width": 84,
-          "height": 84
+          "height": 84,
+          "crop": [
+            153,
+            41,
+            79,
+            175
+          ],
+          "crop_why": "Player 2 owns only the right strip of a two-player screen. Measured by running two rollouts identical except for P2 inputs and taking the bounding box of the pixels that differed: x 153-231, y 41-215. It includes P2 NEXT box, which the agent needs. Without the crop, three quarters of the observation was the idle opponent, the HUD and the decorative middle, and P2 own cells were about two pixels wide after the 84x84 downscale."
         },
         "skip_while": {
           "var": "level_transition",

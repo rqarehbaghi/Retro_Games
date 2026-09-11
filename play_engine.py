@@ -602,7 +602,7 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
     if not p2_human:
         if model_path and os.path.exists(model_path):
             print(f"Loading trained AI policy from: {model_path}")
-            model = PPO.load(model_path)
+            model = PPO.load(model_path, device="cpu")
             print(f"AI action set: {ai_combos_name}")
             # A checkpoint trained on a different table would still run, picking
             # plausible-looking indices that mean the wrong buttons. Catch it.
@@ -635,9 +635,40 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
         else:
             print("No checkpoint model found — AI will use exploratory random policy.")
 
-    # 3. Setup Frame Stack buffer (4 frames of 84x84 grayscale) ONLY if AI needs it
+    try:
+        from rl.env import TrainingSpec, GameVars
+        from rl.macro import MacroPlanGenerator
+        spec = TrainingSpec(game)
+        is_macro = getattr(spec, "action_mode", "button_stream") == "macro_placement"
+        macro_cfg = getattr(spec, "macro_config", {}) if is_macro else {}
+        game_vars = GameVars(game, entry=spec.entry) if is_macro else None
+    except Exception:
+        is_macro = False
+        macro_cfg = {}
+        game_vars = None
+
+    def _buttons_to_p2(btn_names):
+        act = np.array([False] * len(buttons), dtype=bool)
+        for b in btn_names:
+            if b in buttons:
+                act[buttons.index(b)] = True
+        return act
+
+    macro_plan_queue = deque()
+    macro_state = "IDLE"
+    col_offset = int(macro_cfg.get("column_offset", 0)) if is_macro else 0
+    commit_button = macro_cfg.get("commit_button", "DOWN") if is_macro else "DOWN"
+    rot_var = macro_cfg.get("rot_var", "piece_rot_p2") if is_macro else "piece_rot_p2"
+    col_var = macro_cfg.get("col_var", "piece_col_p2") if is_macro else "piece_col_p2"
+    row_var = macro_cfg.get("row_var", "piece_row_p2") if is_macro else "piece_row_p2"
+    piece_type_var = macro_cfg.get("piece_type_var", "piece_type_p2") if is_macro else "piece_type_p2"
+    prev_p2_row = None
+    initial_p2_type = None
+
+    # 3. Setup Frame Stack buffer (4 frames of 84x84 grayscale) ONLY if AI needs it (pixels)
+    is_image = len(ai_expected_shape) > 1
     frame_stack = deque(maxlen=4)
-    if model is not None:
+    if model is not None and is_image:
         init_frame = ai_frame(obs, env.unwrapped.get_ram())
         for _ in range(4):
             frame_stack.append(init_frame)
@@ -708,12 +739,55 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
         # Player 2: a second human (two controllers / hot-seat) or the AI.
         if p2_human:
             p2_action = make_p2_action(buttons, combined, pad2)
-        elif model is not None:
-            # An image stacks as channels; a vector observation concatenates.
-            if len(ai_expected_shape) == 1:
-                stacked_obs = np.concatenate(list(frame_stack)).astype(np.float32)
+        elif is_macro:
+            ram = env.unwrapped.get_ram()
+            curr_p2_row = game_vars.read(row_var, ram, {}, default=None) if game_vars else None
+            curr_p2_type = game_vars.read(piece_type_var, ram, {}, default=None) if game_vars else None
+            curr_p2_rot = game_vars.read(rot_var, ram, {}, default=0) if game_vars else 0
+            col_raw = game_vars.read(col_var, ram, {}, default=None) if game_vars else None
+            curr_p2_col = (col_raw - col_offset) if col_raw is not None else int(macro_cfg.get("spawn_col", 4))
+
+            # Detect if previous piece has locked/settled
+            if macro_state in ("TAPPING", "SOFT_DROP"):
+                settled = False
+                if curr_p2_type is not None and initial_p2_type is not None and curr_p2_type != initial_p2_type:
+                    settled = True
+                elif curr_p2_row is not None and prev_p2_row is not None:
+                    if curr_p2_row < prev_p2_row and prev_p2_row >= 5:
+                        settled = True
+                if settled:
+                    macro_state = "IDLE"
+                    macro_plan_queue.clear()
+
+            # If IDLE, plan the placement for the currently active piece
+            if macro_state == "IDLE":
+                curr_obs = ai_frame(obs, ram)
+                if model is not None:
+                    action_idx, _ = model.predict(curr_obs, deterministic=True)
+                    action_idx = int(action_idx)
+                else:
+                    action_idx = np.random.randint(len(ai_combos))
+
+                plan = MacroPlanGenerator.plan(action_idx, macro_cfg, current_rot=curr_p2_rot, current_col=curr_p2_col)
+                macro_plan_queue = deque(plan["frames"])
+                macro_plan_queue.append([])  # Neutral frame for fresh DOWN press
+                macro_state = "TAPPING"
+                initial_p2_type = curr_p2_type
+
+            # Execute next frame
+            if macro_plan_queue:
+                frame_buttons = macro_plan_queue.popleft()
+                p2_action = _buttons_to_p2(frame_buttons)
             else:
+                macro_state = "SOFT_DROP"
+                p2_action = _buttons_to_p2([commit_button])
+
+            prev_p2_row = curr_p2_row
+        elif model is not None:
+            if is_image:
                 stacked_obs = np.array(frame_stack)
+            else:
+                stacked_obs = ai_frame(obs, env.unwrapped.get_ram())
             p2_discrete_action, _ = model.predict(stacked_obs, deterministic=True)
             p2_action = discretize_ai_action(int(p2_discrete_action), buttons,
                                              combos=ai_combos)
@@ -830,8 +904,8 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
             diag_pad2 = set()
             diag_sent = set()
 
-        # Update Frame Stack for AI (only when active)
-        if model is not None:
+        # Update Frame Stack for AI (only when active image model)
+        if model is not None and is_image:
             frame_stack.append(ai_frame(obs, env.unwrapped.get_ram()))
 
         # Render Game Frame to Pygame Surface
@@ -872,7 +946,12 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
             step_count = 0
             # Refill the AI's frame-stack from the fresh round so it doesn't
             # keep reacting to stale frames from the round that just ended.
-            if model is not None:
+            if is_macro:
+                macro_state = "IDLE"
+                macro_plan_queue.clear()
+                prev_p2_row = None
+                initial_p2_type = None
+            if model is not None and is_image:
                 reset_frame = ai_frame(obs, env.unwrapped.get_ram())
                 frame_stack.clear()
                 for _ in range(4):

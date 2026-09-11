@@ -642,8 +642,8 @@ def make_observer(game, overrides=None, n_stack=4):
         def process(frame, ram):
             return build_grid_observation(frame, ram, gs, vars, player)
 
-        # A vector observation is stacked by CONCATENATION, not as channels.
-        return process, ((rows * cols + 10) * n_stack,)
+        # A grid observation is a single 1D vector (rows*cols + piece info), not stacked.
+        return process, (rows * cols + 10,)
 
     crop = o.get("crop")
     width = int(o.get("width", 84))

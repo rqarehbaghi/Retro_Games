@@ -49,8 +49,18 @@ class MacroPlanGenerator:
 
         frames = []
 
-        # 1. Rotations (tap A target_rot times)
-        rot_taps = (target_rot - (current_rot or 0)) % rotations
+        # 1. Rotations (tap the rotate button until the counter reads target)
+        #
+        # How far ONE tap moves the RAM rotation counter is a property of the
+        # game, not an assumption. Measured on TetrisTime: tapping A ran the
+        # counter 0 -> 3 -> 2 -> 1 -> 0, so it DECREMENTS. The taps needed are
+        # therefore (current - target) mod 4, and the old (target - current)
+        # asked for 3 taps where 1 was wanted. It went unnoticed because a
+        # piece always spawns at rotation 0, which makes the error a fixed
+        # permutation of the action space that a policy can learn around -- but
+        # only until a piece is already rotated when a plan is made.
+        rot_step = int(config.get("rotate_step", -1)) or -1
+        rot_taps = ((target_rot - (current_rot or 0)) * rot_step) % rotations
         for _ in range(rot_taps):
             for _ in range(tap_hold):
                 frames.append([rotate_button])
@@ -163,11 +173,24 @@ class MacroPlacementWrapper(gym.Wrapper):
         env_term = env_trunc = False
 
         # Phase 1: Execute rotation and horizontal movement frames
+        #
+        # Stop early if the piece this plan was made for is no longer the one
+        # falling. The taps run up to 32 frames (measured: 3 rotations plus 9
+        # columns), and a piece falls a row every ~7 frames at level 8, so once
+        # the stack is high enough that a piece locks after 4 rows the taps
+        # outlast it -- and every remaining tap then moves the NEXT piece,
+        # which this action was not chosen for. It cannot happen on a low board
+        # (a piece takes ~125 frames to fall from spawn) which is why it went
+        # unseen, but the high board is exactly where placement matters.
         for btn_list in plan["frames"]:
             obs, _r, term, trunc, info = self.env.step_raw_frame(btn_list)
             if term or trunc:
                 env_term = env_term or bool(term)
                 env_trunc = env_trunc or bool(trunc)
+                break
+            now_type = self._read_var(self.piece_type_var, None)
+            if (now_type is not None and initial_piece_type is not None
+                    and now_type != initial_piece_type):
                 break
 
         # Neutral frame so subsequent DOWN press is recognized as a fresh press

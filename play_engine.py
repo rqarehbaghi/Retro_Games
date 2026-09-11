@@ -656,7 +656,11 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
 
     macro_plan_queue = deque()
     macro_state = "IDLE"
-    col_offset = int(macro_cfg.get("column_offset", 0)) if is_macro else 0
+    # games.json declares this as col_offset. Reading "column_offset" here meant
+    # live play defaulted to 0 while training used 3, so every placement the
+    # model asked for landed three columns left of where it was trained.
+    col_offset = int(macro_cfg.get("col_offset",
+                                   macro_cfg.get("column_offset", 3))) if is_macro else 3
     commit_button = macro_cfg.get("commit_button", "DOWN") if is_macro else "DOWN"
     rot_var = macro_cfg.get("rot_var", "piece_rot_p2") if is_macro else "piece_rot_p2"
     col_var = macro_cfg.get("col_var", "piece_col_p2") if is_macro else "piece_col_p2"

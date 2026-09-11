@@ -35,13 +35,26 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from stable_baselines3 import PPO                                  # noqa: E402
-from stable_baselines3.common.callbacks import CheckpointCallback   # noqa: E402
+from stable_baselines3.common.callbacks import (                    # noqa: E402
+    BaseCallback, CheckpointCallback)
 from stable_baselines3.common.monitor import Monitor                # noqa: E402
 from stable_baselines3.common.vec_env import (                      # noqa: E402
     DummyVecEnv, SubprocVecEnv, VecFrameStack, VecTransposeImage)
 
 from rl import vars as rlvars                                       # noqa: E402
 from rl.env import TrainingSpec, make_env                           # noqa: E402
+
+
+class RolloutProgressCallback(BaseCallback):
+    """Prints periodic progress during rollout collection so training activity is immediately visible."""
+    def __init__(self, log_freq=64):
+        super().__init__()
+        self.log_freq = log_freq
+
+    def _on_step(self) -> bool:
+        if self.n_calls % self.log_freq == 0:
+            print("  [step %5d] collecting rollouts..." % self.num_timesteps, flush=True)
+        return True
 
 
 def _factory(seed, game, overrides):
@@ -57,7 +70,7 @@ def build_envs(game, overrides, n_envs, frame_stack, image=True):
     # stable-retro allows ONE emulator per process, so parallel envs must be
     # separate processes; a single env stays in-process.
     vec = SubprocVecEnv(fns) if n_envs > 1 else DummyVecEnv(fns)
-    if frame_stack > 1:
+    if image and frame_stack > 1:
         vec = VecFrameStack(vec, n_stack=frame_stack)   # so motion is visible
     # Transposing to channels-first is an IMAGE thing; a grid observation is a
     # plain vector and must not be touched.
@@ -176,17 +189,21 @@ def train(args, spec, overrides):
     env = build_envs(args.game, overrides, args.n_envs, args.frame_stack, image)
     save_dir = args.save_dir or os.path.join("checkpoints", args.game)
     os.makedirs(save_dir, exist_ok=True)
+    device = args.device or ("cpu" if policy == "MlpPolicy" else "auto")
     if args.resume and os.path.exists(args.resume):
         print("resuming from", args.resume)
-        model = PPO.load(args.resume, env=env)
+        model = PPO.load(args.resume, env=env, device=device)
     else:
         p = hyper(args, spec)
         print("ppo:", p)
         print("policy:", policy)
-        model = PPO(policy, env, verbose=1, tensorboard_log=args.tb, **p)
+        print("device:", device)
+        model = PPO(policy, env, verbose=1, tensorboard_log=args.tb, device=device, **p)
     cb = CheckpointCallback(save_freq=max(1, args.save_every // args.n_envs),
                             save_path=save_dir, name_prefix="ckpt")
-    model.learn(total_timesteps=args.timesteps, callback=cb,
+    progress_cb = RolloutProgressCallback(log_freq=max(16, p.get("n_steps", 512) // 4))
+    print("Beginning rollout collection (%d steps per batch, %d total timesteps)..." % (p.get("n_steps", 512), args.timesteps))
+    model.learn(total_timesteps=args.timesteps, callback=[cb, progress_cb],
                 progress_bar=args.progress)
     final = os.path.join(save_dir, "final.zip")
     model.save(final)
@@ -287,6 +304,7 @@ def main():
     p.add_argument("--ent-coef", type=float, default=None)
     p.add_argument("--n-epochs", type=int, default=None)
 
+    p.add_argument("--device", default=None, help="Device to run on ('cpu', 'cuda', or 'auto'). Defaults to 'cpu' for MlpPolicy")
     p.add_argument("--save-dir", default=None, help="Default: checkpoints/<game>")
     p.add_argument("--save-every", type=int, default=50_000, help="Checkpoint every N total timesteps")
     p.add_argument("--resume", default=None, help="Checkpoint to continue from")

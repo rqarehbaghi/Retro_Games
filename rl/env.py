@@ -372,7 +372,11 @@ class GenericRetroEnv(gym.Env):
             joint = buttons
         else:
             joint = self.empty_joint()
-        return self.env.step(joint)
+        obs, r, term, trunc, info = self.env.step(joint)
+        ram = self._ram()
+        if self._ended(ram, self._seen(info)):
+            term = True
+        return obs, r, term, trunc, info
 
     def finalize_macro_step(self, obs, info, env_term, env_trunc):
         """Finalizes one high-level macro placement action and returns step outputs."""

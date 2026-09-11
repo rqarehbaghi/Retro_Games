@@ -569,6 +569,7 @@
           "equals": 0
         },
         "ignore_while": "level_transition 0x01D2 == 1",
+        "preferred_state": "level8_2p",
         "start_state_2p": "level0_2p",
         "start_state_2p_notes": "integrations/TetrisTime-Nes-v0/level0_2p.state -- a TWO-player game already underway at level 0 (both players alive, all counters 0), captured at frame 433 of studio_out/20260908-193739. Train the bot as PLAYER 2 from this state: it then learns on exactly the screen and controls it will use at deploy time, so there is no 1P->2P transfer problem. VERIFIED: loading it with players=2 and driving only the P2 half of the 18-bit action (bits 9..17) changes ONLY the right half of the screen (left-half pixel delta 0, right-half 125792). P1 can be left idle; its play does not affect P2 reward.",
         "controls": "Per player slice, buttons are [B, -, SELECT, START, UP, DOWN, LEFT, RIGHT, A]: LEFT/RIGHT move the piece, DOWN soft-drops it, A rotates clockwise (B counter-clockwise is removed from action_set to streamline exploration). P2 occupies bits 9..17 of the joint action.",

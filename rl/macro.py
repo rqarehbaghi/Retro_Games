@@ -119,6 +119,7 @@ class MacroPlacementWrapper(gym.Wrapper):
         self.rot_var = self.cfg.get("rot_var", "piece_rot_p%d" % player)
         self.col_var = self.cfg.get("col_var", "piece_col_p%d" % player)
         self.row_var = self.settle_detect.get("var", self.cfg.get("row_var", "piece_row_p%d" % player))
+        self.piece_type_var = self.cfg.get("piece_type_var", "piece_type_p%d" % player)
 
     def _ram(self):
         if hasattr(self.env, "_ram"):
@@ -151,6 +152,7 @@ class MacroPlacementWrapper(gym.Wrapper):
         current_rot = self._read_var(self.rot_var, 0)
         col_raw = self._read_var(self.col_var, None)
         current_col = (col_raw - self.col_offset) if col_raw is not None else self.spawn_col
+        initial_piece_type = self._read_var(self.piece_type_var, None)
 
         plan = MacroPlanGenerator.plan(
             action, self.cfg, current_rot=current_rot, current_col=current_col
@@ -168,6 +170,13 @@ class MacroPlacementWrapper(gym.Wrapper):
                 env_trunc = env_trunc or bool(trunc)
                 break
 
+        # Neutral frame so subsequent DOWN press is recognized as a fresh press
+        if not (env_term or env_trunc):
+            obs, _r, term, trunc, info = self.env.step_raw_frame([])
+            if term or trunc:
+                env_term = env_term or bool(term)
+                env_trunc = env_trunc or bool(trunc)
+
         # Phase 2: Soft drop until piece settles
         if not (env_term or env_trunc):
             settled = False
@@ -183,8 +192,12 @@ class MacroPlacementWrapper(gym.Wrapper):
                     break
 
                 curr_row = self._read_var(self.row_var, None)
+                curr_type = self._read_var(self.piece_type_var, None)
+                # Settle triggered if piece type changes (new spawn) or row drops
+                if curr_type is not None and initial_piece_type is not None and curr_type != initial_piece_type:
+                    settled = True
+                    break
                 if curr_row is not None and prev_row is not None:
-                    # Settle triggered when piece row drops (was >= 5 and resets to <= 4)
                     if curr_row < prev_row and prev_row >= 5:
                         settled = True
                         break

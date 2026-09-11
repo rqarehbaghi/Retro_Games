@@ -190,19 +190,20 @@ def train(args, spec, overrides):
     save_dir = args.save_dir or os.path.join("checkpoints", args.game)
     os.makedirs(save_dir, exist_ok=True)
     device = args.device or ("cpu" if policy == "MlpPolicy" else "auto")
+    p = hyper(args, spec)
     if args.resume and os.path.exists(args.resume):
         print("resuming from", args.resume)
         model = PPO.load(args.resume, env=env, device=device)
     else:
-        p = hyper(args, spec)
         print("ppo:", p)
         print("policy:", policy)
         print("device:", device)
         model = PPO(policy, env, verbose=1, tensorboard_log=args.tb, device=device, **p)
+    n_steps = getattr(model, "n_steps", p.get("n_steps", 512))
     cb = CheckpointCallback(save_freq=max(1, args.save_every // args.n_envs),
                             save_path=save_dir, name_prefix="ckpt")
-    progress_cb = RolloutProgressCallback(log_freq=max(16, p.get("n_steps", 512) // 4))
-    print("Beginning rollout collection (%d steps per batch, %d total timesteps)..." % (p.get("n_steps", 512), args.timesteps))
+    progress_cb = RolloutProgressCallback(log_freq=max(16, n_steps // 4))
+    print("Beginning rollout collection (%d steps per batch, %d total timesteps)..." % (n_steps, args.timesteps))
     model.learn(total_timesteps=args.timesteps, callback=[cb, progress_cb],
                 progress_bar=args.progress)
     final = os.path.join(save_dir, "final.zip")

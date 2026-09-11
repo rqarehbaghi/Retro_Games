@@ -198,11 +198,14 @@ class RewardModel:
             self._held = self.features(ram, info, frame, spec)
         return dict(self._held)
 
-    def reset(self, ram, info, frame=None, spec=None):
+    def reset(self, ram, info, frame=None, spec=None, is_macro=False):
         self.prev_vars = self._values(ram, info)
         self._gate_val = None
         self._held = {}
-        self.prev_feats = self._gated_features(ram, info, frame, spec)
+        if is_macro:
+            self.prev_feats = self.features(ram, info, frame, spec)
+        else:
+            self.prev_feats = self._gated_features(ram, info, frame, spec)
 
     def rebaseline(self, ram, info, frame=None, spec=None):
         """Forget the last values without paying for the change.
@@ -219,9 +222,12 @@ class RewardModel:
         who = t.get("var") or t.get("name") or ""
         return ("%s %s" % (kind, who)).strip()
 
-    def step(self, ram, info, terminated, frame=None, spec=None):
+    def step(self, ram, info, terminated, frame=None, spec=None, is_macro=False):
         now = self._values(ram, info)
-        feats = self._gated_features(ram, info, frame, spec)
+        if is_macro:
+            feats = self.features(ram, info, frame, spec)
+        else:
+            feats = self._gated_features(ram, info, frame, spec)
         total = 0.0
         self.breakdown = {}          # per-term contribution, for --explain-reward
         for t in self.terms:
@@ -258,13 +264,16 @@ class RewardModel:
                     a = self.prev_feats.get(name, b)
                     total += scale * (b - a)
             elif kind == "decrease_event":
-                # Pays when a counter DROPS. A per-piece reward needs this:
-                # a piece landing is marked by the row counter resetting for the
-                # next one, and there is no value it "becomes" to match on.
-                name = t.get("var")
-                a, b = self.prev_vars.get(name), now.get(name)
-                if a is not None and b is not None and b < a:
-                    total += scale
+                # Pays when a counter DROPS. In macro mode, each successful piece placement
+                # is a landing event (unless the piece topped out and terminated).
+                if is_macro:
+                    if not terminated:
+                        total += scale
+                else:
+                    name = t.get("var")
+                    a, b = self.prev_vars.get(name), now.get(name)
+                    if a is not None and b is not None and b < a:
+                        total += scale
             elif kind == "event":
                 name = t.get("var")
                 want = t.get("equals")
@@ -385,7 +394,7 @@ class GenericRetroEnv(gym.Env):
         ram = self._ram()
         terminated = self._ended(ram, self._seen(info)) or env_term
         reward, feats = self.reward_model.step(ram, self._seen(info), terminated,
-                                               obs, self.spec_.grid)
+                                               obs, self.spec_.grid, is_macro=True)
         truncated = env_trunc or self.steps >= self.spec_.max_steps
         return obs, float(reward), bool(terminated), bool(truncated), \
             self._info(ram, self._seen(info), feats)
@@ -424,7 +433,8 @@ class GenericRetroEnv(gym.Env):
         obs, info = self.env.reset(**kwargs)
         obs, info = self._skip(obs, info)
         ram = self._ram()
-        self.reward_model.reset(ram, self._seen(info), obs, self.spec_.grid)
+        is_macro = (getattr(self.spec_, "action_mode", "button_stream") == "macro_placement")
+        self.reward_model.reset(ram, self._seen(info), obs, self.spec_.grid, is_macro=is_macro)
         self.steps = 0
         return obs, self._info(ram, self._seen(info), self.reward_model.prev_feats)
 

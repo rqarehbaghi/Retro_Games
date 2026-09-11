@@ -95,7 +95,7 @@ def describe(game, spec):
         gs = spec.grid or {}
         desc = ("grid %sx%s cells of %spx, sampled from the frame at x%s y%s, "
                 "plus the piece (type, rotation, column, row)"
-                % (gs.get("cols", 10), gs.get("rows", 22), gs.get("cell", 8),
+                % (gs.get("cols", 10), gs.get("rows", 20), gs.get("cell", 8),
                    gs.get("x"), gs.get("y")))
         print("observation : %s" % desc)
         print("policy      : MlpPolicy (a grid is a vector, not a picture)")
@@ -159,7 +159,9 @@ def hyper(args, spec):
 
 def policy_for(spec):
     """A picture needs a CNN; a grid of numbers needs an MLP."""
-    return ("MlpPolicy", False) if spec.observation.get("kind") == "grid"         else ("CnnPolicy", True)
+    if spec.observation.get("kind") == "grid":
+        return "MlpPolicy", False
+    return "CnnPolicy", True
 
 
 def train(args, spec, overrides):

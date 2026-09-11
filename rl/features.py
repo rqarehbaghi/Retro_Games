@@ -73,15 +73,11 @@ def read_well(ram, player=2):
 
 
 def tetris(vars, ram, info, player=2):
-    """Holes, height and bumpiness -- the standard Tetris board heuristics.
+    """Holes, height and bumpiness from legacy 13-row RAM decode.
 
-    A hole is an empty cell with a filled cell above it in the same column: the
-    thing that makes a stack unrecoverable, and the single most useful signal
-    for teaching placement. Bumpiness is the summed height difference between
-    neighbouring columns, punishing a jagged surface only an I-piece can fix.
-    Line clears alone are far too sparse to learn from -- a random policy tops
-    out having never made one -- so these are what give early training a
-    gradient at all.
+    NOTE: The RAM-based well decoder reads only 13 rows and cannot observe the
+    full 20-22 row playfield due to NES double-buffering limits. For complete
+    heuristics, games.json configures the pixel-sampling hook 'tetris_pixels'.
     """
     grid = read_well(ram, player)
     rows, cols = grid.shape
@@ -114,9 +110,12 @@ def tetris(vars, ram, info, player=2):
 # board is all that matters.
 def grid_from_frame(frame, spec):
     """Binary rows x cols board sampled from the rendered frame."""
-    x0 = int(spec.get("x", 153)); y0 = int(spec.get("y", 48))
+    spec = spec or {}
+    x0 = int(spec.get("x", 153))
+    y0 = int(spec.get("y", 56))
     cell = int(spec.get("cell", 8))
-    cols = int(spec.get("cols", 10)); rows = int(spec.get("rows", 22))
+    cols = int(spec.get("cols", 10))
+    rows = int(spec.get("rows", 20))
     thr = float(spec.get("threshold", 40))
     pad = max(1, cell // 4)
     g = np.zeros((rows, cols), dtype=np.uint8)
@@ -161,16 +160,18 @@ def mask_piece(grid, ram, vars, player, spec):
 
     The piece's row and column come from the verified RAM addresses. Their
     origin is offset from the grid, calibrated by diffing consecutive frames --
-    the cells a falling piece VACATES are exactly the piece -- which gave
-    ramRow 10 -> grid row 5 and ramCol 7 -> grid cols 4..6, i.e. row - 5 and
-    column - 3. A 4x4 box covers any tetromino; one extra row of margin absorbs
-    the row counter lagging the drawn position by a frame.
+    the cells a falling piece VACATES are exactly the piece: ramRow 10 -> grid row 5
+    and ramCol 7 -> grid cols 4..6, i.e. row - 6 and column - 3 with the calibrated
+    20-row grid (y0=56). A 4x4 box covers any tetromino; one extra row of margin
+    absorbs the row counter lagging the drawn position by a frame.
     """
+    if ram is None:
+        return grid
     r = vars.read("piece_row_p%d" % player, ram, {})
     c = vars.read("piece_col_p%d" % player, ram, {})
     if r is None or c is None:
         return grid
-    row0 = int(r) - int((spec or {}).get("row_offset", 5)) - 1
+    row0 = int(r) - int((spec or {}).get("row_offset", 6)) - 1
     col0 = int(c) - int((spec or {}).get("col_offset", 3))
     out = grid.copy()
     rows, cols = out.shape

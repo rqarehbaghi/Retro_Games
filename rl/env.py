@@ -85,14 +85,16 @@ class TrainingSpec:
         # the second form: (["A"], 6) is a short hop and (["A"], 20) a full
         # jump, and collapsing both to one frameskip would delete the
         # difference between them.
-        self.actions, self.holds = [], []
+        self.actions, self.holds, self.releases = [], [], []
         for a in (t.get("action_set") or DEFAULT_ACTIONS):
             if isinstance(a, dict):
                 self.actions.append(list(a.get("buttons") or []))
                 self.holds.append(int(a.get("hold", 0)) or None)
+                self.releases.append(int(a["release"]) if "release" in a else None)
             else:
                 self.actions.append(list(a))
                 self.holds.append(None)
+                self.releases.append(None)
         self.observation = dict(t.get("observation") or {})
         self.grid = dict(self.observation.get("grid") or {})
         # Board features are only meaningful once a piece has LANDED.
@@ -120,7 +122,8 @@ class TrainingSpec:
         self.terms = list((self.entry.get("rewards") or {}).get("terms") or [])
 
     def _default_state(self, t):
-        for key in ("start_state_2p" if self.players >= 2 else "start_state",
+        for key in ("preferred_state", "training_state",
+                    "start_state_2p" if self.players >= 2 else "start_state",
                     "start_state", "start_state_2p"):
             if t.get(key):
                 return t[key]
@@ -160,9 +163,13 @@ class RewardModel:
             # A hook that predates the frame argument (RAM-only) still works.
             try:
                 return self.feature_fn(self.vars, ram, info, self.player) or {}
-            except Exception:                                    # noqa: BLE001
+            except Exception as e:                               # noqa: BLE001
+                import logging
+                logging.getLogger(__name__).warning("Feature hook failed: %s", e)
                 return {}
-        except Exception:                                        # noqa: BLE001
+        except Exception as e:                                   # noqa: BLE001
+            import logging
+            logging.getLogger(__name__).warning("Feature hook failed: %s", e)
             return {}
 
     def _gated_features(self, ram, info, frame, spec):
@@ -290,6 +297,7 @@ class GenericRetroEnv(gym.Env):
         self._combos = [[self._idx[b] for b in combo if b in self._idx]
                         for combo in s.actions]
         self._holds = s.holds
+        self._releases = s.releases
         self.action_space = gym.spaces.Discrete(len(self._combos))
         self.observation_space = self.env.observation_space
 
@@ -387,7 +395,9 @@ class GenericRetroEnv(gym.Env):
         info = {}
         env_term = env_trunc = False
         hold = self._holds[int(action)] or self.spec_.frameskip
-        release = min(self.spec_.release_frames, max(0, hold - 1))
+        act_rel = self._releases[int(action)]
+        base_rel = act_rel if act_rel is not None else self.spec_.release_frames
+        release = min(max(0, base_rel), max(0, hold - 1)) if hold > 1 else 0
         for _ in range(hold - release):
             obs, _r, term, trunc, info = self.env.step(joint)
             # Keep the integration's OWN done signal. A standard integration
@@ -462,6 +472,45 @@ class WarpFrame(gym.ObservationWrapper):
         return frame[:, :, None]
 
 
+def build_grid_observation(frame, ram, gspec, vars, player):
+    """Canonical builder for grid observations shared by training and inference.
+
+    Produces a 1D vector consisting of:
+      1. Flattened rows x cols board (optionally masking the active falling piece
+         if mask_piece is enabled in gspec, so the grid represents settled stack only).
+      2. Active piece one-hot (7 floats).
+      3. Piece coordinates: normalized rotation, column, and row (3 floats).
+    """
+    from rl import features as fh
+    gspec = gspec or {}
+    cols = int(gspec.get("cols", 10))
+    g = fh.grid_from_frame(frame, gspec)
+    if gspec.get("mask_piece", False) and ram is not None:
+        g = fh.mask_piece(g, ram, vars, player, gspec)
+    g = g.astype(np.float32).ravel()
+
+    def rd(name, default=0):
+        if ram is None:
+            return default
+        v = vars.read("%s_p%d" % (name, player), ram, {}, default)
+        return default if v is None else int(v)
+
+    onehot = np.zeros(7, dtype=np.float32)
+    t = rd("piece_type", 0)
+    if 0 <= t < 7:
+        onehot[t] = 1.0
+
+    extra = np.concatenate([
+        onehot,
+        np.array([
+            rd("piece_rot", 0) / 3.0,
+            rd("piece_col", 0) / max(1, cols),
+            rd("piece_row", 0) / 24.0,
+        ], dtype=np.float32)
+    ])
+    return np.concatenate([g, extra]).astype(np.float32)
+
+
 class GridObservation(gym.ObservationWrapper):
     """The board as numbers instead of a picture, plus the piece being placed.
 
@@ -478,12 +527,10 @@ class GridObservation(gym.ObservationWrapper):
 
     def __init__(self, env, grid_spec, vars, player):
         super().__init__(env)
-        from rl import features as fh
-        self._grid_from_frame = fh.grid_from_frame
         self.gspec = dict(grid_spec or {})
         self.vars = vars
         self.player = player
-        self.rows = int(self.gspec.get("rows", 22))
+        self.rows = int(self.gspec.get("rows", 20))
         self.cols = int(self.gspec.get("cols", 10))
         # board cells + piece type (one-hot 7) + rotation + column + row
         self.extra = 7 + 3
@@ -491,22 +538,26 @@ class GridObservation(gym.ObservationWrapper):
             low=0.0, high=1.0, shape=(self.rows * self.cols + self.extra,),
             dtype=np.float32)
 
+    def _get_ram(self):
+        """Robustly retrieve RAM across any wrappers."""
+        if hasattr(self.env, "_ram"):
+            return self.env._ram()
+        unwrapped = getattr(self.env, "unwrapped", self.env)
+        if hasattr(unwrapped, "_ram"):
+            return unwrapped._ram()
+        if hasattr(unwrapped, "get_ram"):
+            return unwrapped.get_ram()
+        if hasattr(unwrapped, "env"):
+            inner = unwrapped.env
+            if hasattr(inner, "_ram"):
+                return inner._ram()
+            if hasattr(inner, "get_ram"):
+                return inner.get_ram()
+        return getattr(self.env, "get_ram", lambda: None)()
+
     def observation(self, frame):
-        g = self._grid_from_frame(frame, self.gspec).astype(np.float32).ravel()
-        ram = self.env.unwrapped.env.unwrapped.get_ram()             if hasattr(self.env.unwrapped, "env") else self.env.unwrapped._ram()
-        p = self.player
-        def rd(name, default=0):
-            v = self.vars.read("%s_p%d" % (name, p), ram, {}, default)
-            return default if v is None else int(v)
-        onehot = np.zeros(7, dtype=np.float32)
-        t = rd("piece_type", 0)
-        if 0 <= t < 7:
-            onehot[t] = 1.0
-        extra = np.concatenate([onehot, np.array([
-            rd("piece_rot", 0) / 3.0,
-            rd("piece_col", 0) / max(1, self.cols),
-            rd("piece_row", 0) / 24.0], dtype=np.float32)])
-        return np.concatenate([g, extra]).astype(np.float32)
+        ram = self._get_ram()
+        return build_grid_observation(frame, ram, self.gspec, self.vars, self.player)
 
 
 def make_env(game, overrides=None, warp=True, render_mode="rgb_array"):
@@ -521,6 +572,7 @@ def make_env(game, overrides=None, warp=True, render_mode="rgb_array"):
                         height=int(obs_cfg.get("height", 84)),
                         crop=obs_cfg.get("crop"))
     return env
+
 
 def make_observer(game, overrides=None, n_stack=4):
     """Build observations the way TRAINING builds them, for anything outside it.
@@ -541,30 +593,19 @@ def make_observer(game, overrides=None, n_stack=4):
     player = spec.player
 
     if kind == "grid":
-        from rl import features as fh
         gs = dict(spec.grid or {})
-        rows = int(gs.get("rows", 22)); cols = int(gs.get("cols", 10))
+        rows = int(gs.get("rows", 20))
+        cols = int(gs.get("cols", 10))
 
         def process(frame, ram):
-            g = fh.grid_from_frame(frame, gs).astype(np.float32).ravel()
-            def rd(name, default=0):
-                v = vars.read("%s_p%d" % (name, player), ram, {}, default)
-                return default if v is None else int(v)
-            onehot = np.zeros(7, dtype=np.float32)
-            t = rd("piece_type", 0)
-            if 0 <= t < 7:
-                onehot[t] = 1.0
-            extra = np.concatenate([onehot, np.array([
-                rd("piece_rot", 0) / 3.0,
-                rd("piece_col", 0) / max(1, cols),
-                rd("piece_row", 0) / 24.0], dtype=np.float32)])
-            return np.concatenate([g, extra]).astype(np.float32)
+            return build_grid_observation(frame, ram, gs, vars, player)
 
         # A vector observation is stacked by CONCATENATION, not as channels.
         return process, ((rows * cols + 10) * n_stack,)
 
     crop = o.get("crop")
-    width = int(o.get("width", 84)); height = int(o.get("height", 84))
+    width = int(o.get("width", 84))
+    height = int(o.get("height", 84))
 
     def process(frame, ram=None):
         if crop:

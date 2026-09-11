@@ -561,6 +561,7 @@
         "WELL_HEIGHT_OPEN_QUESTION": "PARTLY RESOLVED. The two blocks at 0x0600 and 0x0700 are NOT mirrors of one board: each lock writes to exactly one of them, alternating, so taking whichever held more cells (the old behaviour) silently dropped every piece that landed in the other. read_well now unions them, which grows on every lock where either block alone stalls. STILL OPEN: the piece row counter reaches 21 while each block decodes 13 rows, and locks add only 2-3 cells rather than 4, so part of the board is still not being read -- most likely rows above the 13. Resolve before building a grid observation; the holes/height shaping is improved by the union but may still not see the very top of the stack."
       },
       "training": {
+        "preferred_state": "level8_2p",
         "start_state": "level0_1p",
         "start_state_notes": "integrations/TetrisTime-Nes-v0/level0_1p.state -- a 1-player game already underway at level 0 (score 0, lines 0, first piece falling), so training never has to drive the boot screen and menus. Captured from studio_out/20260908-012346 at frame 1515, chosen because 0x0631 first reads 240 (playing) at frame 1485. Load with retro.make(state=level0_1p).",
         "episode_end": {
@@ -570,7 +571,7 @@
         "ignore_while": "level_transition 0x01D2 == 1",
         "start_state_2p": "level0_2p",
         "start_state_2p_notes": "integrations/TetrisTime-Nes-v0/level0_2p.state -- a TWO-player game already underway at level 0 (both players alive, all counters 0), captured at frame 433 of studio_out/20260908-193739. Train the bot as PLAYER 2 from this state: it then learns on exactly the screen and controls it will use at deploy time, so there is no 1P->2P transfer problem. VERIFIED: loading it with players=2 and driving only the P2 half of the 18-bit action (bits 9..17) changes ONLY the right half of the screen (left-half pixel delta 0, right-half 125792). P1 can be left idle; its play does not affect P2 reward.",
-        "controls": "Per player slice, buttons are [B, -, SELECT, START, UP, DOWN, LEFT, RIGHT, A]: LEFT/RIGHT move the piece, DOWN soft-drops it, A rotates clockwise and B counter-clockwise. P2 occupies bits 9..17 of the joint action.",
+        "controls": "Per player slice, buttons are [B, -, SELECT, START, UP, DOWN, LEFT, RIGHT, A]: LEFT/RIGHT move the piece, DOWN soft-drops it, A rotates clockwise (B counter-clockwise is removed from action_set to streamline exploration). P2 occupies bits 9..17 of the joint action.",
         "episode_end_p2": "game_over_p2 0x004B == 0",
         "start_state_8_2p": "level8_2p",
         "start_state_8_2p_notes": "integrations/TetrisTime-Nes-v0/level8_2p.state -- a two-player game underway with P2 on LEVEL 8 (P1 on level 5), captured at frame 1800 of studio_out/20260909-001721. PREFER THIS FOR TRAINING: at level 0 gravity is ~960 frames per piece, so a random policy survived 1500 steps (6000 frames) without even topping out; from level 8 the same policy tops out in 288 steps with a genuinely full board (holes 10, height 63). Roughly 5x more complete episodes per frame, and a real learning signal.",
@@ -584,14 +585,14 @@
           [
             "RIGHT"
           ],
-          [
-            "DOWN"
-          ],
+          {
+            "buttons": [
+              "DOWN"
+            ],
+            "release": 0
+          },
           [
             "A"
-          ],
-          [
-            "B"
           ]
         ],
         "players": 2,

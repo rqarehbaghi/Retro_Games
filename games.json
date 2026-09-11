@@ -585,12 +585,9 @@
           [
             "RIGHT"
           ],
-          {
-            "buttons": [
-              "DOWN"
-            ],
-            "release": 0
-          },
+          [
+            "DOWN"
+          ],
           [
             "A"
           ]

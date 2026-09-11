@@ -668,6 +668,13 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
     diag_sent = set()
     warned_focus = False
 
+    is_tetris = "Tetris" in game
+    down_idx = buttons.index("DOWN") if "DOWN" in buttons else None
+    last_p1_row = None
+    last_p2_row = None
+    release_p1_down = False
+    release_p2_down = False
+
     while running:
         if _stop["now"]:
             print("[interrupted -- closing the window cleanly]")
@@ -711,6 +718,18 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
 
         # Combine actions based on player count.
         #
+        # In NES Tetris, soft drop only activates on a 0 -> 1 rising edge. If DOWN is held
+        # continuously through a piece spawn, the hardware register never sees a new press
+        # and ignores DOWN for the new piece. Pulsing a 1-frame release right at spawn guarantees
+        # the new piece receives a fresh press and soft-drops without needing a physical re-tap.
+        if is_tetris and down_idx is not None:
+            if release_p1_down:
+                p1_action[down_idx] = False
+                release_p1_down = False
+            if release_p2_down:
+                p2_action[down_idx] = False
+                release_p2_down = False
+
         # stable-retro wants ONE FLAT array of num_buttons * players, laid out
         # player-major (all of P1's buttons, then all of P2's) -- not a 2-D
         # (players, buttons) array. Stacking produced shape (2, 9), and
@@ -728,6 +747,22 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
         obs, reward, terminated, truncated, info = env.step(joint_action)
         step_count += 1
         audio.feed(env.unwrapped.em.get_audio())
+
+        if is_tetris and down_idx is not None:
+            try:
+                ram = env.unwrapped.get_ram()
+                row_p1 = int(ram[0x0060])
+                row_p2 = int(ram[0x0061])
+                if last_p1_row is not None and last_p1_row > 4 and row_p1 <= 4:
+                    if p1_action[down_idx]:
+                        release_p1_down = True
+                if last_p2_row is not None and last_p2_row > 4 and row_p2 <= 4:
+                    if p2_action[down_idx]:
+                        release_p2_down = True
+                last_p1_row = row_p1
+                last_p2_row = row_p2
+            except Exception:
+                pass
 
         diag_frames += 1
         diag_keys = max(diag_keys, len(combined))

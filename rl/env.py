@@ -207,14 +207,14 @@ class RewardModel:
         else:
             self.prev_feats = self._gated_features(ram, info, frame, spec)
 
-    def rebaseline(self, ram, info, frame=None, spec=None):
+    def rebaseline(self, ram, info, frame=None, spec=None, is_macro=False):
         """Forget the last values without paying for the change.
 
         Used when the game was not being played -- an animation between levels
         runs the score up on its own, and charging the agent for a jump it did
         not cause is worse than paying nothing.
         """
-        self.reset(ram, info, frame, spec)
+        self.reset(ram, info, frame, spec, is_macro=is_macro)
 
     @staticmethod
     def label(t):
@@ -254,6 +254,17 @@ class RewardModel:
                         diff = max(0, diff)
                     total += scale * diff
             elif kind in ("feature_delta", "feature_level"):
+                # NOT on the terminating step. The board is read from the
+                # screen, and the frame after the game-over flag is the
+                # game-over ANIMATION, not a board the agent played: measured
+                # on TetrisTime, holes jumped 17 -> 46 and filled cells 58 -> 72
+                # in the single frame after 0x004B cleared. Diffing across that
+                # made the terminal step pay anywhere from +53.7 to -69.6 when
+                # the configured terminal is a flat -10..-20, so dying was
+                # sometimes the best-paid move in the episode. What ending an
+                # episode is worth is the `terminal` term's job alone.
+                if terminated:
+                    continue
                 name = t.get("name")
                 b = feats.get(name)
                 if b is None:
@@ -311,6 +322,7 @@ class GenericRetroEnv(gym.Env):
         self._holds = s.holds
         self._releases = s.releases
         self.action_space = gym.spaces.Discrete(len(self._combos))
+        self.steps = self.frames = 0
         self.observation_space = self.env.observation_space
 
         self.use_data_json = s.use_data_json
@@ -382,6 +394,7 @@ class GenericRetroEnv(gym.Env):
         else:
             joint = self.empty_joint()
         obs, r, term, trunc, info = self.env.step(joint)
+        self.frames += 1
         ram = self._ram()
         if self._ended(ram, self._seen(info)):
             term = True
@@ -390,7 +403,17 @@ class GenericRetroEnv(gym.Env):
     def finalize_macro_step(self, obs, info, env_term, env_trunc):
         """Finalizes one high-level macro placement action and returns step outputs."""
         self.steps += 1
-        obs, info = self._skip(obs, info)
+        # Same rule the button path follows: a stretch the agent cannot act on
+        # is run past and paid nothing. A level change animates the score up on
+        # its own and redraws the board, and charging -- or crediting -- the
+        # agent for a jump it did not cause is worse than paying nothing.
+        if self._skipping(self._ram(), self._seen(info)):
+            obs, info = self._skip(obs, info)
+            ram = self._ram()
+            self.reward_model.rebaseline(ram, self._seen(info), obs,
+                                         self.spec_.grid, is_macro=True)
+            return obs, 0.0, False, False, self._info(
+                ram, self._seen(info), self.reward_model.prev_feats)
         ram = self._ram()
         terminated = self._ended(ram, self._seen(info)) or env_term
         reward, feats = self.reward_model.step(ram, self._seen(info), terminated,
@@ -420,13 +443,20 @@ class GenericRetroEnv(gym.Env):
         while self._skipping(self._ram(), info) and guard < 2000:
             obs, _r, _t, _tr, info = self.env.step(
                 [False] * (self.n_buttons * self.spec_.players))
+            self.frames += 1
             guard += 1
         return obs, info
 
     def _info(self, ram, info, feats=None):
         out = {n: self.vars.read(n, ram, info) for n in self.vars.names()}
         out.update({k: v for k, v in (feats or {}).items()})
-        return {k: v for k, v in out.items() if v is not None}
+        out = {k: v for k, v in out.items() if v is not None}
+        # Emulator frames since reset. A decision is NOT a fixed number of
+        # frames once a game uses macro actions -- a Tetris placement runs 18
+        # to 54 -- so multiplying decisions by frameskip to get survival time
+        # is wrong by about 10x. Anything comparing runs must read this.
+        out["frames"] = self.frames
+        return out
 
     # -- gym API ---------------------------------------------------------
     def reset(self, **kwargs):
@@ -436,6 +466,7 @@ class GenericRetroEnv(gym.Env):
         is_macro = (getattr(self.spec_, "action_mode", "button_stream") == "macro_placement")
         self.reward_model.reset(ram, self._seen(info), obs, self.spec_.grid, is_macro=is_macro)
         self.steps = 0
+        self.frames = 0
         return obs, self._info(ram, self._seen(info), self.reward_model.prev_feats)
 
     def step(self, action):
@@ -449,6 +480,7 @@ class GenericRetroEnv(gym.Env):
         release = min(max(0, base_rel), max(0, hold - 1)) if hold > 1 else 0
         for _ in range(hold - release):
             obs, _r, term, trunc, info = self.env.step(joint)
+            self.frames += 1
             # Keep the integration's OWN done signal. A standard integration
             # (SMB3) publishes one through scenario.json, and a game whose
             # games.json declares no episode_end has nothing else to end on.
@@ -463,6 +495,7 @@ class GenericRetroEnv(gym.Env):
                 break
             obs, _r, term, trunc, info = self.env.step(
                 [False] * (self.n_buttons * self.spec_.players))
+            self.frames += 1
             if self.use_data_json:
                 env_term = env_term or bool(term)
                 env_trunc = env_trunc or bool(trunc)

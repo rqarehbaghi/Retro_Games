@@ -569,7 +569,6 @@
           "equals": 0
         },
         "ignore_while": "level_transition 0x01D2 == 1",
-        "preferred_state": "level8_2p",
         "start_state_2p": "level0_2p",
         "start_state_2p_notes": "integrations/TetrisTime-Nes-v0/level0_2p.state -- a TWO-player game already underway at level 0 (both players alive, all counters 0), captured at frame 433 of studio_out/20260908-193739. Train the bot as PLAYER 2 from this state: it then learns on exactly the screen and controls it will use at deploy time, so there is no 1P->2P transfer problem. VERIFIED: loading it with players=2 and driving only the P2 half of the 18-bit action (bits 9..17) changes ONLY the right half of the screen (left-half pixel delta 0, right-half 125792). P1 can be left idle; its play does not affect P2 reward.",
         "controls": "Per player slice, buttons are [B, -, SELECT, START, UP, DOWN, LEFT, RIGHT, A]: LEFT/RIGHT move the piece, DOWN soft-drops it, A rotates clockwise (B counter-clockwise is removed from action_set to streamline exploration). P2 occupies bits 9..17 of the joint action.",
@@ -591,6 +590,9 @@
           "spawn_col": 4,
           "tap_hold": 2,
           "tap_release": 2,
+          "rotate_step": -1,
+          "rotate_step_why": "One tap of A moves piece_rot_p2 by -1, MEASURED: tapping A from a fresh piece ran the counter 0 -> 3 -> 2 -> 1 -> 0. The planner needs this because the taps to reach a target are (current - target) mod 4, not (target - current). A piece always spawns at rotation 0, so the old sign made the action index a fixed permutation of the real rotation that a policy could learn around, and it only became visible when a plan started from an already-rotated piece.",
+          "measured": "col_offset 3 verified by driving P2: piece_col_p2 reads 7 at spawn and taps reach 3 (left wall) and 10 (right wall), so grid column = raw - 3 and spawn is column 4. Requested columns land where asked: (rot,col)=(2,0) put cells in grid columns 0-2, (0,7) in 7-9, (3,8) in 8-9. One macro placement runs 18-54 emulator frames, median 38.",
           "settle_detect": {
             "kind": "ram_trigger",
             "trigger_on": "decrease_event",
@@ -674,8 +676,8 @@
           {
             "kind": "decrease_event",
             "var": "piece_row_p2",
-            "scale": 0.5,
-            "note": "Modest reward for landing a piece without letting placement farming out-earn clearing lines."
+            "scale": 1.5,
+            "note": "Paid once per piece placed. It has to be big enough that a CLEAN placement is worth more than not placing: measured over 191 random macro placements from level8_2p, one placement moves holes +3.16, height +7.01 and bumpiness +0.94 on average, so at the board weights below a hole-free placement earns about +1.95 and an average random one about +0.37. Cutting this to 0.5 while raising the board weights made every placement worth -12.4, which is the same failure the note on the board weights describes."
           },
           {
             "kind": "delta",
@@ -686,17 +688,19 @@
           {
             "kind": "feature_delta",
             "name": "holes",
-            "scale": -4.0
+            "scale": -0.5,
+            "note": "MEASURED, not guessed. 191 random macro placements from level8_2p move holes by +3.16 +-2.81 per placement. At -4.0 that alone is -12.6 a placement, so the whole episode scored -12.4 per step while ENDING it cost -20 once -- quitting beat even one more placement, and the agent's fastest available improvement was to top out sooner. It also buried the objective: one line clear is +10, which at -4.0 is 0.9 standard deviations of a single step's reward, versus 7.1 sd at -0.5. At -0.5 a placement is worth +0.37 on average and +1.95 when it opens no hole, so playing pays and playing WELL pays more."
           },
           {
             "kind": "feature_delta",
             "name": "height",
-            "scale": -0.1
+            "scale": -0.02,
+            "note": "Summed column height rises about +7 per placement no matter how well it is played, so this is a flat tax rather than a discriminator between placements. At -0.1 the tax is -0.70 a placement, which by itself outweighs the +0.5 a landing paid and made even a perfect hole-free policy net negative."
           },
           {
             "kind": "feature_delta",
             "name": "bumpiness",
-            "scale": -0.2
+            "scale": -0.02
           },
           {
             "kind": "step",

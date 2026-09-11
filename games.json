@@ -666,7 +666,7 @@
           {
             "kind": "feature_delta",
             "name": "holes",
-            "scale": -0.5
+            "scale": -1.5
           },
           {
             "kind": "feature_delta",
@@ -676,7 +676,7 @@
           {
             "kind": "feature_delta",
             "name": "bumpiness",
-            "scale": -0.02
+            "scale": -0.1
           },
           {
             "kind": "step",

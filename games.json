@@ -577,6 +577,25 @@
         "start_state_8_2p_notes": "integrations/TetrisTime-Nes-v0/level8_2p.state -- a two-player game underway with P2 on LEVEL 8 (P1 on level 5), captured at frame 1800 of studio_out/20260909-001721. PREFER THIS FOR TRAINING: at level 0 gravity is ~960 frames per piece, so a random policy survived 1500 steps (6000 frames) without even topping out; from level 8 the same policy tops out in 288 steps with a genuinely full board (holes 10, height 63). Roughly 5x more complete episodes per frame, and a real learning signal.",
         "well": "P2 board at 0x0600/0x0700 + 16*row + 8 (P1 at +0), 13 rows x 10 columns, FOUR BITS per cell, dropping 3 wall nibbles each side; 0 = empty. Found by driving only P2 and watching which half filled. DOUBLE BUFFERED across 0x0600 and 0x0700 and the game alternates which is current, so read both and take whichever holds more filled cells -- a stale buffer lags behind, never ahead. Holds LOCKED cells only; the falling piece is not in it.",
         "soft_drop": "DOWN increases gravity and earns drop points. It is IGNORED when held across a piece spawn, so a policy has to re-press it per piece -- measured: DOWN held for 1200 frames landed no more pieces than no input at all, while a fresh press drops a piece within ~60 frames.",
+        "action_mode": "macro_placement",
+        "macro_config": {
+          "type": "grid_placement",
+          "rotations": 4,
+          "columns": 10,
+          "rotate_button": "A",
+          "left_button": "LEFT",
+          "right_button": "RIGHT",
+          "commit_button": "DOWN",
+          "col_offset": 3,
+          "spawn_col": 4,
+          "tap_hold": 2,
+          "tap_release": 2,
+          "settle_detect": {
+            "kind": "ram_trigger",
+            "trigger_on": "decrease_event",
+            "var": "piece_row_p2"
+          }
+        },
         "action_set": [
           [],
           [

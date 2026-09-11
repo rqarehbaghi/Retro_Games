@@ -88,7 +88,14 @@ def describe(game, spec):
     print("state       : %s" % (spec.state or "(integration default)"))
     print("available   : %s" % (", ".join(spec.states_available()) or "(none)"))
     print("frameskip   : %d" % spec.frameskip)
-    print("actions     : %d  %s" % (len(spec.actions), spec.actions))
+    if getattr(spec, "action_mode", "button_stream") == "macro_placement":
+        mc = spec.macro_config
+        rots = int(mc.get("rotations", 4))
+        cols = int(mc.get("columns", 10))
+        print("action mode : macro_placement (%d discrete actions: %d rotations x %d columns)"
+              % (rots * cols, rots, cols))
+    else:
+        print("actions     : %d  %s" % (len(spec.actions), spec.actions))
     o = spec.observation or {}
     kind = o.get("kind", "pixels")
     if kind == "grid":

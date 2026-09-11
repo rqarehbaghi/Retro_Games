@@ -60,6 +60,7 @@ if ROOT not in sys.path:
 
 import custom_integrations                      # noqa: E402
 from rl import features as feature_hooks        # noqa: E402
+from rl.macro import MacroPlacementWrapper      # noqa: E402
 from rl.vars import GameVars, load_entry        # noqa: E402
 
 # Used when a game names no action set. Every retro game has these buttons, and
@@ -80,6 +81,8 @@ class TrainingSpec:
         self.player = int(t.get("player", 1))
         self.frameskip = int(t.get("frameskip", 4))
         self.features_name = t.get("features")
+        self.action_mode = t.get("action_mode", "button_stream")
+        self.macro_config = dict(t.get("macro_config") or {})
         # An action is either a plain button list, or {"buttons": [...],
         # "hold": N} when how LONG it is held is part of the move. SMB3 needs
         # the second form: (["A"], 6) is a short hop and (["A"], 20) a full
@@ -351,6 +354,38 @@ class GenericRetroEnv(gym.Env):
             act[self.slot * self.n_buttons + b] = True
         return act
 
+    def buttons_to_joint(self, button_names):
+        act = [False] * (self.n_buttons * self.spec_.players)
+        for b in button_names:
+            if b in self._idx:
+                act[self.slot * self.n_buttons + self._idx[b]] = True
+        return act
+
+    def empty_joint(self):
+        return [False] * (self.n_buttons * self.spec_.players)
+
+    def step_raw_frame(self, buttons):
+        """Step exactly one emulator frame with specific buttons."""
+        if isinstance(buttons, (list, tuple)) and (len(buttons) == 0 or isinstance(buttons[0], str)):
+            joint = self.buttons_to_joint(buttons)
+        elif isinstance(buttons, (list, tuple, np.ndarray)):
+            joint = buttons
+        else:
+            joint = self.empty_joint()
+        return self.env.step(joint)
+
+    def finalize_macro_step(self, obs, info, env_term, env_trunc):
+        """Finalizes one high-level macro placement action and returns step outputs."""
+        self.steps += 1
+        obs, info = self._skip(obs, info)
+        ram = self._ram()
+        terminated = self._ended(ram, self._seen(info)) or env_term
+        reward, feats = self.reward_model.step(ram, self._seen(info), terminated,
+                                               obs, self.spec_.grid)
+        truncated = env_trunc or self.steps >= self.spec_.max_steps
+        return obs, float(reward), bool(terminated), bool(truncated), \
+            self._info(ram, self._seen(info), feats)
+
     def _ram(self):
         return self.env.unwrapped.get_ram()
 
@@ -563,6 +598,9 @@ class GridObservation(gym.ObservationWrapper):
 def make_env(game, overrides=None, warp=True, render_mode="rgb_array"):
     """One game, configured from games.json, ready for a vectoriser."""
     env = GenericRetroEnv(game, overrides, render_mode=render_mode)
+    if env.spec_.action_mode == "macro_placement":
+        from rl.macro import MacroPlacementWrapper
+        env = MacroPlacementWrapper(env, env.spec_.macro_config, env.vars, env.spec_.player)
     obs_cfg = env.spec_.observation
     if obs_cfg.get("kind") == "grid":
         return GridObservation(env, env.spec_.grid, env.vars, env.spec_.player)

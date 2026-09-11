@@ -254,6 +254,12 @@ def resolve_ai_combos(game):
     try:
         from rl.env import TrainingSpec
         spec = TrainingSpec(game)
+        if getattr(spec, "action_mode", "button_stream") == "macro_placement":
+            mc = spec.macro_config
+            rots = int(mc.get("rotations", 4))
+            cols = int(mc.get("columns", 10))
+            combos = [("ROT_%d_COL_%d" % (r, c)) for r in range(rots) for c in range(cols)]
+            return combos, "games.json macro_placement (%d actions)" % len(combos)
         if spec.entry.get("training", {}).get("action_set"):
             return spec.actions, "games.json action_set (%d actions)" % len(spec.actions)
     except Exception:                                            # noqa: BLE001
@@ -268,9 +274,11 @@ def discretize_ai_action(action_idx, env_buttons, combos=AI_COMBOS):
     the index the policy chose maps to the wrong buttons."""
     action = np.array([False] * len(env_buttons), dtype=bool)
     if 0 <= action_idx < len(combos):
-        for button_name in combos[action_idx]:
-            if button_name in env_buttons:
-                action[env_buttons.index(button_name)] = True
+        entry = combos[action_idx]
+        if isinstance(entry, (list, tuple)):
+            for button_name in entry:
+                if button_name in env_buttons:
+                    action[env_buttons.index(button_name)] = True
     return action
 
 

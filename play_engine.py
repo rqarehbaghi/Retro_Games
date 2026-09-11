@@ -611,12 +611,19 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
                 sys.exit("Checkpoint and games.json observation do not match.")
             trained_n = getattr(getattr(model, "action_space", None), "n", None)
             if trained_n is not None and int(trained_n) != len(ai_combos):
-                print("")
-                print("This checkpoint expects %d discrete actions but %s uses %d (%s)."
-                      % (int(trained_n), game, len(ai_combos), ai_combos_name))
-                print("It was trained for a different game or action set, so its")
-                print("choices would map to the wrong buttons.")
-                sys.exit("Use a checkpoint trained on this game.")
+                # Backwards-compatibility for older 6-action Tetris checkpoints (trained before B was removed)
+                if int(trained_n) == len(ai_combos) + 1 and ["B"] not in ai_combos and ["A"] in ai_combos:
+                    print("Note: checkpoint was trained with %d discrete actions (including legacy B rotation)."
+                          % int(trained_n))
+                    print("Adapting action table to include B for backwards compatibility.")
+                    ai_combos = list(ai_combos) + [["B"]]
+                else:
+                    print("")
+                    print("This checkpoint expects %d discrete actions but %s uses %d (%s)."
+                          % (int(trained_n), game, len(ai_combos), ai_combos_name))
+                    print("It was trained for a different game or action set, so its")
+                    print("choices would map to the wrong buttons.")
+                    sys.exit("Use a checkpoint trained on this game.")
         else:
             print("No checkpoint model found — AI will use exploratory random policy.")
 
@@ -699,7 +706,8 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
             # No trained model: pick a random *valid* action from the same
             # table (a coherent combo), not independent per-button coin flips
             # -- the latter produces impossible inputs like LEFT+RIGHT.
-            p2_action = discretize_ai_action(np.random.randint(len(AI_COMBOS)), buttons)
+            p2_action = discretize_ai_action(np.random.randint(len(ai_combos)), buttons,
+                                             combos=ai_combos)
 
         # Combine actions based on player count.
         #

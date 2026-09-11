@@ -213,9 +213,10 @@ def train(args, spec, overrides):
 
 
 def play(args, spec, overrides):
-    _policy, image = policy_for(spec)
+    policy, image = policy_for(spec)
     env = build_envs(args.game, overrides, 1, args.frame_stack, image)
-    model = PPO.load(args.play, env=env)
+    model = PPO.load(args.play, env=env,
+                     device=args.device or ("cpu" if policy == "MlpPolicy" else "auto"))
     obs = env.reset()
     ep = steps = 0
     while ep < args.episodes:
@@ -229,9 +230,16 @@ def play(args, spec, overrides):
             # decisions at frameskip 12 and 384 at frameskip 4 are the same
             # ~1500 frames of survival. Comparing the decision counts directly
             # makes a frameskip change look like a result.
+            #
+            # The frame count is COUNTED by the env, not decisions x frameskip.
+            # A macro placement runs however long the piece takes to settle --
+            # 18 to 54 frames on Tetris -- so the arithmetic was out by ~10x
+            # the moment macro actions arrived, in the direction that makes a
+            # macro run look far shorter than the button runs it replaced.
             print("episode %d: %4d decisions = %5d frames | score=%s lines=%s "
                   "holes=%s height=%s"
-                  % (ep, steps, steps * spec.frameskip, i.get("score_p2", i.get("score")),
+                  % (ep, steps, i.get("frames", steps * spec.frameskip),
+                     i.get("score_p2", i.get("score")),
                      i.get("lines_p2", i.get("lines")), i.get("holes"), i.get("height")))
             ep += 1
             steps = 0

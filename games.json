@@ -682,6 +682,7 @@
         "release_frames_why": "One frame of every decision is spent with no buttons held, so each decision is a fresh PRESS. Without it two identical decisions in a row reach the game as one sustained press: measured, repeated LEFT presses moved the piece 7,6,6,5,5,4 -- half did not register -- and a long hold triggers auto-repeat and skips columns. With one release frame the same four frames give a clean 7,6,5,4,3, one column per decision. This is why the bot could only slide pieces to a wall and never nudge one over a gap."
       },
       "rewards": {
+        "_design": "LINES-ONLY (owner's choice, option 1). The ONLY positive reward is clearing lines. There is deliberately no landing bonus, no score term, and no per-step tick, because all three paid the agent for pieces the game lands under gravity regardless of what it chose -- a do-nothing policy banked +16.5 in landing reward. So reward is paid only for what the agent's placement affects: the board it shapes and the lines it clears. Every placement is a small LOSS from the board penalties; the only way to go net positive is to clear lines. This gives the ranking the owner asked for -- a clean flat placement loses least, a clean tower more, a hole-making placement most -- and nothing is rewarded for merely existing. TRADEOFF, known and accepted: a random policy never clears a line, so it sees only losses and tops out. This reward is NOT learnable from scratch; it needs a warm start (behavior cloning from recordings) so the policy already places decently before RL begins.",
         "terms": [
           {
             "kind": "delta_tiered",
@@ -693,44 +694,30 @@
               60,
               120
             ],
-            "note": "A Tetris of four lines is worth far more than four singles, which a flat per-line rate cannot express."
-          },
-          {
-            "kind": "decrease_event",
-            "var": "piece_row_p{player}",
-            "scale": 1.5,
-            "note": "Paid once per piece placed. It has to be big enough that a CLEAN placement is worth more than not placing: measured over 191 random macro placements from level8_2p, one placement moves holes +3.16, height +7.01 and bumpiness +0.94 on average, so at the board weights below a hole-free placement earns about +1.95 and an average random one about +0.37. Cutting this to 0.5 while raising the board weights made every placement worth -12.4, which is the same failure the note on the board weights describes."
-          },
-          {
-            "kind": "delta",
-            "var": "score_p{player}",
-            "scale": 0.002,
-            "note": "Deliberately small. Soft-dropping earns drop points, and one careless episode banked 2088 of them; at 0.01 that is +21 and swamps the -10 for dying, teaching the bot to slam pieces down and ignore where they land."
+            "note": "The one positive term. A Tetris of four lines is worth far more than four singles, which a flat per-line rate cannot express."
           },
           {
             "kind": "feature_delta",
             "name": "holes",
-            "scale": -0.5,
-            "note": "This is the FROM-SCRATCH weight: a fresh run starts from a random policy, which opens about 3.1 holes a placement, and at -0.5 that policy still scores about +0.38 a placement so playing beats topping out and it can get off the ground. Measured tension: at -0.5 a TRAINED policy finds a one-hole placement still pays about +0.9, so a finished model tolerates holes more than is ideal; at -1.5 a clean placement is +1.48 and a one-hole placement is -0.02 (opening a hole cancels the placement), which is tidier BUT a random policy scores -2.76 there and learns to die instead of play. So the good path is a curriculum: train fresh at -0.5, then RESUME the resulting checkpoint at -1.5 to tighten it. At -4.0 even a trained policy scored -12.4 a placement and topped out, so do not go there."
+            "scale": -1.0,
+            "note": "A hole is the thing that makes a stack unrecoverable, so it is the heaviest board penalty. With no landing bonus to fight, this does not have to stay gentle: a hole-making placement should simply be the worst non-terminal outcome, which at -1.0 it is."
           },
           {
             "kind": "feature_delta",
             "name": "height",
-            "scale": -0.02,
-            "note": "Summed column height rises about +7 per placement no matter how well it is played, so this is a flat tax rather than a discriminator between placements. At -0.1 the tax is -0.70 a placement, which by itself outweighs the +0.5 a landing paid and made even a perfect hole-free policy net negative."
+            "scale": -0.05,
+            "note": "Aggregate column height. Kept small because it rises ~7 per placement however well played -- it is a mild pressure to keep the stack low, not the main signal. It telescopes to -0.05 * final height, so a game that clears lines (keeping height low) pays little and one that stacks to the top pays a lot."
           },
           {
             "kind": "feature_delta",
             "name": "bumpiness",
-            "scale": -0.02
-          },
-          {
-            "kind": "step",
-            "scale": 0.001
+            "scale": -0.15,
+            "note": "Summed step between neighbouring columns. This is what encodes 'prefer a flat line to a tower': at -0.02 it did nothing (a clean tower scored the same as a clean flat placement), so it is raised to -0.15 to make a jagged surface genuinely cost more than a level one."
           },
           {
             "kind": "terminal",
-            "scale": -20.0
+            "scale": -20.0,
+            "note": "Topping out is failure. It is the floor: no placement penalty is anywhere near this, so ending the game is always the worst thing that can happen."
           }
         ]
       }

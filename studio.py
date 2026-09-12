@@ -866,6 +866,7 @@ def main():
     parser.add_argument("--fullscreen", action="store_true", help="Launch play window in borderless full screen mode")
     parser.add_argument("--mode", choices=["versus", "coop", "race"], default="versus", help="Two-player match type, ignored when --players 1. (default: %(default)s)")
     parser.add_argument("--model", default=None, help="Checkpoint driving the AI player when --players 2. Without one the AI plays randomly, which makes for a much weaker video.")
+    parser.add_argument("--deterministic", action="store_true", help="Make the AI player take its single best action every decision instead of sampling. Sampling is the default: every match starts from the same save state with the same RNG, so a greedy AI plays the IDENTICAL game every time -- a pattern to memorise rather than an opponent, and the same footage in every video.")
     parser.add_argument("--state", default=None)
     parser.add_argument("--title", default=None, help="Overlay text and metadata title. Left out, one is written from what happened in the run -- cleared without dying, died twice, 14 coin run -- so nothing needs typing.")
     parser.add_argument("--watermark", default=cfg.get("watermark", ""), help="Handle burnt into the bottom of both videos. Set it once as \"watermark\" in studio.json instead of passing it every run. (default: from studio.json)")
@@ -1111,7 +1112,7 @@ def main():
             play_match(args.game, args.state, args.model, record_dir, players=2,
                        mode=args.mode, boot_screen=args.boot_screen,
                        scale=args.scale, fullscreen=args.fullscreen,
-                       render_mp4=False)
+                       render_mp4=False, deterministic=args.deterministic)
 
         from play_and_record import find_new_bk2, render_to_mp4
         bk2_path = find_new_bk2(record_dir, before, started_at=started)

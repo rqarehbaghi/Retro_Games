@@ -50,7 +50,7 @@ def build_policy(model_path, action_space):
 
 
 def play_agent_episode(game, state, model_path, max_steps, record_dir, render,
-                       on_death="continue", stochastic=False, max_attempts=5,
+                       on_death="continue", deterministic=False, max_attempts=5,
                        oam_base=0x0200, boot_screen=False):
     """Plays one session and records it.
 
@@ -194,13 +194,14 @@ def play_agent_episode(game, state, model_path, max_steps, record_dir, render,
                 action = np.array([idx])
                 map_pos += 1
             else:
-                # deterministic=True is the model's single best guess each
-                # decision -- but on a half-trained policy the argmax action can
-                # repeat forever (walk into the same pipe until the timer runs
-                # out). --stochastic samples from the policy's distribution
-                # instead, which is what PPO itself did during training and
-                # usually looks far less broken on an undertrained checkpoint.
-                action, _ = model.predict(obs, deterministic=not stochastic)
+                # Sampling from the policy is the DEFAULT, and used to be behind
+                # --stochastic. Taking the single best action each decision lets
+                # a half-trained policy repeat one forever (walk into the same
+                # pipe until the timer runs out), and because every run starts
+                # from the same state with the same RNG it produces the identical
+                # episode every time. Sampling is also what PPO itself did while
+                # training. --deterministic is for when a run has to reproduce.
+                action, _ = model.predict(obs, deterministic=deterministic)
             obs, reward, done, info = env.step(action)
             total_reward += reward[0]
             steps += 1
@@ -491,7 +492,8 @@ def main():
     parser.add_argument("--on-death", choices=["continue", "restart", "stop"], default="continue", help="'continue' (default): play continuously through deaths -- a scripted navigator walks the world map (tap RIGHT, tap UP, press A: the sequence measured to work by probe_after_death.py) and hands control back to the policy the moment a level loads. 'restart': skip the map and reset to the level start on each death, up to --max-attempts, joining every attempt into one video. 'stop': end at the first death for a single clean clip of what the policy alone does. Ignored with --human.")
     parser.add_argument("--max-attempts", type=int, default=5, help="With --on-death restart, how many level attempts to record before stopping. Each attempt becomes one clip and they are joined into a single video. (default: %(default)s)")
     parser.add_argument("--oam-base", type=lambda v: int(v, 0), default=0x0200, help="Sprite-table base, used only when the checkpoint was trained with --sprites. Must match what training used. (default: %(default)s)")
-    parser.add_argument("--stochastic", action="store_true", help="Sample actions from the policy's distribution instead of always taking its single best guess. On a half-trained model the deterministic argmax can lock into repeating one action (e.g. walking into a pipe until the timer kills it); sampling matches how PPO acted during training and usually produces a much more representative clip.")
+    parser.add_argument("--deterministic", action="store_true", help="Always take the policy's single best action instead of sampling from it. Sampling is the default: on a half-trained model the argmax can lock into repeating one action (walking into the same pipe until the timer kills it), every run starts from the same state with the same RNG so a greedy policy replays one identical episode, and sampling is what PPO itself did during training. Use this when a run has to be exactly reproducible.")
+    parser.add_argument("--stochastic", action="store_true", help=argparse.SUPPRESS)  # now the default; accepted so old commands still run
     parser.add_argument("--scale", type=int, default=4, help="Upscale factor for the final video, e.g. 4 turns ~256x224 into ~1024x896. Set to 1 to skip upscaling and keep the native-resolution file. (default: %(default)s)")
     parser.add_argument("--scale-mode", choices=["sharp", "smooth"], default="sharp", help="'sharp' = crisp nearest-neighbor (retro pixel look). 'smooth' = anti-aliased lanczos (softer, less blocky). (default: %(default)s)")
     args = parser.parse_args()
@@ -511,7 +513,7 @@ def main():
             record_dir=args.record_dir,
             render=args.render,
             on_death=args.on_death,
-            stochastic=args.stochastic,
+            deterministic=args.deterministic,
             max_attempts=args.max_attempts,
             oam_base=args.oam_base,
             boot_screen=args.boot_screen,

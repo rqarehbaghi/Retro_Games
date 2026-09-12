@@ -433,7 +433,7 @@ def _boot_state_name(game, name="boot"):
 
 def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
                mode="versus", players=2, boot_screen=False, p2_human=False,
-               fullscreen=False, render_mp4=True):
+               fullscreen=False, render_mp4=True, deterministic=False):
     os.makedirs(record_dir, exist_ok=True)
     import custom_integrations
     custom_integrations.register()
@@ -767,7 +767,8 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
             if macro_state == "IDLE":
                 curr_obs = ai_frame(obs, ram)
                 if model is not None:
-                    action_idx, _ = model.predict(curr_obs, deterministic=True)
+                    action_idx, _ = model.predict(curr_obs,
+                                                  deterministic=deterministic)
                     action_idx = int(action_idx)
                 else:
                     action_idx = np.random.randint(len(ai_combos))
@@ -792,7 +793,8 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
                 stacked_obs = np.array(frame_stack)
             else:
                 stacked_obs = ai_frame(obs, env.unwrapped.get_ram())
-            p2_discrete_action, _ = model.predict(stacked_obs, deterministic=True)
+            p2_discrete_action, _ = model.predict(stacked_obs,
+                                                  deterministic=deterministic)
             p2_action = discretize_ai_action(int(p2_discrete_action), buttons,
                                              combos=ai_combos)
         else:
@@ -1010,6 +1012,15 @@ def main():
     parser.add_argument("--scale", type=int, default=3, help="Window display scale factor (default: 3)")
     parser.add_argument("--fps", type=int, default=60, help="Framerate cap (default: 60)")
     parser.add_argument("--record-dir", default="./recordings", help="Replay output folder")
+    parser.add_argument("--deterministic", action="store_true",
+                        help="Always take the policy's single best action instead of "
+                             "sampling from it. Sampling is the default because the "
+                             "emulator starts every match from the same save state with "
+                             "the same RNG: a greedy policy therefore replays one "
+                             "identical game every time, which makes the AI a fixed "
+                             "pattern to memorise rather than an opponent, and makes an "
+                             "8-episode evaluation one sample repeated 8 times. Use this "
+                             "when you want a run to be exactly reproducible.")
     args = parser.parse_args()
 
     play_match(
@@ -1023,6 +1034,7 @@ def main():
         boot_screen=args.boot_screen,
         p2_human=args.two_human,
         players=2 if args.two_human else (2 if args.model else 1),
+        deterministic=args.deterministic,
     )
 
 

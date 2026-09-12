@@ -322,7 +322,14 @@ def main():
 
     p.add_argument("--play", default=None, metavar="CHECKPOINT.zip", help="Watch a checkpoint instead of training")
     p.add_argument("--episodes", type=int, default=5)
-    p.add_argument("--deterministic", action="store_true", help="Greedy actions when playing")
+    p.add_argument("--deterministic", action="store_true",
+                   help="Take the policy's single best action every decision instead of "
+                        "sampling from it. Sampling is the default. Every episode starts "
+                        "from the same save state with the same emulator RNG, so a greedy "
+                        "policy replays ONE identical episode: --episodes 8 measured "
+                        "8 identical results (58 placements, 6 lines, every time), where "
+                        "sampling gave 36-55 placements and 0-6 lines. Use this only when "
+                        "a run has to reproduce exactly.")
     args = p.parse_args()
 
     if args.config:

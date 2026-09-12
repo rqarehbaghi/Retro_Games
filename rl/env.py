@@ -475,6 +475,8 @@ class GenericRetroEnv(gym.Env):
                                          self.spec_.grid, is_macro=True)
             return obs, 0.0, False, False, self._info(
                 ram, self._seen(info), self.reward_model.prev_feats)
+        if not (env_term or env_trunc):
+            obs, info = self._settle_board(obs, info)
         ram = self._ram()
         terminated = self._ended(ram, self._seen(info)) or env_term
         reward, feats = self.reward_model.step(ram, self._seen(info), terminated,
@@ -482,6 +484,46 @@ class GenericRetroEnv(gym.Env):
         truncated = env_trunc or self.steps >= self.spec_.max_steps
         return obs, float(reward), bool(terminated), bool(truncated), \
             self._info(ram, self._seen(info), feats)
+
+    def _settle_board(self, obs, info):
+        """Let an animation finish before the board is scored.
+
+        A macro step ends when the agent's next decision becomes possible, and
+        on Tetris that is when the next piece spawns -- which happens BEFORE a
+        line clear has finished collapsing the rows above it. Scoring there
+        reads a board that is mid-animation. Measured: a clear that left 0
+        holes and height 2 was scored as 1 hole and height 7, and one that left
+        1 hole and height 9 was scored as 3 holes and height 15.
+
+        The cost is not the size of the error but WHERE it lands. The step that
+        clears the lines is charged for holes that do not exist, and the next
+        step is refunded for removing them -- so the single most valuable action
+        in the game is taxed and an unrelated later one is paid for it.
+
+        Waiting on the game's own FEATURES rather than a fixed frame count
+        keeps this generic: any game with a feature hook settles when its
+        features stop moving, and a game without one does nothing here.
+        """
+        cfg = dict(self.spec_.raw.get("settle_board") or {})
+        if not cfg:
+            return obs, info
+        want = int(cfg.get("stable_frames", 2))
+        prev, same = None, 0
+        for _ in range(int(cfg.get("max_frames", 40))):
+            cur = self.reward_model.features(self._ram(), self._seen(info),
+                                             obs, self.spec_.grid)
+            if prev is not None and cur == prev:
+                same += 1
+                if same >= want:
+                    break
+            else:
+                same = 0
+            prev = cur
+            obs, _r, term, trunc, info = self.env.step(self.empty_joint())
+            self.frames += 1
+            if term or trunc:
+                break
+        return obs, info
 
     def _ram(self):
         return self.env.unwrapped.get_ram()

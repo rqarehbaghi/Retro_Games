@@ -239,7 +239,7 @@ def make_p2_action(env_buttons, held_keys, pad=None):
     return keys_to_action(env_buttons, held_keys, KEY_MAPPING_P2, pad)
 
 
-def resolve_ai_combos(game):
+def resolve_ai_combos(game, overrides=None):
     """Which discrete action table the Player 2 model was trained with.
 
     A model only ever emits INDICES into the table it learned on, so decoding
@@ -251,7 +251,7 @@ def resolve_ai_combos(game):
     """
     try:
         from rl.env import TrainingSpec
-        spec = TrainingSpec(game)
+        spec = TrainingSpec(game, overrides)
         if getattr(spec, "action_mode", "button_stream") == "macro_placement":
             mc = spec.macro_config
             rots = int(mc.get("rotations", 4))
@@ -287,7 +287,7 @@ def process_frame(rgb_frame, target_size=84):
     return resized
 
 
-def make_frame_processor(game):
+def make_frame_processor(game, overrides=None):
     """Build frames the way THIS game's model was trained to see them.
 
     Delegates to rl.env.make_observer, which is what training uses, so the two
@@ -299,7 +299,7 @@ def make_frame_processor(game):
     """
     try:
         from rl.env import make_observer
-        return make_observer(game)
+        return make_observer(game, overrides)
     except Exception as exc:                                     # noqa: BLE001
         print("Could not build the trained observation (%s); "
               "falling back to 84x84 grayscale." % exc)
@@ -431,7 +431,8 @@ def _boot_state_name(game, name="boot"):
 
 def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
                mode="versus", players=2, boot_screen=False, p2_human=False,
-               fullscreen=False, render_mp4=True, deterministic=False):
+               fullscreen=False, render_mp4=True, deterministic=False,
+               ai_player=None):
     os.makedirs(record_dir, exist_ok=True)
     import custom_integrations
     custom_integrations.register()
@@ -594,8 +595,15 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
     # 2. Load trained PPO model for Player 2
     # Both of these describe what the model expects and are checked against
     # the checkpoint below, so they have to exist before it is loaded.
-    ai_combos, ai_combos_name = resolve_ai_combos(game)
-    ai_frame, ai_expected_shape = make_frame_processor(game)
+    # WHICH player the model drives. A checkpoint is not tied to a player: the
+    # observation is the board and the piece, not a screen position, so the same
+    # policy runs as either once it is pointed at that player's well and RAM.
+    # Default to whichever player the game's training block was built around.
+    ai_overrides = {"players": players}
+    if ai_player is not None:
+        ai_overrides["player"] = int(ai_player)
+    ai_combos, ai_combos_name = resolve_ai_combos(game, ai_overrides)
+    ai_frame, ai_expected_shape = make_frame_processor(game, ai_overrides)
     model = None
     if not p2_human:
         if model_path and os.path.exists(model_path):
@@ -636,16 +644,20 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
     try:
         from rl.env import TrainingSpec, GameVars
         from rl.macro import MacroPlanGenerator
-        spec = TrainingSpec(game)
+        spec = TrainingSpec(game, ai_overrides)
+        ai_slot = max(0, spec.player - 1)
         is_macro = getattr(spec, "action_mode", "button_stream") == "macro_placement"
         macro_cfg = getattr(spec, "macro_config", {}) if is_macro else {}
-        game_vars = GameVars(game, entry=spec.entry) if is_macro else None
-    except Exception:
+        game_vars = GameVars(game, entry=spec.entry)
+    except Exception:                                            # noqa: BLE001
+        spec = None
         is_macro = False
         macro_cfg = {}
         game_vars = None
+        ai_slot = 1 if num_players >= 2 else 0
+    ai_p = ai_slot + 1
 
-    def _buttons_to_p2(btn_names):
+    def _ai_buttons(btn_names):
         act = np.array([False] * len(buttons), dtype=bool)
         for b in btn_names:
             if b in buttons:
@@ -660,10 +672,10 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
     col_offset = int(macro_cfg.get("col_offset",
                                    macro_cfg.get("column_offset", 3))) if is_macro else 3
     commit_button = macro_cfg.get("commit_button", "DOWN") if is_macro else "DOWN"
-    rot_var = macro_cfg.get("rot_var", "piece_rot_p2") if is_macro else "piece_rot_p2"
-    col_var = macro_cfg.get("col_var", "piece_col_p2") if is_macro else "piece_col_p2"
-    row_var = macro_cfg.get("row_var", "piece_row_p2") if is_macro else "piece_row_p2"
-    piece_type_var = macro_cfg.get("piece_type_var", "piece_type_p2") if is_macro else "piece_type_p2"
+    rot_var = macro_cfg.get("rot_var", "piece_rot_p%d" % ai_p)
+    col_var = macro_cfg.get("col_var", "piece_col_p%d" % ai_p)
+    row_var = macro_cfg.get("row_var", "piece_row_p%d" % ai_p)
+    piece_type_var = macro_cfg.get("piece_type_var", "piece_type_p%d" % ai_p)
     prev_p2_row = None
     initial_p2_type = None
 
@@ -709,12 +721,22 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
     diag_sent = set()
     warned_focus = False
 
-    is_tetris = "Tetris" in game
-    down_idx = buttons.index("DOWN") if "DOWN" in buttons else None
-    last_p1_row = None
-    last_p2_row = None
-    release_p1_down = False
-    release_p2_down = False
+    # A button that only registers on a RISING edge has to be let go and pressed
+    # again when the thing it acts on restarts. NES Tetris soft drop is the case
+    # here: hold DOWN through a piece spawn and the new piece never sees a fresh
+    # press, so it does not soft-drop until the player physically re-taps.
+    #
+    # Declared per game rather than detected from the game's NAME, and named
+    # with {player} so it arms for BOTH sides -- the human's held DOWN needs the
+    # same re-press the AI's does.
+    #
+    #   "repress_on_reset": {"button": "DOWN", "var": "piece_row_p{player}",
+    #                        "resets_below": 5}
+    repress = dict((getattr(spec, "raw", {}) or {}).get("repress_on_reset") or {})
+    repress_idx = (buttons.index(repress["button"])
+                   if repress.get("button") in buttons else None)
+    last_reset_val = [None] * num_players
+    release_pending = [False] * num_players
 
     while running:
         if _stop["now"]:
@@ -780,10 +802,10 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
             # Execute next frame
             if macro_plan_queue:
                 frame_buttons = macro_plan_queue.popleft()
-                p2_action = _buttons_to_p2(frame_buttons)
+                p2_action = _ai_buttons(frame_buttons)
             else:
                 macro_state = "SOFT_DROP"
-                p2_action = _buttons_to_p2([commit_button])
+                p2_action = _ai_buttons([commit_button])
 
             prev_p2_row = curr_p2_row
         elif model is not None:
@@ -808,13 +830,27 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
         # continuously through a piece spawn, the hardware register never sees a new press
         # and ignores DOWN for the new piece. Pulsing a 1-frame release right at spawn guarantees
         # the new piece receives a fresh press and soft-drops without needing a physical re-tap.
-        if is_tetris and down_idx is not None:
-            if release_p1_down:
-                p1_action[down_idx] = False
-                release_p1_down = False
-            if release_p2_down:
-                p2_action[down_idx] = False
-                release_p2_down = False
+        # Lay the action arrays out BY SLOT before anything reads them per
+        # player. p1_action is the keyboard player and p2_action is whoever is
+        # not -- the model, the random policy, or a second human -- and which
+        # SLOT each belongs in depends on which player the agent drives. A model
+        # trained as player 1 goes in slot 0, and a 1-player game has no slot 1
+        # at all, so sending its buttons there dropped them and the AI sat still.
+        if num_players >= 2:
+            if p2_human:
+                slots = [p1_action, p2_action]
+            else:
+                slots = [None, None]
+                slots[ai_slot] = p2_action
+                slots[1 - ai_slot] = p1_action
+        else:
+            slots = [p2_action if (model is not None and not p2_human) else p1_action]
+
+        if repress_idx is not None:
+            for i in range(len(slots)):
+                if release_pending[i]:
+                    slots[i][repress_idx] = False
+                    release_pending[i] = False
 
         # stable-retro wants ONE FLAT array of num_buttons * players, laid out
         # player-major (all of P1's buttons, then all of P2's) -- not a 2-D
@@ -824,31 +860,27 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
         #   TypeError: only 0-dimensional arrays can be converted to Python scalars
         # The same flat player-major layout is what movie.get_key uses when a
         # 2-player recording is replayed (see studio.read_events).
-        if num_players == 2:
-            joint_action = np.concatenate([p1_action, p2_action])
-        else:
-            joint_action = p1_action
+        joint_action = np.concatenate(slots) if len(slots) > 1 else slots[0]
 
         # Step Emulator
         obs, reward, terminated, truncated, info = env.step(joint_action)
         step_count += 1
         audio.feed(env.unwrapped.em.get_audio())
 
-        if is_tetris and down_idx is not None:
-            try:
-                ram = env.unwrapped.get_ram()
-                row_p1 = int(ram[0x0060])
-                row_p2 = int(ram[0x0061])
-                if last_p1_row is not None and last_p1_row > 4 and row_p1 <= 4:
-                    if p1_action[down_idx]:
-                        release_p1_down = True
-                if last_p2_row is not None and last_p2_row > 4 and row_p2 <= 4:
-                    if p2_action[down_idx]:
-                        release_p2_down = True
-                last_p1_row = row_p1
-                last_p2_row = row_p2
-            except Exception:
-                pass
+        # Arm the re-press for any slot whose reset variable just dropped.
+        if repress_idx is not None and repress.get("var") and game_vars is not None:
+            below = int(repress.get("resets_below", 0))
+            ram = env.unwrapped.get_ram()
+            for i in range(len(slots)):
+                name = str(repress["var"]).replace("{player}", str(i + 1))
+                val = game_vars.read(name, ram, {}, default=None)
+                if val is None:
+                    continue
+                val = int(val)
+                if (last_reset_val[i] is not None and last_reset_val[i] >= below
+                        and val < below and slots[i][repress_idx]):
+                    release_pending[i] = True
+                last_reset_val[i] = val
 
         diag_frames += 1
         diag_keys = max(diag_keys, len(combined))
@@ -1006,7 +1038,19 @@ def main():
     parser.add_argument("--state", default=None, help="Save state name (or NONE for cold boot)")
     parser.add_argument("--boot-screen", action="store_true", help="Start from cold boot / title screen (state=retro.State.NONE)")
     parser.add_argument("--two-human", action="store_true", help="Two human players (P1: keyboard/pad1, P2: numpad/pad2)")
-    parser.add_argument("--model", default=None, help="Path to trained PPO checkpoint .zip for Player 2")
+    parser.add_argument("--model", default=None, help="Path to a trained PPO checkpoint .zip for the AI player")
+    parser.add_argument("--player", type=int, default=None,
+                        help="Which player the model drives (default: whichever the "
+                             "game's training block names). A checkpoint is not tied "
+                             "to a player -- the observation is the board and the "
+                             "piece, not a screen position -- so a model trained as "
+                             "player 2 runs as player 1 once this points it at that "
+                             "player's screen area and RAM.")
+    parser.add_argument("--players", type=int, choices=[1, 2], default=None,
+                        help="How many players the game runs. Defaults to 2 when there "
+                             "is a model or a second human, 1 otherwise. Use --players 1 "
+                             "with --model to watch the AI play a single-player game "
+                             "alone, with no human.")
     parser.add_argument("--mode", choices=["versus", "coop", "race"], default="versus", help="Match mode")
     parser.add_argument("--scale", type=int, default=3, help="Window display scale factor (default: 3)")
     parser.add_argument("--fps", type=int, default=60, help="Framerate cap (default: 60)")
@@ -1032,8 +1076,9 @@ def main():
         mode=args.mode,
         boot_screen=args.boot_screen,
         p2_human=args.two_human,
-        players=2 if args.two_human else (2 if args.model else 1),
+        players=args.players or (2 if args.two_human else (2 if args.model else 1)),
         deterministic=args.deterministic,
+        ai_player=args.player,
     )
 
 

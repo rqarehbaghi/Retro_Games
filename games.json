@@ -561,11 +561,14 @@
         "WELL_HEIGHT_OPEN_QUESTION": "PARTLY RESOLVED. The two blocks at 0x0600 and 0x0700 are NOT mirrors of one board: each lock writes to exactly one of them, alternating, so taking whichever held more cells (the old behaviour) silently dropped every piece that landed in the other. read_well now unions them, which grows on every lock where either block alone stalls. STILL OPEN: the piece row counter reaches 21 while each block decodes 13 rows, and locks add only 2-3 cells rather than 4, so part of the board is still not being read -- most likely rows above the 13. Resolve before building a grid observation; the holes/height shaping is improved by the union but may still not see the very top of the stack."
       },
       "training": {
-        "preferred_state": "level8_2p",
+        "preferred_state": {
+          "1": "level0_1p",
+          "2": "level8_2p"
+        },
         "start_state": "level0_1p",
         "start_state_notes": "integrations/TetrisTime-Nes-v0/level0_1p.state -- a 1-player game already underway at level 0 (score 0, lines 0, first piece falling), so training never has to drive the boot screen and menus. Captured from studio_out/20260908-012346 at frame 1515, chosen because 0x0631 first reads 240 (playing) at frame 1485. Load with retro.make(state=level0_1p).",
         "episode_end": {
-          "var": "game_over_p2",
+          "var": "game_over_p{player}",
           "equals": 0
         },
         "ignore_while": "level_transition 0x01D2 == 1",
@@ -577,6 +580,12 @@
         "start_state_8_2p_notes": "integrations/TetrisTime-Nes-v0/level8_2p.state -- a two-player game underway with P2 on LEVEL 8 (P1 on level 5), captured at frame 1800 of studio_out/20260909-001721. It was preferred for BUTTON-STREAM training: at level 0 gravity is ~960 frames per piece, so a random policy survived 1500 steps without topping out, while from level 8 the same policy topped out in 288 -- roughly 5x more complete episodes per frame. THAT REASON IS GONE under macro_placement, which soft-drops every piece rather than waiting for gravity, so the level barely affects how long a placement takes. Measured over 6 random episodes each: level8_2p 17.2 placements and 37.1 frames per placement, level0_2p 19.3 placements and 40.2 frames per placement -- 8% apart, and both genuinely top out (a full-height column, not a stall). Either is now a reasonable training state. level0_2p starts from a truly EMPTY board, which is the state a real match starts from, where level8_2p hands the agent 3 holes and height 25 it did not create.",
         "well": "P2 board at 0x0600/0x0700 + 16*row + 8 (P1 at +0), 13 rows x 10 columns, FOUR BITS per cell, dropping 3 wall nibbles each side; 0 = empty. Found by driving only P2 and watching which half filled. DOUBLE BUFFERED across 0x0600 and 0x0700 and the game alternates which is current, so read both and take whichever holds more filled cells -- a stale buffer lags behind, never ahead. Holds LOCKED cells only; the falling piece is not in it.",
         "soft_drop": "DOWN increases gravity and earns drop points. It is IGNORED when held across a piece spawn, so a policy has to re-press it per piece -- measured: DOWN held for 1200 frames landed no more pieces than no input at all, while a fresh press drops a piece within ~60 frames.",
+        "repress_on_reset": {
+          "button": "DOWN",
+          "var": "piece_row_p{player}",
+          "resets_below": 5,
+          "why": "Soft drop only registers on a 0->1 rising edge. Held through a piece spawn, the new piece never sees a fresh press and does not soft-drop until the button is physically re-tapped. The live match releases the button for one frame whenever the piece row resets, which re-arms the edge. Named with {player} so it applies to BOTH sides: a human holding DOWN needs the same re-press the AI does. This used to be hardcoded in play_engine.py behind a check on whether the game's NAME contained 'Tetris', with the row addresses written into the code."
+        },
         "action_mode": "macro_placement",
         "macro_config": {
           "type": "grid_placement",
@@ -596,7 +605,7 @@
           "settle_detect": {
             "kind": "ram_trigger",
             "trigger_on": "decrease_event",
-            "var": "piece_row_p2"
+            "var": "piece_row_p{player}"
           }
         },
         "action_set": [
@@ -621,7 +630,15 @@
         "observation": {
           "kind": "grid",
           "grid": {
-            "x": 153,
+            "per_player": {
+              "1": {
+                "x": 9
+              },
+              "2": {
+                "x": 153
+              }
+            },
+            "per_player_why": "The only thing that differs between the two players is WHERE their well is drawn; the board is the same size in the same rows. Measured by slamming a piece to each wall and diffing the frames: with piece_col at the left wall the piece is drawn from x9 for player 1 and x153 for player 2, and the ROM's cell grid is 8px starting at x mod 8 == 1. A 1-player game uses the player-1 position. Because the observation is a board plus a piece rather than a screen region, a policy trained as either player runs as the other once this points at the right well -- verified by running a player-2 checkpoint as player 1 in a 1-player game.",
             "y": 56,
             "cell": 8,
             "cols": 10,
@@ -653,7 +670,7 @@
         "use_data_json": false,
         "use_data_json_why": "This integration was made by hand: data.json is {\"info\": {}} and scenario.json declares no done and no reward, so retro has nothing to contribute -- info is always empty and its done never fires. Everything real comes from this file instead: RAM variables for values and episode_end (game_over_p2 == 0) for the ending. Leaving it on would only be misleading.",
         "feature_gate": {
-          "var": "piece_row_p2",
+          "var": "piece_row_p{player}",
           "why": "Board features are recomputed only when the piece row DROPS -- a new piece spawning, meaning the previous one has locked -- and held constant in between. Sampling the board every step includes the falling piece, and the gap beneath it reads as holes that appear and vanish as it descends: measured, the holes term swung by +-8 PER STEP against a terminal of -10, so one step of that noise outweighed dying and the agent was graded on where a piece happened to be mid-air. Survival fell from ~1480 frames to ~1288 when the 22-row board was introduced without this."
         },
         "release_frames": 1,
@@ -663,7 +680,7 @@
         "terms": [
           {
             "kind": "delta_tiered",
-            "var": "lines_p2",
+            "var": "lines_p{player}",
             "tiers": [
               0,
               10,
@@ -675,13 +692,13 @@
           },
           {
             "kind": "decrease_event",
-            "var": "piece_row_p2",
+            "var": "piece_row_p{player}",
             "scale": 1.5,
             "note": "Paid once per piece placed. It has to be big enough that a CLEAN placement is worth more than not placing: measured over 191 random macro placements from level8_2p, one placement moves holes +3.16, height +7.01 and bumpiness +0.94 on average, so at the board weights below a hole-free placement earns about +1.95 and an average random one about +0.37. Cutting this to 0.5 while raising the board weights made every placement worth -12.4, which is the same failure the note on the board weights describes."
           },
           {
             "kind": "delta",
-            "var": "score_p2",
+            "var": "score_p{player}",
             "scale": 0.002,
             "note": "Deliberately small. Soft-dropping earns drop points, and one careless episode banked 2088 of them; at 0.01 that is +21 and swamps the -10 for dying, teaching the bot to slam pieces down and ignore where they land."
           },

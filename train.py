@@ -239,8 +239,8 @@ def play(args, spec, overrides):
             print("episode %d: %4d decisions = %5d frames | score=%s lines=%s "
                   "holes=%s height=%s"
                   % (ep, steps, i.get("frames", steps * spec.frameskip),
-                     i.get("score_p2", i.get("score")),
-                     i.get("lines_p2", i.get("lines")), i.get("holes"), i.get("height")))
+                     i.get("score_p%d" % spec.player, i.get("score")),
+                     i.get("lines_p%d" % spec.player, i.get("lines")), i.get("holes"), i.get("height")))
             ep += 1
             steps = 0
     env.close()

@@ -68,6 +68,45 @@ from rl.vars import GameVars, load_entry        # noqa: E402
 DEFAULT_ACTIONS = [[], ["LEFT"], ["RIGHT"], ["DOWN"], ["UP"], ["A"], ["B"]]
 
 
+def _fill_player(value, player):
+    """Replace {player} with the player number, anywhere in a config tree.
+
+    This is what lets ONE config train either player. A variable name like
+    "game_over_p{player}" resolves to game_over_p1 or game_over_p2, so
+    --player is the only thing that has to change -- rather than a config that
+    names player 2 throughout and a model that is therefore stuck as player 2.
+
+    A game with no per-player variables writes no {player} and is untouched.
+    """
+    if isinstance(value, str):
+        return value.replace("{player}", str(player)) if "{player}" in value else value
+    if isinstance(value, dict):
+        return {k: _fill_player(v, player) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_fill_player(v, player) for v in value]
+    return value
+
+
+def _for_player(spec, player):
+    """One player's version of a geometry block.
+
+    Where a player's own area of the screen is decides what the agent can see,
+    and on a 2-player screen the two are in different places: TetrisTime draws
+    player 1's well at x=8 and player 2's at x=153, everything else identical.
+    A `per_player` map holds only what differs, keyed by player number, and is
+    merged over the shared values -- so the same policy can be pointed at
+    either board without a second observation block to keep in sync.
+
+        "grid": {"y": 56, "cell": 8, "cols": 10, "rows": 20,
+                 "per_player": {"1": {"x": 8}, "2": {"x": 153}}}
+    """
+    out = dict(spec or {})
+    per = out.pop("per_player", None) or {}
+    mine = per.get(str(player)) or per.get(player) or {}
+    out.update(mine)
+    return out
+
+
 class TrainingSpec:
     """Everything games.json says about training one game."""
 
@@ -76,9 +115,17 @@ class TrainingSpec:
         self.entry = load_entry(game)
         t = dict(self.entry.get("training") or {})
         t.update({k: v for k, v in (overrides or {}).items() if v is not None})
-        self.raw = t
         self.players = int(t.get("players", 1))
         self.player = int(t.get("player", 1))
+        # WHICH player this agent is, applied everywhere at once.
+        #
+        # A config that spells out "game_over_p2" and "lines_p2" trains a model
+        # that can only ever be player 2, and moving it to player 1 means
+        # hand-editing every one of those names. Write "{player}" instead and
+        # --player rewrites them all: "game_over_p{player}" becomes
+        # game_over_p1 or game_over_p2 with nothing else changed.
+        t = _fill_player(t, self.player)
+        self.raw = t
         self.frameskip = int(t.get("frameskip", 4))
         self.features_name = t.get("features")
         self.action_mode = t.get("action_mode", "button_stream")
@@ -99,7 +146,7 @@ class TrainingSpec:
                 self.holds.append(None)
                 self.releases.append(None)
         self.observation = dict(t.get("observation") or {})
-        self.grid = dict(self.observation.get("grid") or {})
+        self.grid = _for_player(self.observation.get("grid"), self.player)
         # Board features are only meaningful once a piece has LANDED.
         # feature_gate names a variable whose DROP marks a new piece
         # (the previous one just locked).
@@ -122,14 +169,28 @@ class TrainingSpec:
         self.use_data_json = bool(t.get("use_data_json", True))
         self.ppo = dict(t.get("ppo") or {})
         self.state = t.get("state") or self._default_state(t)
-        self.terms = list((self.entry.get("rewards") or {}).get("terms") or [])
+        self.terms = _fill_player(
+            list((self.entry.get("rewards") or {}).get("terms") or []), self.player)
 
     def _default_state(self, t):
+        """The save state to start from, which depends on the player COUNT.
+
+        A two-player save state cannot be loaded into a one-player env, so
+        preferred_state may be a map keyed by how many players are running:
+
+            "preferred_state": {"1": "level0_1p", "2": "level8_2p"}
+
+        A plain string still works for a game with only one sensible state.
+        --state overrides either.
+        """
         for key in ("preferred_state", "training_state",
                     "start_state_2p" if self.players >= 2 else "start_state",
                     "start_state", "start_state_2p"):
-            if t.get(key):
-                return t[key]
+            got = t.get(key)
+            if isinstance(got, dict):
+                got = got.get(str(self.players)) or got.get(self.players)
+            if got:
+                return got
         return None
 
     def states_available(self):

@@ -858,7 +858,7 @@ def main():
     parser.add_argument("--list-games", action="store_true", help="List imported games that have valid ROM files present and exit")
     parser.add_argument("--list-all-games", action="store_true", help="List all known game definitions in stable-retro (including unimported ones) and exit")
     parser.add_argument("--game", help="stable-retro game id. Required unless --brief, --paste-block, --list-games or --print-upload-plan.")
-    parser.add_argument("--players", type=int, choices=[1, 2], default=1, help="1 = you alone. 2 = you plus an AI player, via play_engine. (default: %(default)s)")
+    parser.add_argument("--players", type=int, choices=[1, 2], default=None, help="How many players the game runs. Defaults to 2 when there is a --model or --two-human, 1 otherwise. --players 1 WITH a --model means the AI plays alone, with no human in the match.")
     parser.add_argument("--boot-screen", action="store_true", help="Start from the power-on title screen (state=NONE) instead of a mid-level save state, so you can pick 1P/2P and the game mode yourself. Passed through to the play window.")
     parser.add_argument("--two-human", action="store_true", help="Two HUMAN players, no AI. Player 1 = keyboard/pad 1, Player 2 = a SECOND gamepad (or the numeric keypad). Pair it with --boot-screen to choose 2 PLAYER GAME at the title; for SMB3 that is the classic alternating two-player game. To keep the AI opponent instead, use --players 2 with --model <checkpoint>.")
     parser.add_argument("--gamepad", action="store_true", help="(Now default) Gamepad and keyboard are both supported seamlessly via pygame.")
@@ -1087,6 +1087,13 @@ def main():
         started = time.time()
         from play_engine import play_match
 
+        # How many players the emulator runs. A model or a second human implies
+        # two unless you say otherwise; --players 1 WITH a model means the AI
+        # plays the game by itself, with no human in the match.
+        n_players = args.players or (2 if (args.two_human or args.model) else 1)
+        if args.player and not args.model:
+            print("NOTE: --player says which player the AI drives and does nothing "
+                  "without --model. Ignoring it.\n")
         if args.two_human:
             if not args.boot_screen:
                 print("NOTE: --two-human without --boot-screen starts from the save")
@@ -1099,7 +1106,21 @@ def main():
                        p2_human=True, mode=args.mode, boot_screen=args.boot_screen,
                        scale=args.scale, fullscreen=args.fullscreen,
                        render_mp4=False)
-        elif args.players == 1:
+        elif args.model:
+            # A model means an AI player, whatever --players says. This used to
+            # fall through to the single-player branch below, which passes NO
+            # model: --model, --player and --deterministic were all accepted and
+            # then silently dropped, and the run looked like ordinary solo play.
+            print(f"Starting {args.game} -- "
+                  + ("the AI plays alone" if n_players == 1 else "you versus the AI")
+                  + ". Close the window when you are done.\n")
+            play_match(args.game, args.state, args.model, record_dir,
+                       players=n_players,
+                       mode=args.mode, boot_screen=args.boot_screen,
+                       scale=args.scale, fullscreen=args.fullscreen,
+                       render_mp4=False, deterministic=args.deterministic,
+                       ai_player=args.player)
+        elif n_players == 1:
             print(f"Starting {args.game} -- single player (gamepad & keyboard enabled). "
                   "Close the window when you are done.\n")
             play_match(args.game, args.state, None, record_dir, players=1,
@@ -1107,10 +1128,9 @@ def main():
                        scale=args.scale, fullscreen=args.fullscreen,
                        render_mp4=False)
         else:
-            if not args.model:
-                print("WARNING: --players 2 with no --model means the AI player is "
-                      "picking random buttons. Fine for a pipeline test, weak as content.\n")
-            play_match(args.game, args.state, args.model, record_dir, players=2,
+            print("WARNING: --players 2 with no --model means the AI player is "
+                  "picking random buttons. Fine for a pipeline test, weak as content.\n")
+            play_match(args.game, args.state, None, record_dir, players=2,
                        mode=args.mode, boot_screen=args.boot_screen,
                        scale=args.scale, fullscreen=args.fullscreen,
                        render_mp4=False, deterministic=args.deterministic,
@@ -1188,7 +1208,10 @@ def main():
     }.get(args.writer, args.writer_model)
     print(f"Writing with {in_use} (seed {seed}) ...")
 
-    effective_players = 2 if args.two_human else args.players
+    # Same resolution the play branch uses: --players is None unless given, and
+    # a model or a second human implies two.
+    effective_players = (2 if args.two_human else
+                         (args.players or (2 if args.model else 1)))
     ctx = dict(game=pretty_game(args.game), level=args.level, duration_s=duration,
                players=effective_players, events=events, fps=FPS,
                two_human=args.two_human)

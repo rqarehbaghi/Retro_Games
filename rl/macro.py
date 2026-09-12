@@ -228,11 +228,31 @@ class MacroPlacementWrapper(gym.Wrapper):
                 elif curr_row is not None:
                     prev_row = curr_row
 
-            # Neutral release frame so buttons don't bleed into next decision
-            obs, _r, term, trunc, info = self.env.step_raw_frame([])
-            if term or trunc:
-                env_term = env_term or bool(term)
-                env_trunc = env_trunc or bool(trunc)
+            # Wait for the NEXT piece to actually spawn before handing back.
+            #
+            # Settle fires on the LOCK frame, and the replacement piece appears
+            # a frame or two later. One neutral frame was not always enough,
+            # and when it was not, every reader downstream saw the LOCKED
+            # piece's row and column instead of the new one's. Measured on ~14%
+            # of placements: the board mask then erased a 5x4 box in the middle
+            # of the stack, deleting 5-7 cells of the piece that was just
+            # placed -- so the holes it had created sat under nothing and were
+            # not counted, height was understated, and the next step's delta
+            # was taken against a board that never existed. The same stale read
+            # also made the NEXT plan start from the wrong column and rotation.
+            #
+            # Also serves as the release frame: no buttons are held here.
+            settle_row = self._read_var(self.row_var, None)
+            for _ in range(int(self.cfg.get("spawn_wait_frames", 30))):
+                obs, _r, term, trunc, info = self.env.step_raw_frame([])
+                if term or trunc:
+                    env_term = env_term or bool(term)
+                    env_trunc = env_trunc or bool(trunc)
+                    break
+                row_now = self._read_var(self.row_var, None)
+                if (row_now is not None and settle_row is not None
+                        and row_now < settle_row):
+                    break
 
         # Phase 3: Finalize macro step in GenericRetroEnv (calculates reward, checks game over)
         if hasattr(self.env, "finalize_macro_step"):

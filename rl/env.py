@@ -132,6 +132,7 @@ class TrainingSpec:
         self.algorithm = t.get("algorithm", "afterstate" if self.afterstate_config else "ppo")
         self.action_mode = t.get("action_mode", "button_stream")
         self.macro_config = dict(t.get("macro_config") or {})
+        self.report_stats = t.get("report_stats")
         # An action is either a plain button list, or {"buttons": [...],
         # "hold": N} when how LONG it is held is part of the move. SMB3 needs
         # the second form: (["A"], 6) is a short hop and (["A"], 20) a full

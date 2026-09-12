@@ -8,6 +8,7 @@
       "address": "hex string, parsed with int(x, 0)."
     },
     "rewards": "Weights applied by RewardShaper. Positive values pay, penalties are named as such and are subtracted.",
+    "report_stats": "List of variable or feature names to print in the training log (e.g. ['score', 'lines', 'holes']). Supports {player} substitution.",
     "finding_addresses": "inspect_progress.py --demo (position), find_game_vars.py --find {coins,meter,timer} (counters/meters), find_ram_variable.py (any value that changes at a known moment), probe_after_death.py (game-state bytes). Always confirm with audit_ram.py against video before training."
   },
   "games": {
@@ -307,6 +308,13 @@
           "width": 84,
           "height": 84
         },
+        "report_stats": [
+          "score",
+          "progress",
+          "coins",
+          "lives",
+          "course_clear"
+        ],
         "max_steps": 20000,
         "ppo": {
           "n_steps": 128,
@@ -596,6 +604,13 @@
           "simulator": "tetris"
         },
         "action_mode": "macro_placement",
+        "report_stats": [
+          "score_p{player}",
+          "lines_p{player}",
+          "holes",
+          "height",
+          "bumpiness"
+        ],
         "macro_config": {
           "type": "grid_placement",
           "rotations": 4,

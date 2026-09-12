@@ -422,7 +422,7 @@
           "evidence": "1 ONLY while the level-change animation runs, 0 during play. In the 1-player run studio_out/20260907-231546 (19875 frames) it is 0 for every frame except a single run, frames 13870-14596, which starts one frame after the level tile 0x042C goes 0->1 at 13869 and covers the clear bonus (score 811->4931). It does NOT fire at game over: across the whole top-out run studio_out/20260908-012346 it is 0 at every frame. Rejected 0x0029, 0x03F1, 0x0520 and 0x0524, which mark the same window but also trip during boot/menu. USE: while this is 1 the game is animating, not being played -- do not count it as play time, do not shape reward from it, and do not read a top-out from it."
         }
       },
-      "two_player_notes": "The 2-player HUD is ONE shared tile block. PLAYER 1 IS THE LEFT COLUMN and keeps the same addresses the game uses in 1-player; PLAYER 2 IS THE RIGHT COLUMN and follows each P1 field. Layout: 0x0418 P1 score (6) / 0x041E P2 score (6) / 0x0424 gap / 0x0425 P1 lines (3) / 0x0428 gap / 0x0429 P2 lines (3) / 0x042C P1 level (2) / 0x042E P2 level (2). Raw per-player line counters also sit as an adjacent pair: 0x006C P1, 0x006D P2. The P1=left / P2=right mapping is confirmed by the owner and consistent across both runs (run 1: P1 10/1 left, P2 21/2 right; run 2: P1 level 5 left, P2 level 8 right). These addresses were only findable after fixing the tools replay bug in f970f5b.",
+      "two_player_notes": "The 2-player HUD is ONE shared tile block. PLAYER 1 IS THE LEFT COLUMN and keeps the same addresses the game uses in 1-player; PLAYER 2 IS THE RIGHT COLUMN and follows each P1 field. Layout: 0x0418 P1 score (6) / 0x041E P2 score (6) / 0x0424 gap / 0x0425 P1 lines (3) / 0x0428 gap / 0x0429 P2 lines (3) / 0x042C P1 level (2) / 0x042E P2 level (2). An adjacent pair at 0x006C P1 / 0x006D P2 was once recorded here as raw line counters. DISPROVEN: they are not. Measured over 40 clears by a trained agent, 0x006D moves +1 on a SINGLE-row clear (24 of 24) and +0 on a DOUBLE (16 of 16), so it diverged from the LINES tiles as 3,3,3,3 while the tiles read 3,5,7,9. The original check happened to contain only single clears. Use the tile counters for lines; nothing in training reads 0x006C/0x006D. The P1=left / P2=right mapping is confirmed by the owner and consistent across both runs (run 1: P1 10/1 left, P2 21/2 right; run 2: P1 level 5 left, P2 level 8 right). These addresses were only findable after fixing the tools replay bug in f970f5b.",
       "two_player": {
         "score_p1": {
           "source": "tiles",
@@ -449,7 +449,7 @@
           "digit_offset": 48,
           "verified": true,
           "column": "left",
-          "evidence": "Digit tiles, MSD first, byte = digit + 48. Verified on TWO independent 2-player runs: studio_out/20260908-193739_tetris-time at 7 frames, and studio_out/20260909-001721_tetris-time (P1 started level 5, P2 level 8) where a frame rendered straight from the replay reads \"486 SCORE 1134 / 2 LINES 0 / 5 LEVEL 8\" and every address decodes exactly that. Decoded 1,1,2,3,3,3,3 (run 1) and 2 (run 2) == on-screen P1 LINES. Raw counter 0x006C agrees."
+          "evidence": "Digit tiles, MSD first, byte = digit + 48. Verified on TWO independent 2-player runs: studio_out/20260908-193739_tetris-time at 7 frames, and studio_out/20260909-001721_tetris-time (P1 started level 5, P2 level 8) where a frame rendered straight from the replay reads \"486 SCORE 1134 / 2 LINES 0 / 5 LEVEL 8\" and every address decodes exactly that. Decoded 1,1,2,3,3,3,3 (run 1) and 2 (run 2) == on-screen P1 LINES. NOTE: 0x006C was once recorded as agreeing; it does not -- see two_player_notes, the pair only tracks SINGLE-row clears."
         },
         "lines_p2": {
           "source": "tiles",
@@ -458,7 +458,7 @@
           "digit_offset": 48,
           "verified": true,
           "column": "right",
-          "evidence": "Digit tiles, MSD first, byte = digit + 48. Verified on TWO independent 2-player runs: studio_out/20260908-193739_tetris-time at 7 frames, and studio_out/20260909-001721_tetris-time (P1 started level 5, P2 level 8) where a frame rendered straight from the replay reads \"486 SCORE 1134 / 2 LINES 0 / 5 LEVEL 8\" and every address decodes exactly that. Decoded 2,3,5,5,6,7,7 (run 1) and 0 (run 2) == on-screen P2 LINES. Raw counter 0x006D agrees."
+          "evidence": "Digit tiles, MSD first, byte = digit + 48. Verified on TWO independent 2-player runs: studio_out/20260908-193739_tetris-time at 7 frames, and studio_out/20260909-001721_tetris-time (P1 started level 5, P2 level 8) where a frame rendered straight from the replay reads \"486 SCORE 1134 / 2 LINES 0 / 5 LEVEL 8\" and every address decodes exactly that. Decoded 2,3,5,5,6,7,7 (run 1) and 0 (run 2) == on-screen P2 LINES. NOTE: 0x006D was once recorded as agreeing; it does not -- measured over 40 clears it moves +1 on a single and +0 on a double."
         },
         "level_p1": {
           "source": "tiles",

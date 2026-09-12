@@ -193,7 +193,26 @@ def train(args, spec, overrides):
     p = hyper(args, spec)
     if args.resume and os.path.exists(args.resume):
         print("resuming from", args.resume)
-        model = PPO.load(args.resume, env=env, device=device)
+        # PPO.load restores the hyperparameters SAVED IN THE CHECKPOINT, so
+        # --lr, --ent-coef and the rest were accepted and then silently
+        # ignored on every resume. That matters most exactly when resuming:
+        # continuing a converged policy under a changed reward is the case
+        # that wants a smaller learning rate, and asking for one did nothing.
+        # custom_objects replaces those values before the model is rebuilt.
+        over = {}
+        for cli, key in (("lr", "learning_rate"), ("ent_coef", "ent_coef"),
+                         ("gamma", "gamma"), ("n_epochs", "n_epochs"),
+                         ("batch_size", "batch_size"), ("n_steps", "n_steps")):
+            v = getattr(args, cli)
+            if v is not None:
+                over[key] = v
+        model = PPO.load(args.resume, env=env, device=device,
+                         custom_objects=over or None)
+        if over:
+            print("overriding from the command line:", over)
+        print("in effect: lr %s  ent_coef %s  n_steps %s  batch %s  n_epochs %s"
+              % (model.learning_rate, model.ent_coef, model.n_steps,
+                 model.batch_size, model.n_epochs))
     else:
         print("ppo:", p)
         print("policy:", policy)

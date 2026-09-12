@@ -73,7 +73,7 @@ from datetime import datetime
 import tts
 import writer
 
-from overlays import (DEFAULT_FONT, DEFAULT_STYLE, TRANSITIONS,
+from overlays import (DEFAULT_FONT, TRANSITIONS,
                       merge_style, render_spec, save_spec)
 
 
@@ -1114,7 +1114,7 @@ def main():
                        scale=args.scale, fullscreen=args.fullscreen,
                        render_mp4=False, deterministic=args.deterministic)
 
-        from play_and_record import find_new_bk2, render_to_mp4
+        from recording import find_new_bk2, render_to_mp4
         bk2_path = find_new_bk2(record_dir, before, started_at=started)
         if not bk2_path:
             sys.exit("No .bk2 was written -- nothing to render.")

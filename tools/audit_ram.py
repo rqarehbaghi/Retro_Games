@@ -40,7 +40,6 @@ import argparse
 import os
 import sys
 
-import numpy as np
 import stable_retro as retro
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -381,7 +380,7 @@ def main():
             game = retro.Movie(args.demo).get_game()
         except Exception:
             pass
-    from train_smb3_legacy import describe_value_sources, reject_known_bad
+    from train_smb3_legacy import describe_value_sources
     describe_value_sources(
         game,
         progress_address=args.progress_address,
@@ -416,13 +415,13 @@ def main():
         started = _time.time()
         play_model(args.game, args.state, args.model, tracker, args.every,
                    args.max_frames, args.record_dir)
-        from play_and_record import find_new_bk2
+        from recording import find_new_bk2
         bk2 = find_new_bk2(args.record_dir, before, started_at=started)
 
     verdicts(tracker)
 
     if args.render_video and bk2:
-        from play_and_record import render_to_mp4
+        from recording import render_to_mp4
         mp4 = render_to_mp4(bk2)
         if mp4:
             print(f"\nVideo for cross-checking the timestamps above:\n  {mp4}")

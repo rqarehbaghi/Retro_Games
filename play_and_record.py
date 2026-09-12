@@ -34,6 +34,14 @@ import time
 import numpy as np
 import stable_retro as retro
 
+# Moved to recording.py, which is the SHARED part of this file: studio.py,
+# play_engine.py and two tools need "which .bk2 did this session write" and
+# "turn it into an MP4", and importing them from here dragged an argument
+# parser, an SMB3 world-map navigator and a policy builder along with them.
+# Re-exported so anything that still imports them from here keeps working.
+from recording import (                                          # noqa: F401
+    find_all_new_bk2, find_new_bk2, render_to_mp4)
+
 
 def build_policy(model_path, action_space):
     """Return a callable obs -> action for the RAW (no --model) path.
@@ -364,48 +372,6 @@ def play_human_episode(game, state, record_dir, boot_screen=False):
         sys.exit(result.returncode)
 
 
-def find_new_bk2(record_dir, before, started_at=None):
-    """The .bk2 THIS session wrote.
-
-    stable-retro numbers recordings from -000000 for every new env/process, so
-    a rerun into the same folder OVERWRITES the previous run's file instead of
-    creating a new name. That means path membership against `before` alone is
-    wrong: the fresh recording has a path that was already there, gets filtered
-    out as 'pre-existing', and the run reports no recording at all. So a file
-    counts as this session's if its path wasn't there before OR its mtime is
-    at/after `started_at` (i.e. it was rewritten during this session).
-
-    Still returns None when nothing was written or rewritten this session --
-    rendering a genuinely stale replay from an earlier session as if it were
-    this run is worse than reporting the failure."""
-    candidates = glob.glob(os.path.join(record_dir, "*.bk2"))
-
-    def is_this_session(f):
-        if f not in before:
-            return True
-        # 1s slack for coarse filesystem mtime resolution.
-        return started_at is not None and os.path.getmtime(f) >= started_at - 1.0
-
-    new_files = [f for f in candidates if is_this_session(f)]
-    if not new_files:
-        return None
-    return max(new_files, key=os.path.getmtime)
-
-
-def find_all_new_bk2(record_dir, before, started_at=None):
-    """Every .bk2 this session wrote, oldest first. --on-death restart resets
-    the env per attempt, and stable-retro starts a NEW movie file on each
-    reset, so a session can produce several."""
-    candidates = glob.glob(os.path.join(record_dir, "*.bk2"))
-
-    def is_this_session(f):
-        if f not in before:
-            return True
-        return started_at is not None and os.path.getmtime(f) >= started_at - 1.0
-
-    return sorted((f for f in candidates if is_this_session(f)), key=os.path.getmtime)
-
-
 def concat_mp4s(mp4_paths, out_path):
     """Join per-attempt clips into one continuous video. All clips come from
     the same emulator at the same resolution, so a stream copy is safe."""
@@ -421,33 +387,6 @@ def concat_mp4s(mp4_paths, out_path):
     os.remove(listfile)
     return out_path if os.path.exists(out_path) else None
 
-
-def render_to_mp4(bk2_path):
-    """Calls stable-retro's built-in playback script. Requires ffmpeg on PATH.
-    Writes a .mp4 next to the .bk2 with video and audio synced.
-
-    Note: this writes at the emulator's native resolution (NES: ~256x224) --
-    stable-retro's playback tool has no scaling option. See upscale_mp4()
-    for making the result not look tiny/blurry on a modern screen."""
-    print(f"Rendering {bk2_path} to MP4 (this replays the run through the emulator)...")
-    mp4_path = os.path.splitext(bk2_path)[0] + ".mp4"
-
-    # Always render through render_bk2.py rather than the stock
-    #   python -m stable_retro.scripts.playback_movie
-    # for two reasons, both of which bit real recordings:
-    #   - the stock subprocess does NOT register this repo's CUSTOM
-    #     integrations, so replaying a game like TetrisTime-Nes-v0 died with
-    #     "No romfiles found";
-    #   - it also does score[p] += reward[p] for any >1-player movie, which
-    #     crashes on a game whose scenario returns one scalar reward.
-    # render_bk2.py registers the custom integrations AND fixes the reward
-    # shape, and is a plain pass-through for an ordinary single-player movie.
-    here = os.path.dirname(os.path.abspath(__file__))
-    subprocess.run(
-        [sys.executable, os.path.join(here, "render_bk2.py"), bk2_path, mp4_path],
-        check=True,
-    )
-    return mp4_path if os.path.exists(mp4_path) else None
 
 
 def upscale_mp4(mp4_path, factor, mode):

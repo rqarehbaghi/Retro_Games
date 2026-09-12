@@ -41,7 +41,6 @@ import argparse
 import glob
 import json
 import os
-import subprocess
 import sys
 import time
 from collections import deque
@@ -50,7 +49,6 @@ import cv2
 import numpy as np
 import pygame
 import stable_retro as retro
-from gymnasium.spaces import Box, Discrete
 from stable_baselines3 import PPO
 
 # The AI (Player 2) is a model trained by train.py, which ALWAYS uses
@@ -979,22 +977,23 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
     # Same session-aware detection as play_and_record: stable-retro reuses
     # -000000 numbering per process, so a rerun OVERWRITES the previous file
     # and path-membership alone would miss it.
-    from play_and_record import find_new_bk2
-    bk2_path = find_new_bk2(record_dir, before_bk2s, started_at=session_start)
+    import recording
+    bk2_path = recording.find_new_bk2(record_dir, before_bk2s,
+                                      started_at=session_start)
 
     if bk2_path:
         print(f"\nMatch replay recorded to: {bk2_path}")
         if not render_mp4:
             return bk2_path
         print("Rendering synchronized MP4 video...")
-        here = os.path.dirname(os.path.abspath(__file__))
-        render_tool = os.path.join(here, "render_bk2.py")
-        mp4_path = os.path.splitext(bk2_path)[0] + ".mp4"
-        if os.path.exists(render_tool):
-            subprocess.run([sys.executable, render_tool, bk2_path, mp4_path], check=False)
-        else:
-            subprocess.run([sys.executable, "-m", "stable_retro.scripts.playback_movie", bk2_path], check=False)
-        if os.path.exists(mp4_path):
+        # The stock `python -m stable_retro.scripts.playback_movie` used to be
+        # the fallback here. It is never the right call: it does not register
+        # this repo's custom integrations (so TetrisTime died with "No romfiles
+        # found") and it crashes on any 2-player movie whose scenario returns a
+        # scalar reward. render_bk2.py exists precisely to fix both, and a
+        # fallback that quietly reintroduces them is worse than an error.
+        mp4_path = recording.render_to_mp4(bk2_path, check=False)
+        if mp4_path and os.path.exists(mp4_path):
             print(f"Exported HD Match Video: {mp4_path}")
             return mp4_path
         return bk2_path

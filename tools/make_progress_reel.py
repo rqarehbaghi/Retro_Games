@@ -26,7 +26,8 @@ import subprocess
 import sys
 import tempfile
 
-from play_and_record import find_new_bk2, play_agent_episode, render_to_mp4
+from play_and_record import play_agent_episode
+from recording import find_new_bk2, render_to_mp4
 from train_smb3_legacy import safe_name
 
 def find_font():

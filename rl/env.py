@@ -169,6 +169,18 @@ class TrainingSpec:
         self.use_data_json = bool(t.get("use_data_json", True))
         self.ppo = dict(t.get("ppo") or {})
         self.state = t.get("state") or self._default_state(t)
+        # ONE save state means one game, over and over. A save state restores
+        # the emulator exactly, including whatever seeds the game's own
+        # randomness, and on TetrisTime that fixes the entire piece sequence:
+        # measured, 8 episodes produced the identical 76 pieces, and so did a
+        # RANDOM policy, and so did up to 300 no-op frames at reset. The agent
+        # can memorise one game and never has to learn the game. So a state may
+        # be a LIST, or a comma-separated string, and one is chosen per episode.
+        self.states = ([s for s in self.state] if isinstance(self.state, list)
+                       else [s.strip() for s in str(self.state).split(",")]
+                       if self.state else [])
+        self.states = [s for s in self.states if s]
+        self.state = self.states[0] if self.states else None
         self.terms = _fill_player(
             list((self.entry.get("rewards") or {}).get("terms") or []), self.player)
 
@@ -384,6 +396,7 @@ class GenericRetroEnv(gym.Env):
         self._releases = s.releases
         self.action_space = gym.spaces.Discrete(len(self._combos))
         self.steps = self.frames = 0
+        self._rng = np.random.default_rng()
         self.observation_space = self.env.observation_space
 
         self.use_data_json = s.use_data_json
@@ -418,13 +431,17 @@ class GenericRetroEnv(gym.Env):
     # -- state -----------------------------------------------------------
     def _resolve_state(self, s):
         have = s.states_available()
-        if s.state:
-            if have and s.state not in have:
-                print("")
-                print("No save state named %r for %s." % (s.state, s.game))
-                print("Available: %s" % (", ".join(have) if have else "(none)"))
-                sys.exit("Pick one with --state.")
-            return s.state
+        if s.states:
+            for name in s.states:
+                if have and name not in have:
+                    print("")
+                    print("No save state named %r for %s." % (name, s.game))
+                    print("Available: %s" % (", ".join(have) if have else "(none)"))
+                    sys.exit("Pick one with --state.")
+            if len(s.states) > 1:
+                print("start states: %s (one is chosen per episode)"
+                      % ", ".join(s.states))
+            return s.states[0]
         if have:
             return have[0]
         return retro.State.DEFAULT
@@ -563,6 +580,11 @@ class GenericRetroEnv(gym.Env):
 
     # -- gym API ---------------------------------------------------------
     def reset(self, **kwargs):
+        # Pick this episode's start state. Each one carries its own copy of the
+        # game's randomness, so this is what stops every episode being the same
+        # game -- see the note on TrainingSpec.states.
+        if len(self.spec_.states) > 1:
+            self.env.unwrapped.load_state(self._rng.choice(self.spec_.states))
         obs, info = self.env.reset(**kwargs)
         obs, info = self._skip(obs, info)
         ram = self._ram()

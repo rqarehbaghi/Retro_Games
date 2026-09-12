@@ -317,10 +317,53 @@ def play(args, spec, overrides):
     # surfaced as FileNotFoundError on a path with .zip appended twice, and a
     # checkpoint built for a different observation surfaced as a raw
     # "Observation spaces do not match" with no hint about which flag caused it.
-    path = args.play if os.path.exists(args.play) else args.play + ".zip"
+    path = args.play if os.path.exists(args.play) else (
+        args.play + ".pt" if os.path.exists(args.play + ".pt") else args.play + ".zip"
+    )
     if not os.path.exists(path):
-        sys.exit("No checkpoint at %s\nLooked for %s too."
-                 % (args.play, args.play + ".zip"))
+        sys.exit("No checkpoint at %s\nLooked for %s and %s too."
+                 % (args.play, args.play + ".pt", args.play + ".zip"))
+
+    if path.endswith(".pt"):
+        from rl.afterstate import AfterstateAgent
+        from rl.simulators import get_simulator
+        from rl.env import make_env
+        from rl.vars import GameVars
+
+        sim_name = spec.afterstate_config.get("simulator") or spec.features_name or spec.game
+        simulator = get_simulator(sim_name)
+        if simulator is None:
+            sys.exit("No afterstate simulator registered for game %s (expected '%s')"
+                     % (args.game, sim_name))
+
+        agent = AfterstateAgent(input_dim=simulator.feature_dim, device=args.device or "cpu")
+        agent.load(path)
+        single_env = make_env(args.game, overrides)
+        vars = GameVars(spec.game, entry=spec.entry)
+
+        obs, info = single_env.reset()
+        ep = steps = 0
+        while ep < args.episodes:
+            ram = getattr(single_env.unwrapped, "ram", None) if hasattr(single_env, "unwrapped") else None
+            candidates = simulator.get_candidates(obs=obs, ram=ram, info=info, vars=vars, spec=spec)
+            action, _ = agent.select_action(candidates, epsilon=0.0)
+            obs, _r, term, trunc, info = single_env.step(action)
+            steps += 1
+            if term or trunc:
+                score = info.get("score_p%d" % spec.player, info.get("score", ""))
+                lines = info.get("lines_p%d" % spec.player, info.get("lines", ""))
+                stats = [f"score={score}" if score != "" else "",
+                         f"lines={lines}" if lines != "" else "",
+                         f"holes={info['holes']}" if "holes" in info else "",
+                         f"height={info['height']}" if "height" in info else ""]
+                stat_str = " ".join([s for s in stats if s])
+                print("episode %d: %4d decisions | %s" % (ep, steps, stat_str))
+                ep += 1
+                steps = 0
+                obs, info = single_env.reset()
+        single_env.close()
+        return
+
     env = build_envs(args.game, overrides, 1, args.frame_stack, image)
     try:
         model = PPO.load(path, env=env,

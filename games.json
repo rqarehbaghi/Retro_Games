@@ -591,6 +591,9 @@
           "resets_below": 5,
           "why": "Soft drop only registers on a 0->1 rising edge. Held through a piece spawn, the new piece never sees a fresh press and does not soft-drop until the button is physically re-tapped. The live match releases the button for one frame whenever the piece row resets, which re-arms the edge. Named with {player} so it applies to BOTH sides: a human holding DOWN needs the same re-press the AI does. This used to be hardcoded in play_engine.py behind a check on whether the game's NAME contained 'Tetris', with the row addresses written into the code."
         },
+        "afterstate": {
+          "simulator": "tetris"
+        },
         "action_mode": "macro_placement",
         "macro_config": {
           "type": "grid_placement",

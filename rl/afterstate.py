@@ -365,10 +365,52 @@ def train_afterstate(args, spec, overrides):
         avg_len = np.mean(recent_steps)
         avg_loss = (ep_loss / max(1, loss_updates)) if loss_updates > 0 else 0.0
 
+        # Dynamically display domain-specific game metrics declared in games.json
+        active_player = getattr(spec, "player", None)
+        other_player = 1 if active_player == 2 else (2 if active_player == 1 else None)
+
+        def is_relevant_key(k: str) -> bool:
+            # If training Player 2, exclude Player 1 metrics (e.g. *_p1) and vice-versa
+            if other_player is not None and f"_p{other_player}" in k:
+                return False
+            # If a player-suffixed version exists in info (e.g. score_p2), suppress the 1P alias 'score'
+            if active_player is not None and not k.endswith(f"_p{active_player}"):
+                if f"{k}_p{active_player}" in last_info:
+                    return False
+            # Exclude internal frame/time trackers and raw buttons
+            if k in ("frames", "time", "clock", "action"):
+                return False
+            return True
+
         stat_parts = []
-        for k in [f"lines_p{spec.player}", "lines", f"score_p{spec.player}", "score", "holes", "height"]:
+        # Priority: variables referenced in the game's declared reward terms
+        priority_keys = []
+        for t in getattr(spec, "terms", []):
+            v = t.get("var") or t.get("name")
+            if v and v not in priority_keys and is_relevant_key(v):
+                priority_keys.append(v)
+
+        seen_keys = set()
+        for k in priority_keys:
             if k in last_info:
-                stat_parts.append(f"{k}={last_info[k]}")
+                val = last_info[k]
+                seen_keys.add(k)
+                if isinstance(val, (int, np.integer)):
+                    stat_parts.append(f"{k}={val}")
+                elif isinstance(val, (float, np.floating)):
+                    stat_parts.append(f"{k}={val:.1f}" if not val.is_integer() else f"{k}={int(val)}")
+
+        # Append any remaining high-level features for the active player (up to 5 total)
+        for k, val in last_info.items():
+            if k not in seen_keys and is_relevant_key(k) and isinstance(val, (int, float, np.integer, np.floating)):
+                if isinstance(val, (int, np.integer)):
+                    stat_parts.append(f"{k}={val}")
+                elif isinstance(val, (float, np.floating)):
+                    stat_parts.append(f"{k}={val:.1f}" if not val.is_integer() else f"{k}={int(val)}")
+                seen_keys.add(k)
+                if len(stat_parts) >= 5:  # keep terminal line clean and focused
+                    break
+
         stats_str = " ".join(stat_parts) if stat_parts else ""
 
         print(f"{total_steps:8d} | {ep:5d} | {ep_steps:5d} | {avg_len:6.1f} | {epsilon:7.3f} | {ep_reward:8.1f} | {avg_rew:8.1f} | {avg_loss:7.4f} | {stats_str}")

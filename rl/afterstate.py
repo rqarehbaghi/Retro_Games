@@ -298,9 +298,9 @@ def train_afterstate(args, spec, overrides):
     next_save_step = args.save_every
 
     print("\nBeginning training...")
-    header = f"{'Steps':>8} | {'Ep':>5} | {'Epsilon':>7} | {'Reward':>8} | {'AvgRew':>8} | {'Loss':>7} | Game Stats"
+    header = f"{'Steps':>8} | {'Ep':>5} | {'Len':>5} | {'AvgLen':>6} | {'Epsilon':>7} | {'Reward':>8} | {'AvgRew':>8} | {'Loss':>7} | Game Stats"
     print(header)
-    print("-" * 75)
+    print("-" * 90)
 
     while total_steps < args.timesteps:
         ep += 1
@@ -362,6 +362,7 @@ def train_afterstate(args, spec, overrides):
             recent_steps.pop(0)
 
         avg_rew = np.mean(recent_rewards)
+        avg_len = np.mean(recent_steps)
         avg_loss = (ep_loss / max(1, loss_updates)) if loss_updates > 0 else 0.0
 
         stat_parts = []
@@ -370,7 +371,7 @@ def train_afterstate(args, spec, overrides):
                 stat_parts.append(f"{k}={last_info[k]}")
         stats_str = " ".join(stat_parts) if stat_parts else ""
 
-        print(f"{total_steps:8d} | {ep:5d} | {epsilon:7.3f} | {ep_reward:8.1f} | {avg_rew:8.1f} | {avg_loss:7.4f} | {stats_str}")
+        print(f"{total_steps:8d} | {ep:5d} | {ep_steps:5d} | {avg_len:6.1f} | {epsilon:7.3f} | {ep_reward:8.1f} | {avg_rew:8.1f} | {avg_loss:7.4f} | {stats_str}")
 
     final_path = os.path.join(save_dir, "final.zip")
     agent.save(final_path)

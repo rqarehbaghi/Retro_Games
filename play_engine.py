@@ -606,38 +606,91 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
     ai_frame, ai_expected_shape = make_frame_processor(game, ai_overrides)
     model = None
     if not p2_human:
-        if model_path and os.path.exists(model_path):
-            print(f"Loading trained AI policy from: {model_path}")
-            model = PPO.load(model_path, device="cpu")
-            print(f"AI action set: {ai_combos_name}")
-            # A checkpoint trained on a different table would still run, picking
-            # plausible-looking indices that mean the wrong buttons. Catch it.
-            got = getattr(getattr(model, "observation_space", None), "shape", None)
-            if got is not None and tuple(got) != tuple(ai_expected_shape):
-                print("")
-                print("This checkpoint expects observations of %s but %s is "
-                      "configured to produce %s." % (tuple(got), game,
-                                                     tuple(ai_expected_shape)))
-                print("The observation in games.json changed since it was trained "
-                      "(crop or size), so the policy would be looking at a")
-                print("different picture than it learned from. Retrain, or restore "
-                      "the observation it was trained with.")
-                sys.exit("Checkpoint and games.json observation do not match.")
-            trained_n = getattr(getattr(model, "action_space", None), "n", None)
-            if trained_n is not None and int(trained_n) != len(ai_combos):
-                # Backwards-compatibility for older 6-action Tetris checkpoints (trained before B was removed)
-                if int(trained_n) == len(ai_combos) + 1 and ["B"] not in ai_combos and ["A"] in ai_combos:
-                    print("Note: checkpoint was trained with %d discrete actions (including legacy B rotation)."
-                          % int(trained_n))
-                    print("Adapting action table to include B for backwards compatibility.")
-                    ai_combos = list(ai_combos) + [["B"]]
-                else:
+        resolved_model_path = model_path
+        if resolved_model_path and not os.path.exists(resolved_model_path):
+            if os.path.exists(resolved_model_path + ".zip"):
+                resolved_model_path = resolved_model_path + ".zip"
+            elif os.path.exists(resolved_model_path + ".pt"):
+                resolved_model_path = resolved_model_path + ".pt"
+
+        if resolved_model_path and os.path.exists(resolved_model_path):
+            print(f"Loading trained AI policy from: {resolved_model_path}")
+            import zipfile
+            is_afterstate = False
+            if resolved_model_path.endswith(".pt"):
+                is_afterstate = True
+            elif zipfile.is_zipfile(resolved_model_path):
+                with zipfile.ZipFile(resolved_model_path, "r") as zf:
+                    if "value_net.pth" in zf.namelist() or "value_net.pt" in zf.namelist():
+                        is_afterstate = True
+
+            if is_afterstate:
+                from rl.afterstate import AfterstateAgent
+                from rl.simulators import get_simulator
+                from rl.env import TrainingSpec, GameVars
+
+                afterstate_spec = TrainingSpec(game, ai_overrides)
+                sim_name = afterstate_spec.afterstate_config.get("simulator") or afterstate_spec.features_name or afterstate_spec.game
+                simulator = get_simulator(sim_name)
+                if simulator is None:
+                    sys.exit(f"No afterstate simulator registered for game {game} (expected '{sim_name}')")
+
+                agent = AfterstateAgent(input_dim=simulator.feature_dim, device="cpu")
+                agent.load(resolved_model_path)
+                afterstate_vars = GameVars(afterstate_spec.game, entry=afterstate_spec.entry)
+
+                class AfterstatePolicyWrapper:
+                    def __init__(self, ag, sim, sp, vr):
+                        self.agent = ag
+                        self.simulator = sim
+                        self.spec = sp
+                        self.vars = vr
+                        self.is_afterstate = True
+
+                    def predict(self, obs, deterministic=True, ram=None, info=None):
+                        candidates = self.simulator.get_candidates(
+                            obs=obs,
+                            ram=ram,
+                            info=info,
+                            vars=self.vars,
+                            spec=self.spec
+                        )
+                        action, _ = self.agent.select_action(candidates, epsilon=0.0 if deterministic else 0.05)
+                        return action, None
+
+                model = AfterstatePolicyWrapper(agent, simulator, afterstate_spec, afterstate_vars)
+                print(f"AI Afterstate Lookahead policy active ({sim_name}, feature_dim={simulator.feature_dim})")
+            else:
+                model = PPO.load(resolved_model_path, device="cpu")
+                print(f"AI action set: {ai_combos_name}")
+                # A checkpoint trained on a different table would still run, picking
+                # plausible-looking indices that mean the wrong buttons. Catch it.
+                got = getattr(getattr(model, "observation_space", None), "shape", None)
+                if got is not None and tuple(got) != tuple(ai_expected_shape):
                     print("")
-                    print("This checkpoint expects %d discrete actions but %s uses %d (%s)."
-                          % (int(trained_n), game, len(ai_combos), ai_combos_name))
-                    print("It was trained for a different game or action set, so its")
-                    print("choices would map to the wrong buttons.")
-                    sys.exit("Use a checkpoint trained on this game.")
+                    print("This checkpoint expects observations of %s but %s is "
+                          "configured to produce %s." % (tuple(got), game,
+                                                         tuple(ai_expected_shape)))
+                    print("The observation in games.json changed since it was trained "
+                          "(crop or size), so the policy would be looking at a")
+                    print("different picture than it learned from. Retrain, or restore "
+                          "the observation it was trained with.")
+                    sys.exit("Checkpoint and games.json observation do not match.")
+                trained_n = getattr(getattr(model, "action_space", None), "n", None)
+                if trained_n is not None and int(trained_n) != len(ai_combos):
+                    # Backwards-compatibility for older 6-action Tetris checkpoints (trained before B was removed)
+                    if int(trained_n) == len(ai_combos) + 1 and ["B"] not in ai_combos and ["A"] in ai_combos:
+                        print("Note: checkpoint was trained with %d discrete actions (including legacy B rotation)."
+                              % int(trained_n))
+                        print("Adapting action table to include B for backwards compatibility.")
+                        ai_combos = list(ai_combos) + [["B"]]
+                    else:
+                        print("")
+                        print("This checkpoint expects %d discrete actions but %s uses %d (%s)."
+                              % (int(trained_n), game, len(ai_combos), ai_combos_name))
+                        print("It was trained for a different game or action set, so its")
+                        print("choices would map to the wrong buttons.")
+                        sys.exit("Use a checkpoint trained on this game.")
         else:
             print("No checkpoint model found — AI will use exploratory random policy.")
 
@@ -801,8 +854,10 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
             if macro_state == "IDLE":
                 curr_obs = ai_frame(obs, ram)
                 if model is not None:
-                    action_idx, _ = model.predict(curr_obs,
-                                                  deterministic=deterministic)
+                    if getattr(model, "is_afterstate", False):
+                        action_idx, _ = model.predict(curr_obs, deterministic=deterministic, ram=ram, info=info)
+                    else:
+                        action_idx, _ = model.predict(curr_obs, deterministic=deterministic)
                     action_idx = int(action_idx)
                 else:
                     action_idx = np.random.randint(len(ai_combos))
@@ -827,8 +882,10 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
                 stacked_obs = np.array(frame_stack)
             else:
                 stacked_obs = ai_frame(obs, env.unwrapped.get_ram())
-            p2_discrete_action, _ = model.predict(stacked_obs,
-                                                  deterministic=deterministic)
+            if getattr(model, "is_afterstate", False):
+                p2_discrete_action, _ = model.predict(stacked_obs, deterministic=deterministic, ram=ram, info=info)
+            else:
+                p2_discrete_action, _ = model.predict(stacked_obs, deterministic=deterministic)
             p2_action = discretize_ai_action(int(p2_discrete_action), buttons,
                                              combos=ai_combos)
         else:

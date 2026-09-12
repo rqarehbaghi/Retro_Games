@@ -91,9 +91,9 @@ def main():
     recent_steps = []
 
     print("\nBeginning training...")
-    header = f"{'Episode':>8} | {'Epsilon':>7} | {'Steps':>6} | {'Reward':>9} | {'AvgRew (50)':>11} | {'Loss':>7}"
+    header = f"{'Episode':>8} | {'Epsilon':>7} | {'Steps':>6} | {'Reward':>8} | {'AvgRew':>8} | {'Loss':>7} | Game Stats"
     print(header)
-    print("-" * len(header))
+    print("-" * 75)
 
     for ep in range(1, args.episodes + 1):
         obs, info = env.reset()
@@ -103,6 +103,7 @@ def main():
         prev_afterstate_feat = None
         ep_loss = 0.0
         loss_updates = 0
+        last_info = {}
 
         eps_progress = min(1.0, ep / float(max(1, args.epsilon_decay)))
         epsilon = args.epsilon_start + (args.epsilon_final - args.epsilon_start) * eps_progress
@@ -115,6 +116,7 @@ def main():
 
             next_obs, reward, terminated, truncated, info = env.step(action)
             done = terminated or truncated
+            last_info = info
 
             ep_reward += float(reward)
             ep_steps += 1
@@ -149,14 +151,19 @@ def main():
         avg_loss = (ep_loss / max(1, loss_updates)) if loss_updates > 0 else 0.0
 
         if ep % 5 == 0 or ep == 1:
-            print(f"{ep:8d} | {epsilon:7.3f} | {ep_steps:6d} | {ep_reward:9.1f} | {avg_rew:11.1f} | {avg_loss:7.4f}")
+            stat_parts = []
+            for k in [f"lines_p{spec.player}", "lines", f"score_p{spec.player}", "score", "holes", "height"]:
+                if k in last_info:
+                    stat_parts.append(f"{k}={last_info[k]}")
+            stats_str = " ".join(stat_parts) if stat_parts else ""
+            print(f"{ep:8d} | {epsilon:7.3f} | {ep_steps:6d} | {ep_reward:8.1f} | {avg_rew:8.1f} | {avg_loss:7.4f} | {stats_str}")
 
         if ep % args.save_every == 0:
-            ckpt_path = os.path.join(save_dir, f"afterstate_ep_{ep}.pt")
+            ckpt_path = os.path.join(save_dir, f"afterstate_ep_{ep}.zip")
             agent.save(ckpt_path)
             print(f"  --> Saved checkpoint: {ckpt_path}")
 
-    final_path = os.path.join(save_dir, "afterstate_final.pt")
+    final_path = os.path.join(save_dir, "afterstate_final.zip")
     agent.save(final_path)
     print(f"\nTraining complete. Final weights saved to {final_path}")
     env.close()

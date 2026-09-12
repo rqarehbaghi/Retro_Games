@@ -186,19 +186,55 @@ class AfterstateAgent:
             self.target_net.load_state_dict(self.val_net.state_dict())
 
     def save(self, filepath: str):
-        """Save model checkpoint."""
+        """Save model checkpoint as a .zip archive (matching standard studio/train checkpoint format)."""
+        if not filepath.endswith(".zip"):
+            filepath = filepath + ".zip"
         if HAS_TORCH and self.val_net is not None:
             os.makedirs(os.path.dirname(os.path.abspath(filepath)), exist_ok=True)
+            import io
+            import json
+            import zipfile
+
+            buf = io.BytesIO()
             torch.save({
                 "input_dim": self.input_dim,
                 "model_state_dict": self.val_net.state_dict(),
                 "optimizer_state_dict": self.optimizer.state_dict() if self.optimizer else None,
-            }, filepath)
+            }, buf)
+            meta = json.dumps({"model_type": "afterstate", "input_dim": self.input_dim}, indent=2)
+
+            with zipfile.ZipFile(filepath, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+                zf.writestr("value_net.pth", buf.getvalue())
+                zf.writestr("meta.json", meta)
 
     def load(self, filepath: str):
-        """Load model checkpoint."""
-        if HAS_TORCH and self.val_net is not None and os.path.exists(filepath):
-            data = torch.load(filepath, map_location=self.device)
+        """Load model checkpoint from .zip (or raw .pt)."""
+        resolved = filepath
+        if not os.path.exists(resolved):
+            if os.path.exists(filepath + ".zip"):
+                resolved = filepath + ".zip"
+            elif os.path.exists(filepath + ".pt"):
+                resolved = filepath + ".pt"
+
+        if not os.path.exists(resolved):
+            raise FileNotFoundError(f"Checkpoint not found at {filepath}")
+
+        if HAS_TORCH and self.val_net is not None:
+            import io
+            import zipfile
+
+            if zipfile.is_zipfile(resolved):
+                with zipfile.ZipFile(resolved, "r") as zf:
+                    if "value_net.pth" in zf.namelist():
+                        raw_bytes = zf.read("value_net.pth")
+                    elif "value_net.pt" in zf.namelist():
+                        raw_bytes = zf.read("value_net.pt")
+                    else:
+                        raise ValueError(f"{resolved} is not a valid afterstate checkpoint")
+                    data = torch.load(io.BytesIO(raw_bytes), map_location=self.device)
+            else:
+                data = torch.load(resolved, map_location=self.device)
+
             self.val_net.load_state_dict(data["model_state_dict"])
             self.target_net.load_state_dict(self.val_net.state_dict())
             if self.optimizer and "optimizer_state_dict" in data and data["optimizer_state_dict"]:

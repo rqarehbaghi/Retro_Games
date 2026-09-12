@@ -318,13 +318,22 @@ def play(args, spec, overrides):
     # checkpoint built for a different observation surfaced as a raw
     # "Observation spaces do not match" with no hint about which flag caused it.
     path = args.play if os.path.exists(args.play) else (
-        args.play + ".pt" if os.path.exists(args.play + ".pt") else args.play + ".zip"
+        args.play + ".zip" if os.path.exists(args.play + ".zip") else args.play + ".pt"
     )
     if not os.path.exists(path):
         sys.exit("No checkpoint at %s\nLooked for %s and %s too."
-                 % (args.play, args.play + ".pt", args.play + ".zip"))
+                 % (args.play, args.play + ".zip", args.play + ".pt"))
 
+    import zipfile
+    is_afterstate = False
     if path.endswith(".pt"):
+        is_afterstate = True
+    elif zipfile.is_zipfile(path):
+        with zipfile.ZipFile(path, "r") as zf:
+            if "value_net.pth" in zf.namelist() or "value_net.pt" in zf.namelist():
+                is_afterstate = True
+
+    if is_afterstate:
         from rl.afterstate import AfterstateAgent
         from rl.simulators import get_simulator
         from rl.env import make_env

@@ -129,6 +129,7 @@ class TrainingSpec:
         self.frameskip = int(t.get("frameskip", 4))
         self.features_name = t.get("features")
         self.afterstate_config = dict(t.get("afterstate") or {})
+        self.algorithm = t.get("algorithm", "afterstate" if self.afterstate_config else "ppo")
         self.action_mode = t.get("action_mode", "button_stream")
         self.macro_config = dict(t.get("macro_config") or {})
         # An action is either a plain button list, or {"buttons": [...],

@@ -256,6 +256,11 @@ def policy_for(spec):
 
 
 def train(args, spec, overrides):
+    if getattr(spec, "algorithm", "ppo") == "afterstate":
+        from rl.afterstate import train_afterstate
+        train_afterstate(args, spec, overrides)
+        return
+
     policy, image = policy_for(spec)
     env = build_envs(args.game, overrides, args.n_envs, args.frame_stack, image)
     save_dir = args.save_dir or os.path.join("checkpoints", args.game)

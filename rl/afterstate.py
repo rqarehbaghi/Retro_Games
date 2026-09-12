@@ -239,3 +239,141 @@ class AfterstateAgent:
             self.target_net.load_state_dict(self.val_net.state_dict())
             if self.optimizer and "optimizer_state_dict" in data and data["optimizer_state_dict"]:
                 self.optimizer.load_state_dict(data["optimizer_state_dict"])
+
+
+def train_afterstate(args, spec, overrides):
+    """
+    Standard training runner for Afterstate Lookahead RL.
+    Called directly by train.py when games.json specifies 'algorithm': 'afterstate'.
+    """
+    import sys
+    from rl.simulators import get_simulator
+    from rl.env import make_env
+    from rl.vars import GameVars
+
+    sim_name = spec.afterstate_config.get("simulator") or spec.features_name or spec.game
+    simulator = get_simulator(sim_name)
+    if simulator is None:
+        sys.exit(
+            f"Error: Game '{args.game}' does not have an afterstate simulator registered.\n"
+            f"Expected simulator '{sim_name}' in rl/simulators/."
+        )
+
+    save_dir = args.save_dir or os.path.join("checkpoints", args.game)
+    os.makedirs(save_dir, exist_ok=True)
+
+    lr = args.lr if args.lr is not None else 2.5e-4
+    gamma = args.gamma if args.gamma is not None else 0.99
+    batch_size = args.batch_size if args.batch_size is not None else 64
+    device = args.device or ("cuda" if (HAS_TORCH and torch.cuda.is_available()) else "cpu")
+    eps_start = args.ent_coef if args.ent_coef is not None else 0.20
+    eps_final = args.ent_coef_final if args.ent_coef_final is not None else 0.01
+
+    print(f"algorithm   : Afterstate Lookahead Value Network")
+    print(f"simulator   : {sim_name} (feature dim: {simulator.feature_dim})")
+    print(f"timesteps   : {args.timesteps}")
+    print(f"device      : {device}")
+    print(f"batch / lr  : {batch_size} / {lr} (gamma {gamma})")
+    print(f"exploration : epsilon {eps_start} -> {eps_final}")
+
+    env = make_env(args.game, overrides=overrides)
+    vars = GameVars(spec.game, entry=spec.entry)
+
+    agent = AfterstateAgent(
+        input_dim=simulator.feature_dim,
+        device=device,
+        lr=lr,
+        gamma=gamma
+    )
+    replay = AfterstateReplayBuffer(capacity=50000)
+
+    if args.resume:
+        print(f"resuming weights from {args.resume}")
+        agent.load(args.resume)
+
+    total_steps = 0
+    ep = 0
+    recent_rewards = []
+    recent_steps = []
+    next_save_step = args.save_every
+
+    print("\nBeginning training...")
+    header = f"{'Steps':>8} | {'Ep':>5} | {'Epsilon':>7} | {'Reward':>8} | {'AvgRew':>8} | {'Loss':>7} | Game Stats"
+    print(header)
+    print("-" * 75)
+
+    while total_steps < args.timesteps:
+        ep += 1
+        obs, info = env.reset()
+        done = False
+        ep_reward = 0.0
+        ep_steps = 0
+        prev_afterstate_feat = None
+        ep_loss = 0.0
+        loss_updates = 0
+        last_info = info
+
+        eps_progress = min(1.0, total_steps / float(max(1, args.timesteps)))
+        epsilon = eps_start + (eps_final - eps_start) * eps_progress
+
+        while not done and total_steps < args.timesteps:
+            ram = getattr(env.unwrapped, "ram", None) if hasattr(env, "unwrapped") else None
+            candidates = simulator.get_candidates(obs=obs, ram=ram, info=info, vars=vars, spec=spec)
+
+            action, afterstate_feat = agent.select_action(candidates, epsilon=epsilon)
+
+            next_obs, reward, terminated, truncated, info = env.step(action)
+            done = terminated or truncated
+            last_info = info
+
+            ep_reward += float(reward)
+            ep_steps += 1
+            total_steps += 1
+
+            if prev_afterstate_feat is not None:
+                replay.push(prev_afterstate_feat, reward, afterstate_feat, done)
+
+            prev_afterstate_feat = afterstate_feat
+
+            if len(replay) >= batch_size:
+                loss = agent.update(replay, batch_size=batch_size)
+                ep_loss += loss
+                loss_updates += 1
+
+            if total_steps % 500 == 0:
+                agent.sync_target_network()
+
+            if total_steps >= next_save_step:
+                ckpt_path = os.path.join(save_dir, f"ckpt_{next_save_step}_steps.zip")
+                agent.save(ckpt_path)
+                print(f"  --> Saved checkpoint: {ckpt_path} (step {total_steps})")
+                next_save_step += args.save_every
+
+            obs = next_obs
+
+        # Terminal transition penalty
+        if prev_afterstate_feat is not None:
+            replay.push(prev_afterstate_feat, -20.0, None, True)
+
+        recent_rewards.append(ep_reward)
+        recent_steps.append(ep_steps)
+        if len(recent_rewards) > 50:
+            recent_rewards.pop(0)
+            recent_steps.pop(0)
+
+        avg_rew = np.mean(recent_rewards)
+        avg_loss = (ep_loss / max(1, loss_updates)) if loss_updates > 0 else 0.0
+
+        stat_parts = []
+        for k in [f"lines_p{spec.player}", "lines", f"score_p{spec.player}", "score", "holes", "height"]:
+            if k in last_info:
+                stat_parts.append(f"{k}={last_info[k]}")
+        stats_str = " ".join(stat_parts) if stat_parts else ""
+
+        print(f"{total_steps:8d} | {ep:5d} | {epsilon:7.3f} | {ep_reward:8.1f} | {avg_rew:8.1f} | {avg_loss:7.4f} | {stats_str}")
+
+    final_path = os.path.join(save_dir, "final.zip")
+    agent.save(final_path)
+    print(f"\nTraining complete. Final weights saved to {final_path}")
+    env.close()
+

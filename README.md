@@ -172,112 +172,138 @@ xeyes
 
 Once `xeyes` shows a window, `--human` and `--render` will too.
 
-## 5. Train an agent
+## 5. Generic RL Architecture & Training
 
-`train.py` trains a PPO agent (Stable-Baselines3) with a CNN policy.
-With no `--resume-from`, that's a freshly initialized network -- no
-pretrained weights. Pass `--resume-from` a checkpoint (including one
-from `pretrain_imitation.py`, see below) to continue from there instead.
-Either way, training runs entirely on your own machine.
+The framework provides a generic, configurable reinforcement learning pipeline designed to work across **any game genre** in the retro library (Platformers, Racers, Shooters, Puzzle/Grid games, Turn-Based RPGs, and Board games).
 
-```bash
-python train.py --game SuperMarioBros3-Nes-v0
+The architecture separates **How the Agent Interacts** (`action_mode`) from **How the Agent Thinks** (`algorithm`):
+
+```
+                  ┌──────────────────────────────────────────────────────────┐
+                  │                      GAMES.JSON                          │
+                  │  Specifies the contract between Game, Agent, and Control │
+                  └─────────────┬──────────────────────────────┬─────────────┘
+                                │                              │
+                1. CONTROL LAYER                               2. BRAIN LAYER
+                ("action_mode")                                ("algorithm")
+        ┌───────────────────────┴──────────────┐       ┌───────┴───────────────────────┐
+        ▼                                      ▼       ▼                               ▼
+  button_stream                         macro_action  ppo                         afterstate
+(Frame-by-frame                     (High-level goal  (Model-free actor-critic   (Evaluates projected
+ button presses)                     executed over     learning directly from     post-action states
+                                     multiple frames)  observations)              via simulator)
 ```
 
-**Actions understand press duration, not just which button.** A short
-tap of the jump button and a long hold of it are genuinely different,
-separately-selectable actions (`ACTION_TABLE` in `train.py`) -- e.g. a
-short hop vs. a full-height jump -- rather than something that only
-happens to emerge from picking the same action on consecutive decisions.
-Edit `ACTION_TABLE` directly if your game needs different combos or hold
-lengths (it's a platformer-tuned default, NES jump-button assumed to be
-`A`).
+---
 
-**Reward shaping is on by default.** A bare "did the game's own score go
-up" signal is often too sparse for PPO to learn much before converging
-on degenerate behavior -- walking right into the first obstacle and
-dying repeatedly is the single most common raw-PPO-on-platformer failure
-mode, not a fluke. `train.py` adds a death penalty, a small per-frame
-survival reward, a reward for horizontal progress, and a jump/stuck
-incentive on top of whatever the game's own integration provides:
+### The Two Dimensions
+
+#### 1. Control Layer (`action_mode`)
+* **`button_stream`**: The agent selects a low-level controller combo (e.g. `["A", "RIGHT"]` or `["NOOP"]`) every frame or frameskip. Ideal for reflex and physics-heavy games (Platformers, Racers, Fighting games, Shooters).
+* **`macro_action` / `macro_placement`**: The agent outputs an abstract decision index (e.g. target placement `(rotation, column)` or menu selection). A state-machine wrapper intercepts the intent, coordinates multi-frame button taps and holds on the controller, and yields control only when the maneuver settles. Ideal for puzzle, tile, board, and turn-based games.
+
+#### 2. Decision Layer (`algorithm`)
+* **`ppo` (Model-Free Actor-Critic)**: Uses Stable-Baselines3 PPO. Maps camera pixels or RAM features directly to action probabilities $\pi(A_t \mid S_t)$ through trial-and-error reward learning. Use whenever environment forward simulation is intractable.
+* **`afterstate` (Model-Based Lookahead)**: Uses a registered Python game simulator (`rl/simulators/`) to project all legal moves one decision step forward ($S' = \text{transition}(S, A)$). A Deep Neural Value Network $V_\theta(S')$ scores the prospective post-action states, picking $\arg\max_A [R_{\text{imm}} + \gamma V_\theta(S')]$. Temporal Difference (TD) learning trains the value network. This disentangles the agent's choice from environmental stochasticity (random future spawns/draws).
+
+---
+
+### Game Taxonomy Matrix
+
+| Archetype | Typical Genres | Control Mode (`action_mode`) | Decision Algorithm (`algorithm`) | Example Games |
+| :--- | :--- | :--- | :--- | :--- |
+| **Real-Time Reflex** | Platformers, Racers, Shooters | `button_stream` | `ppo` | *Super Mario Bros*, *F-Zero*, *Contra* |
+| **Discrete Puzzle & Tile** | Drop puzzles, match-3, board games | `macro_placement` | `afterstate` | *Tetris*, *Dr. Mario*, *Puyo Puyo*, *Columns* |
+| **Turn-Based Strategy** | RPGs, tactical strategy, card games | `macro_action` | `ppo` or `afterstate` | *Pokemon*, *Final Fantasy*, *Othello* |
+| **Frame-Data Combat** | Fighting games | `button_stream` or `macro_action` | `ppo` | *Street Fighter II*, *Mortal Kombat* |
+
+---
+
+### Unified Training with `train.py`
+
+Training is completely driven by `games.json`. Running `train.py` automatically detects which algorithm is configured for that game:
+
+```bash
+# 1. Train a model-free PPO game (e.g. platformer)
+python train.py --game SuperMarioBros3-Nes-v0 --timesteps 1000000 --save-every 50000
+
+# 2. Train an afterstate lookahead game (e.g. puzzle game across multiple start states)
+python train.py --game TetrisTime-Nes-v0 \
+  --state level0_2p,level8_2p,rs_01,rs_02,rs_03,rs_04 \
+  --timesteps 3000000 \
+  --lr 2.5e-4 \
+  --ent-coef 0.20 \
+  --ent-coef-final 0.01 \
+  --save-every 100000 \
+  --device cuda
+```
+
+**Common Flags for `train.py`:**
 
 | Flag | Purpose |
-|---|---|
-| `--death-penalty 50.0` | Reward subtracted on death or a non-clear episode end |
-| `--jump-bonus 0.2` | Reward for choosing a jump action. Set to `0` to disable jump-incentive shaping entirely |
+| :--- | :--- |
+| `--game <id>` | The game integration ID (e.g. `TetrisTime-Nes-v0`, `SuperMarioBros3-Nes-v0`). |
+| `--timesteps <N>` | Total environment decisions to train across all episodes. |
+| `--state <list>` | Single state name or comma-separated list of save states to sample randomly per episode. |
+| `--lr <float>` | Learning rate (default: `2.5e-4`). |
+| `--gamma <float>` | Discount factor $\gamma$ (default: `0.99`). |
+| `--ent-coef <float>` | Exploration parameter (entropy coefficient for PPO, initial $\epsilon$ for Afterstate). |
+| `--ent-coef-final <float>` | Final exploration value to smoothly anneal toward over the training duration. |
+| `--save-dir <path>` | Destination folder for checkpoint files (defaults to `checkpoints/<game>/`). |
+| `--save-every <N>` | Save a `.zip` checkpoint every $N$ decisions. |
+| `--resume <ckpt.zip>` | Resume training seamlessly from an existing checkpoint `.zip`. |
+| `--describe` | Inspect the game's full configuration, action table, and reward terms from `games.json` and exit. |
+| `--explain-reward <N>` | Step $N$ random decisions in the environment and print which reward terms pay what in real-time. |
+| `--set key=value` | Override any parameter from `games.json` on the fly without editing the file (e.g. `--set algorithm=ppo`). |
 
-These read `x`/`lives`/`health` from the game's own `info` dict, which
-depends on stable-retro's integration for that specific game actually
-exposing those RAM variables -- if shaping seems to have no effect,
-that's the first thing worth checking rather than assuming it's broken.
+---
 
-`--iterations` (default `100`) is the main knob -- how many training
-iterations to run *this invocation* ("iteration" = one rollout-collection
-+ policy-update cycle, the same number PPO's own logging reports).
-Checkpoints land in a subfolder named after `--game`, e.g.
-`./checkpoints/SuperMarioBros3-Nes-v0/`, so different games never mix.
-Every checkpoint filename bakes in the cumulative iteration count across
-all runs (`iter_100.zip`, `latest_iter_372.zip`) -- no separate file to
-track that number.
+### Universal Checkpoint & Playback Format (`.zip`)
 
-By default you get a milestone at iteration 1 (the untouched random
-network, or the resumed-from checkpoint unchanged -- exactly the "how
-dumb it is" starting point either way) and one at wherever this run ends.
+All trained checkpoints are saved in the universal `.zip` format:
+* **PPO Archives**: contain `policy.pth`, `data`, and SB3 metadata.
+* **Afterstate Archives**: contain `value_net.pth` and model configuration metadata.
 
-**Stop any time with Ctrl+C** -- it saves your progress before exiting
-and tells you the exact `--resume-from` path to continue later. This
-also works if it crashes mid-run, as long as at least one autosave has
-happened since (every 25 iterations by default).
-
-Useful flags:
-
-| Flag | Purpose |
-|---|---|
-| `--iterations 100` | How many more iterations to run this invocation |
-| `--num-envs 8` | Parallel emulator instances -- match to your CPU core count |
-| `--n-steps 128` | Env steps per env before each PPO update |
-| `--lr 2.5e-4` | PPO learning rate. Lower this (e.g. `3e-5`) when resuming from an imitation-pretrained checkpoint, so RL fine-tuning doesn't wash out what it already learned |
-| `--ent-coef 0.01` | PPO entropy coefficient (exploration). Lower this (e.g. `0.001`) when fine-tuning a pretrained checkpoint |
-| `--checkpoint-iterations 1 100` | Which cumulative iterations to snapshot as named milestones. Defaults to `[1, <the iteration this run ends on>]` |
-| `--checkpoint-dir ./checkpoints` | Parent folder -- the `--game`-named subfolder is created inside it |
-| `--autosave-every 25` | Also saves a rolling `latest_iter_N.zip` every N iterations (old one deleted each time) -- your crash/resume safety net. Set to `0` to disable. |
-| `--resume-from ./checkpoints/<game>/latest_iter_100.zip` | Continue training from a saved checkpoint (PPO or imitation-pretrained) instead of starting fresh |
-| `--start-iteration N` | Only needed if you renamed a checkpoint file and its iteration count can't be read from the filename anymore |
-
-**To continue training further:**
+Both **`studio.py`** and **`play_engine.py`** automatically inspect the `.zip` archive on startup and instantiate the matching policy pipeline:
 
 ```bash
-python train.py --game SuperMarioBros3-Nes-v0 \
-    --resume-from ./checkpoints/SuperMarioBros3-Nes-v0/latest_iter_100.zip \
-    --iterations 200
+# Play live in Pygame, record .bk2, and generate captioned videos with studio.py:
+python studio.py --game TetrisTime-Nes-v0 --model checkpoints/TetrisTime-Nes-v0/ckpt_500000_steps.zip
 ```
 
-That runs 200 *more* iterations on top of the 100 already done (ending at
-cumulative iteration 300) -- the counter picks up automatically from the
-filename, nothing to track by hand.
+---
 
-**Playing with a checkpoint:** any saved `.zip` works directly as
-`--model` in `play_and_record.py`:
+### Extensible Simulator Plugin Contract
 
-```bash
-python play_and_record.py --game SuperMarioBros3-Nes-v0 \
-    --model ./checkpoints/SuperMarioBros3-Nes-v0/latest_iter_100.zip
+To add Afterstate Lookahead support for any new puzzle, grid, or strategy game, implement a single simulator class in `rl/simulators/`:
+
+```python
+from rl.simulators import register_simulator, BaseSimulator
+
+@register_simulator("my_game_sim")
+class MyGameSimulator(BaseSimulator):
+    feature_dim: int = 16  # Dimensions of the state descriptor
+
+    def get_candidates(self, obs, ram, info, vars, spec):
+        """
+        Enumerate all legal candidate moves from the current board state.
+        Returns a list of tuples:
+            (action_index, prospective_feature_vector, immediate_reward)
+        """
+        ...
 ```
 
-**Checking GPU usage:** the script prints which device it's actually
-using (`Device: cuda:0` or `Device: cpu`) right after the model is
-created. If it says `cpu`, check
-`python3 -c "import torch; print(torch.cuda.is_available())"` -- if that
-prints `False`, PyTorch was installed without CUDA support and needs
-reinstalling with a CUDA build to actually use your GPU.
+Then in `games.json`, simply declare:
+```json
+"algorithm": "afterstate",
+"action_mode": "macro_placement",
+"afterstate": {
+  "simulator": "my_game_sim"
+}
+```
+The entire framework (`train.py`, `studio.py`, `play_engine.py`) immediately supports the game with zero additional changes.
 
-**Worth knowing regardless of GPU status:** as covered early in this
-thread, the neural network itself runs almost instantly on a 4090 no
-matter what -- the actual bottleneck for NES RL is always the CPU-bound
-emulator stepping across your `--num-envs` parallel processes, not GPU
-compute. Slow here is often just normal. SB3 already prints an `fps`
-number in its own logging each iteration (right there in your terminal)
--- that's your real throughput figure.
+---
 
 ### Human-coach pretraining (warm-start from your own play)
 

@@ -217,12 +217,13 @@ class RewardModel:
         # Training progress, 0.0 at the start of learning and 1.0 at the end.
         # A term may declare "anneal": {"to": X, "frac": F} to move its scale
         # from its start value toward X over the first F of training -- a
-        # SIMULATED-ANNEALING schedule for the reward. The classic use is a
-        # survival scaffold that starts on (dense reward so a random policy
-        # stays alive and stumbles into line clears) and cools to zero, leaving
-        # the pure target reward. train.py's callback pushes progress in; a
-        # non-training reader (--play, --explain-reward) leaves it at 1.0 so it
-        # sees the FINAL weights the policy actually operates under.
+        # SIMULATED-ANNEALING schedule for the reward. What to anneal and to
+        # what is entirely a games.json decision; this code only interpolates.
+        # A common use is a temporary shaping term that starts on (dense reward
+        # so a weak policy has a gradient toward a sparse goal) and cools to
+        # zero, leaving the pure target reward. train.py's callback pushes
+        # progress in; a non-training reader (--play, --explain-reward) leaves
+        # it at 1.0 so it sees the FINAL weights the policy operates under.
         self.progress = 1.0
 
     def _scale(self, t):

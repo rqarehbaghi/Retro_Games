@@ -75,22 +75,28 @@ class AnnealCallback(BaseCallback):
         self.ent_final = ent_final
         self.start = float(start)      # where on the 0..1 schedule to begin
 
-    def _progress(self):
-        # A resume of an already-trained policy should skip the warm-up
-        # scaffold: pass --anneal-start 1.0 to sit at the cold target reward
-        # from the first step. A fresh run leaves start at 0.
-        span = max(0.0, 1.0 - self.start)
-        return min(1.0, self.start + span * (self.model.num_timesteps / self.total))
+    def _fraction(self):
+        """How far through the run we are, 0 -> 1. This is the raw clock."""
+        return min(1.0, self.model.num_timesteps / self.total)
 
     def _on_rollout_start(self):
-        p = self._progress()
-        self.training_env.env_method("set_train_progress", p)
+        frac = self._fraction()
+        # The REWARD scaffold and the ENTROPY are annealed on SEPARATE clocks.
+        # --anneal-start shifts only the reward: a resume passes 1.0 to hold the
+        # reward at its cold target from step one. Entropy must NOT be shifted
+        # by that -- it always walks --ent-coef -> --ent-coef-final over the
+        # whole run, or a resume that skipped the reward scaffold would also
+        # skip its exploration and stay frozen. (That is exactly the bug this
+        # separation fixes: --anneal-start 1.0 was pinning ent_coef at its final
+        # value from the first step.)
+        reward_p = min(1.0, self.start + max(0.0, 1.0 - self.start) * frac)
+        self.training_env.env_method("set_train_progress", reward_p)
         if self.ent_final is not None:
-            self.model.ent_coef = self.ent_start + (self.ent_final - self.ent_start) * p
-            print("  [anneal] progress %.2f  ent_coef %.4f" % (p, self.model.ent_coef),
+            self.model.ent_coef = self.ent_start + (self.ent_final - self.ent_start) * frac
+            print("  [anneal] reward %.2f  ent_coef %.4f" % (reward_p, self.model.ent_coef),
                   flush=True)
         else:
-            print("  [anneal] progress %.2f" % p, flush=True)
+            print("  [anneal] reward %.2f" % reward_p, flush=True)
 
     def _on_step(self) -> bool:
         return True

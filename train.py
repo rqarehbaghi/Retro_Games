@@ -91,12 +91,15 @@ class AnnealCallback(BaseCallback):
         # value from the first step.)
         reward_p = min(1.0, self.start + max(0.0, 1.0 - self.start) * frac)
         self.training_env.env_method("set_train_progress", reward_p)
+        # Label is explicit because the bare number was mistaken for ep_rew_mean:
+        # this is the reward COOLDOWN, 0.00 = warm-up scaffold on, 1.00 = cold
+        # target reward. It is not the episode reward.
         if self.ent_final is not None:
             self.model.ent_coef = self.ent_start + (self.ent_final - self.ent_start) * frac
-            print("  [anneal] reward %.2f  ent_coef %.4f" % (reward_p, self.model.ent_coef),
-                  flush=True)
+            print("  [anneal] reward_cooldown %.2f (1=cold target)  ent_coef %.4f"
+                  % (reward_p, self.model.ent_coef), flush=True)
         else:
-            print("  [anneal] reward %.2f" % reward_p, flush=True)
+            print("  [anneal] reward_cooldown %.2f (1=cold target)" % reward_p, flush=True)
 
     def _on_step(self) -> bool:
         return True

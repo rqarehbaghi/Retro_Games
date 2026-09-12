@@ -182,6 +182,14 @@ class Pad:
                 press("DOWN")
         return action
 
+    def is_pressed(self, name):
+        count = self.joy.get_numbuttons()
+        for table in (PAD_BUTTONS, PAD_SYSTEM_BUTTONS):
+            for index, btn in table.items():
+                if btn == name and index < count and self.joy.get_button(index):
+                    return True
+        return False
+
 
 def find_pads():
     """Every gamepad SDL can see, wrapped so buttons read by meaning."""
@@ -805,6 +813,32 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
     last_reset_val = [None] * num_players
     release_pending = [False] * num_players
 
+    # AI takeover & controller routing:
+    # When starting from boot screen vs AI, the AI player starts in manual control
+    # so the human can configure its level and difficulty on the handicap screen.
+    # Pressing SELECT on Gamepad (or TAB on keyboard) engages the AI and hands
+    # gamepad control to the human player.
+    human_p = (2 if ai_p == 1 else 1) if num_players >= 2 else 1
+    ai_active = (model is not None) and (not boot_screen) and (not p2_human)
+    # Gamepad 1 ALWAYS defaults to the human player (Player 1)
+    pad_target = human_p
+    prev_toggle_down = False
+
+    if boot_screen and model is not None and not p2_human:
+        print("\n===============================================================")
+        print("  BOOT SCREEN MENU MODE:")
+        if num_players >= 2:
+            print(f"  - You are PLAYER {human_p} (Gamepad 1 is assigned to YOU).")
+            print(f"  - AI is assigned to PLAYER {ai_p} (currently in STANDBY).")
+            print(f"  - Set Player {ai_p}'s handicap using the numpad (8/2/4/6) or press")
+            print(f"    SELECT on Gamepad 1 (or TAB) to temporarily switch Gamepad to P{ai_p}.")
+            print(f"  - Press SELECT on Gamepad 1 to return to P{human_p} and ENGAGE the AI!")
+        else:
+            print(f"  - AI is assigned to PLAYER {ai_p} (in STANDBY).")
+            print("  - Use your Gamepad or Keyboard to start the game from the menu.")
+            print("  - Press SELECT on Gamepad (or TAB on keyboard) to ENGAGE AI!")
+        print("===============================================================\n")
+
     while running:
         if _stop["now"]:
             print("[interrupted -- closing the window cleanly]")
@@ -825,11 +859,51 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
         polled = pygame.key.get_pressed()
         combined = set(held_keys)
         combined.update(k for k in KEY_MAPPING if polled[k])
-        p1_action = make_p1_action(buttons, combined, pad1)
 
-        # Player 2: a second human (two controllers / hot-seat) or the AI.
-        if p2_human:
-            p2_action = make_p2_action(buttons, combined, pad2)
+        # Toggle AI takeover / controller routing on SELECT (pad) or TAB (keyboard)
+        toggle_now = False
+        if pad1 is not None and pad1.is_pressed("SELECT"):
+            toggle_now = True
+        if pad2 is not None and pad2.is_pressed("SELECT"):
+            toggle_now = True
+        if (pygame.K_TAB in held_keys) or (polled[pygame.K_TAB] if pygame.K_TAB < len(polled) else False):
+            toggle_now = True
+
+        if toggle_now and not prev_toggle_down:
+            if not ai_active and model is not None and not p2_human:
+                if pad_target == human_p and pad2 is None:
+                    # Switch Gamepad 1 temporarily to the AI player to configure difficulty
+                    pad_target = ai_p
+                    print(f"\n[CONTROL] Gamepad 1 temporarily switched to PLAYER {ai_p} (Set difficulty/level now).\n")
+                else:
+                    # Engage AI and return Gamepad 1 to human player
+                    ai_active = True
+                    pad_target = human_p
+                    print(f"\n[CONTROL] >>> AI TAKEOVER ENGAGED! Player {ai_p} is now AI. Gamepad 1 -> Player {human_p} <<<\n")
+            elif ai_active:
+                ai_active = False
+                pad_target = human_p
+                print(f"\n[CONTROL] >>> MANUAL OVERRIDE! AI paused. Press SELECT again to toggle P{ai_p} setup <<<\n")
+            else:
+                pad_target = human_p if pad_target == ai_p else ai_p
+                print(f"\n[CONTROL] Gamepad 1 switched to Player {pad_target}\n")
+        prev_toggle_down = toggle_now
+
+        # Route gamepads based on player target
+        # human_pad drives make_p1_action (slots[1 - ai_slot])
+        # ai_manual_pad drives make_p2_action (slots[ai_slot])
+        if pad2 is not None:
+            human_pad = pad1 if human_p == 1 else pad2
+            ai_manual_pad = pad2 if ai_p == 2 else pad1
+        else:
+            human_pad = pad1 if pad_target == human_p else None
+            ai_manual_pad = pad1 if pad_target == ai_p else None
+
+        p1_action = make_p1_action(buttons, combined, human_pad)
+
+        # AI slot: a second human, manual override setup, or the AI.
+        if p2_human or not ai_active:
+            p2_action = make_p2_action(buttons, combined, ai_manual_pad)
         elif is_macro:
             ram = env.unwrapped.get_ram()
             curr_p2_row = game_vars.read(row_var, ram, {}, default=None) if game_vars else None
@@ -1037,9 +1111,14 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
         if p2_human:
             p2_pressed = [name for name, on in zip(buttons, p2_action) if on]
             header = f"P1: {p1_pressed or '-'}     P2: {p2_pressed or '-'}     {elapsed_sec}s"
+        elif not ai_active:
+            p_ai_pressed = [name for name, on in zip(buttons, p2_action) if on]
+            who = f"GAMEPAD 1 -> P{pad_target}" if num_players >= 2 else "MANUAL CONTROL"
+            header = f"[{who}] P{ai_p} Setup: {p_ai_pressed or '-'} | Press SELECT or TAB to ENGAGE AI"
         else:
-            header = (f"P1 INPUT: {p1_pressed or 'none'}   |   "
-                      f"START = Enter / pad-Start   |   {elapsed_sec}s")
+            p_human_pressed = [name for name, on in zip(buttons, p1_action) if on]
+            header = (f"P{human_p} (Human): {p_human_pressed or 'none'}   |   "
+                      f"AI ACTIVE (P{ai_p})   |   SELECT/TAB: Manual Override   |   {elapsed_sec}s")
         status_text = font.render(header, True, (240, 240, 240))
         screen.blit(status_text, (offset_x + 15, offset_y + window_h + 18))
 

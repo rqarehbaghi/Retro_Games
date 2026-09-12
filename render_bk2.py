@@ -87,9 +87,22 @@ def render(bk2_path, mp4_path=None):
 
 
 def main():
-    if not 2 <= len(sys.argv) <= 3:
-        raise SystemExit(__doc__.strip())
-    out = render(sys.argv[1], sys.argv[2] if len(sys.argv) == 3 else None)
+    # Arguments were read straight out of sys.argv, so `--help` was taken as a
+    # filename and died inside the emulator with "Could not load movie" -- as
+    # did any typo'd path. Check what we were given before opening anything.
+    args = [a for a in sys.argv[1:] if a not in ("-h", "--help")]
+    if len(args) != len(sys.argv[1:]) or not 1 <= len(args) <= 2:
+        print(__doc__.strip())
+        print("")
+        print("usage: render_bk2.py <replay.bk2> [output.mp4]")
+        print("       output defaults to the .bk2's own name with .mp4")
+        raise SystemExit(0 if len(args) != len(sys.argv[1:]) else 2)
+    if not os.path.exists(args[0]):
+        raise SystemExit("No such replay: %s" % args[0])
+    if not args[0].endswith(".bk2"):
+        print("warning: %s is not a .bk2; the emulator will probably refuse it"
+              % args[0])
+    out = render(args[0], args[1] if len(args) == 2 else None)
     if not out:
         raise SystemExit("render produced no file")
     print(out)

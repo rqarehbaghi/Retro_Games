@@ -95,7 +95,30 @@ def overrides_from(args):
     return {k: v for k, v in o.items() if v is not None}
 
 
+SHOW_NOTES = [False]
+
+
+def _term_line(t):
+    """A reward term without its evidence paragraph.
+
+    The notes in games.json record WHY a weight is what it is, and they run to
+    paragraphs. Printed in full they buried the eight numbers --describe exists
+    to show. --notes prints them.
+    """
+    keep = {k: v for k, v in t.items()
+            if not (k == "note" or k.endswith("_why") or k == "why")}
+    dropped = len(t) - len(keep)
+    return "%s%s" % (keep, "   (+%d note%s, --notes to read)"
+                     % (dropped, "" if dropped == 1 else "s") if dropped else "")
+
+
 def describe(game, spec):
+    if not spec.entry:
+        print("NOTE: %s has no entry in games.json, so everything below is a "
+              "DEFAULT, not this game's setup." % game)
+        print("      It has no reward terms, so training it would score 0 on "
+              "every step. Add an entry before training.")
+        print("")
     print("game        : %s" % game)
     print("players     : %d (agent drives player %d)" % (spec.players, spec.player))
     print("state       : %s" % (spec.state or "(integration default)"))
@@ -143,7 +166,7 @@ def _describe_rest(spec):
     print("ppo defaults: %s" % (spec.ppo or "(library defaults)"))
     print("reward terms:")
     for t in spec.terms:
-        print("   %s" % t)
+        print("   %s" % (t if SHOW_NOTES[0] else _term_line(t)))
     if not spec.terms:
         print("   (none -- every step scores 0, nothing can be learned)")
     if not spec.use_data_json:
@@ -233,9 +256,29 @@ def train(args, spec, overrides):
 
 def play(args, spec, overrides):
     policy, image = policy_for(spec)
+    # Say what is wrong instead of dying inside the library. A missing file
+    # surfaced as FileNotFoundError on a path with .zip appended twice, and a
+    # checkpoint built for a different observation surfaced as a raw
+    # "Observation spaces do not match" with no hint about which flag caused it.
+    path = args.play if os.path.exists(args.play) else args.play + ".zip"
+    if not os.path.exists(path):
+        sys.exit("No checkpoint at %s\nLooked for %s too."
+                 % (args.play, args.play + ".zip"))
     env = build_envs(args.game, overrides, 1, args.frame_stack, image)
-    model = PPO.load(args.play, env=env,
-                     device=args.device or ("cpu" if policy == "MlpPolicy" else "auto"))
+    try:
+        model = PPO.load(path, env=env,
+                         device=args.device or ("cpu" if policy == "MlpPolicy" else "auto"))
+    except ValueError as exc:
+        if "Observation spaces do not match" not in str(exc):
+            raise
+        want = PPO.load(path, device="cpu").observation_space
+        print("")
+        print("This checkpoint sees %s but %s is set up to produce %s."
+              % (want, args.game, env.observation_space))
+        print("A policy only works on the observation it was trained on.")
+        print("Run --describe to see the current setup, and drop any --set or")
+        print("--frame-stack that changes the observation from the trained one.")
+        sys.exit("Observation mismatch.")
     obs = env.reset()
     ep = steps = 0
     while ep < args.episodes:
@@ -302,6 +345,9 @@ def main():
     p.add_argument("--game", required=True, help="stable-retro game id, e.g. TetrisTime-Nes-v0")
     p.add_argument("--config", default=None, help="games.json to read the game's setup from (default: the repo's)")
     p.add_argument("--describe", action="store_true", help="Print what games.json says about this game and exit")
+    p.add_argument("--notes", action="store_true",
+                   help="With --describe, also print each reward term's evidence "
+                        "note, which records WHY that weight is what it is")
     p.add_argument("--explain-reward", type=int, default=None, metavar="STEPS",
                    help="Play STEPS random decisions and print which reward TERM paid "
                         "what on each one, so the weights can be judged against real "
@@ -361,6 +407,7 @@ def main():
             print(n)
         return
     if args.describe:
+        SHOW_NOTES[0] = args.notes
         describe(args.game, spec)
         return
     print("game %s | state %s | player %d/%d | %d actions"

@@ -169,6 +169,14 @@ class TrainingSpec:
         self.use_data_json = bool(t.get("use_data_json", True))
         self.ppo = dict(t.get("ppo") or {})
         self.state = t.get("state") or self._default_state(t)
+        # --state may be a comma-separated LIST of save states, in which case one
+        # is drawn per episode. A single save state seeds the piece sequence, so
+        # every episode is the identical game and the agent memorises a script; a
+        # spread of states (see tools/make_start_states.py) is what forces it to
+        # read the board instead. A single name behaves exactly as before.
+        self.states = [s.strip() for s in str(self.state).split(",")
+                       if s.strip()] if self.state else []
+        self.state = self.states[0] if self.states else None
         self.terms = _fill_player(
             list((self.entry.get("rewards") or {}).get("terms") or []), self.player)
 
@@ -406,6 +414,7 @@ class GenericRetroEnv(gym.Env):
         self._releases = s.releases
         self.action_space = gym.spaces.Discrete(len(self._combos))
         self.steps = self.frames = 0
+        self._rng = np.random.default_rng()
         self.observation_space = self.env.observation_space
 
         self.use_data_json = s.use_data_json
@@ -446,13 +455,16 @@ class GenericRetroEnv(gym.Env):
     # -- state -----------------------------------------------------------
     def _resolve_state(self, s):
         have = s.states_available()
-        if s.state:
-            if have and s.state not in have:
-                print("")
-                print("No save state named %r for %s." % (s.state, s.game))
-                print("Available: %s" % (", ".join(have) if have else "(none)"))
-                sys.exit("Pick one with --state.")
-            return s.state
+        if s.states:
+            for name in s.states:
+                if have and name not in have:
+                    print("")
+                    print("No save state named %r for %s." % (name, s.game))
+                    print("Available: %s" % (", ".join(have) if have else "(none)"))
+                    sys.exit("Pick one with --state.")
+            if len(s.states) > 1:
+                print("start states: %d, one drawn per episode" % len(s.states))
+            return s.states[0]      # the env is created on the first; reset draws
         if have:
             return have[0]
         return retro.State.DEFAULT
@@ -591,6 +603,10 @@ class GenericRetroEnv(gym.Env):
 
     # -- gym API ---------------------------------------------------------
     def reset(self, **kwargs):
+        # Draw this episode's start state when several were given. Each seeds a
+        # different game, which is what stops every episode being identical.
+        if len(self.spec_.states) > 1:
+            self.env.unwrapped.load_state(self._rng.choice(self.spec_.states))
         obs, info = self.env.reset(**kwargs)
         obs, info = self._skip(obs, info)
         ram = self._ram()

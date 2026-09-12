@@ -57,6 +57,45 @@ class RolloutProgressCallback(BaseCallback):
         return True
 
 
+class AnnealCallback(BaseCallback):
+    """Cool the reward and the exploration temperature as training progresses.
+
+    Simulated annealing, in two knobs. Progress goes 0 -> 1 over the run and is
+    pushed to every env, where reward terms with an "anneal" block interpolate
+    their scale (the survival scaffold starts on and cools to zero, leaving the
+    target reward). If --ent-coef-final was given, ent_coef is walked linearly
+    from its start value to that, so the policy explores widely early and
+    commits late. Printed once a rollout so the schedule is visible.
+    """
+
+    def __init__(self, total, ent_start, ent_final, start=0.0):
+        super().__init__()
+        self.total = max(1, int(total))
+        self.ent_start = ent_start
+        self.ent_final = ent_final
+        self.start = float(start)      # where on the 0..1 schedule to begin
+
+    def _progress(self):
+        # A resume of an already-trained policy should skip the warm-up
+        # scaffold: pass --anneal-start 1.0 to sit at the cold target reward
+        # from the first step. A fresh run leaves start at 0.
+        span = max(0.0, 1.0 - self.start)
+        return min(1.0, self.start + span * (self.model.num_timesteps / self.total))
+
+    def _on_rollout_start(self):
+        p = self._progress()
+        self.training_env.env_method("set_train_progress", p)
+        if self.ent_final is not None:
+            self.model.ent_coef = self.ent_start + (self.ent_final - self.ent_start) * p
+            print("  [anneal] progress %.2f  ent_coef %.4f" % (p, self.model.ent_coef),
+                  flush=True)
+        else:
+            print("  [anneal] progress %.2f" % p, flush=True)
+
+    def _on_step(self) -> bool:
+        return True
+
+
 def _factory(seed, game, overrides):
     def _init():
         env = make_env(game, overrides)
@@ -245,8 +284,17 @@ def train(args, spec, overrides):
     cb = CheckpointCallback(save_freq=max(1, args.save_every // args.n_envs),
                             save_path=save_dir, name_prefix="ckpt")
     progress_cb = RolloutProgressCallback(log_freq=max(16, n_steps // 4))
+    # Reward and exploration annealing. Always pushes progress to the envs (so
+    # any term with an "anneal" block cools over the run); only touches
+    # ent_coef when --ent-coef-final is given.
+    anneal_cb = AnnealCallback(args.timesteps, float(model.ent_coef),
+                               args.ent_coef_final, start=args.anneal_start)
+    callbacks = [cb, progress_cb, anneal_cb]
     print("Beginning rollout collection (%d steps per batch, %d total timesteps)..." % (n_steps, args.timesteps))
-    model.learn(total_timesteps=args.timesteps, callback=[cb, progress_cb],
+    if args.ent_coef_final is not None:
+        print("annealing ent_coef %.4f -> %.4f over the run"
+              % (float(model.ent_coef), args.ent_coef_final))
+    model.learn(total_timesteps=args.timesteps, callback=callbacks,
                 progress_bar=args.progress)
     final = os.path.join(save_dir, "final.zip")
     model.save(final)
@@ -376,6 +424,15 @@ def main():
     p.add_argument("--lr", type=float, default=None)
     p.add_argument("--gamma", type=float, default=None)
     p.add_argument("--ent-coef", type=float, default=None)
+    p.add_argument("--ent-coef-final", type=float, default=None,
+                   help="Anneal the entropy coefficient from --ent-coef (or the "
+                        "game default) down to this over the run: explore widely "
+                        "early, commit late. The 'temperature' in the annealing.")
+    p.add_argument("--anneal-start", type=float, default=0.0,
+                   help="Where on the 0..1 reward-anneal schedule to begin. Fresh "
+                        "runs leave it 0 (full warm-up scaffold). RESUMING an "
+                        "already-trained policy should pass 1.0 to skip the "
+                        "scaffold and sit at the cold target reward from step one.")
     p.add_argument("--n-epochs", type=int, default=None)
 
     p.add_argument("--device", default=None, help="Device to run on ('cpu', 'cuda', or 'auto'). Defaults to 'cpu' for MlpPolicy")

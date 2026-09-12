@@ -214,6 +214,27 @@ class RewardModel:
         self.prev_feats = {}
         self._gate_val = None
         self._held = {}
+        # Training progress, 0.0 at the start of learning and 1.0 at the end.
+        # A term may declare "anneal": {"to": X, "frac": F} to move its scale
+        # from its start value toward X over the first F of training -- a
+        # SIMULATED-ANNEALING schedule for the reward. The classic use is a
+        # survival scaffold that starts on (dense reward so a random policy
+        # stays alive and stumbles into line clears) and cools to zero, leaving
+        # the pure target reward. train.py's callback pushes progress in; a
+        # non-training reader (--play, --explain-reward) leaves it at 1.0 so it
+        # sees the FINAL weights the policy actually operates under.
+        self.progress = 1.0
+
+    def _scale(self, t):
+        """A term's scale at the current training progress (annealed if asked)."""
+        base = float(t.get("scale", 0.0))
+        an = t.get("anneal")
+        if not an:
+            return base
+        to = float(an.get("to", 0.0))
+        frac = float(an.get("frac", 1.0)) or 1.0
+        p = min(1.0, max(0.0, self.progress) / frac)
+        return base + (to - base) * p
 
     def _values(self, ram, info):
         needed = {t["var"] for t in self.terms if t.get("var")}
@@ -294,7 +315,7 @@ class RewardModel:
         for t in self.terms:
             before = total
             kind = t.get("kind")
-            scale = float(t.get("scale", 0.0))
+            scale = self._scale(t)
             if kind == "step":
                 total += scale
             elif kind == "terminal":
@@ -396,6 +417,12 @@ class GenericRetroEnv(gym.Env):
         if not s.terms:
             print("WARNING: %s declares no rewards.terms in games.json, so every "
                   "step scores 0 and nothing can be learned." % game)
+
+    def set_train_progress(self, p):
+        """0.0 at the start of training, 1.0 at the end. Drives reward
+        annealing -- train.py's callback calls this on every env each rollout.
+        Reached through the wrapper stack by SB3's VecEnv.env_method."""
+        self.reward_model.progress = float(p)
 
     def _warn_data_json_off(self, s):
         """Say exactly what stops working, rather than failing silently."""

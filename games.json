@@ -682,7 +682,7 @@
         "release_frames_why": "One frame of every decision is spent with no buttons held, so each decision is a fresh PRESS. Without it two identical decisions in a row reach the game as one sustained press: measured, repeated LEFT presses moved the piece 7,6,6,5,5,4 -- half did not register -- and a long hold triggers auto-repeat and skips columns. With one release frame the same four frames give a clean 7,6,5,4,3, one column per decision. This is why the bot could only slide pieces to a wall and never nudge one over a gap."
       },
       "rewards": {
-        "_design": "LINES-ONLY (owner's choice, option 1). The ONLY positive reward is clearing lines. There is deliberately no landing bonus, no score term, and no per-step tick, because all three paid the agent for pieces the game lands under gravity regardless of what it chose -- a do-nothing policy banked +16.5 in landing reward. So reward is paid only for what the agent's placement affects: the board it shapes and the lines it clears. Every placement is a small LOSS from the board penalties; the only way to go net positive is to clear lines. This gives the ranking the owner asked for -- a clean flat placement loses least, a clean tower more, a hole-making placement most -- and nothing is rewarded for merely existing. TRADEOFF, known and accepted: a random policy never clears a line, so it sees only losses and tops out. This reward is NOT learnable from scratch; it needs a warm start (behavior cloning from recordings) so the policy already places decently before RL begins.",
+        "_design": "LINES-ONLY target (owner's choice, option 1), reached from scratch by SIMULATED-ANNEALING the reward. The FINAL reward -- what the finished policy operates under, and what --play shows -- pays only for clearing lines and for the board the agent shapes: no landing bonus, no score, no per-step tick, because all three paid for pieces the game lands under gravity regardless of choice (a do-nothing policy banked +16.5 in landing reward). Every placement is then a small LOSS and the only way to go positive is to clear lines, which gives the owner's ranking (clean-flat loses least, clean-tower more, hole most). The problem this can't be trained from scratch -- a random policy never clears a line, so it sees only losses and tops out -- is solved by ANNEALING. Two terms carry an 'anneal' block: a landing scaffold that starts at +1.5 (dense survival reward so a random policy stays alive long enough to stumble into clears) and cools to 0 over the first 60% of training, and a holes penalty that starts gentle (-0.5, so early messy play is not catastrophic) and sharpens to -1.0. Pair with --ent-coef-final to cool exploration too. At the end (progress 1.0) both have annealed to the pure lines-only target above.",
         "terms": [
           {
             "kind": "delta_tiered",
@@ -694,25 +694,39 @@
               60,
               120
             ],
-            "note": "The one positive term. A Tetris of four lines is worth far more than four singles, which a flat per-line rate cannot express."
+            "note": "The one always-positive term, un-annealed. A Tetris of four lines is worth far more than four singles, which a flat per-line rate cannot express."
+          },
+          {
+            "kind": "decrease_event",
+            "var": "piece_row_p{player}",
+            "scale": 1.5,
+            "anneal": {
+              "to": 0.0,
+              "frac": 0.6
+            },
+            "note": "SURVIVAL SCAFFOLD, temporary. Pays for a piece landing, which keeps a random policy alive long enough to discover that clearing lines pays -- the thing that makes lines-only learnable from scratch. It is annealed to 0 over the first 60% of training, so the finished reward has no landing bonus at all. This is the 'heat' in the simulated annealing: on while the policy is random, gone once it can play."
           },
           {
             "kind": "feature_delta",
             "name": "holes",
-            "scale": -1.0,
-            "note": "A hole is the thing that makes a stack unrecoverable, so it is the heaviest board penalty. With no landing bonus to fight, this does not have to stay gentle: a hole-making placement should simply be the worst non-terminal outcome, which at -1.0 it is."
+            "scale": -0.5,
+            "anneal": {
+              "to": -1.0,
+              "frac": 0.6
+            },
+            "note": "Starts gentle so early messy play is survivable while the scaffold is still up, then sharpens to -1.0 as the scaffold comes down, so the final reward makes a hole the worst non-terminal outcome. A hole is what makes a stack unrecoverable, so it is the heaviest board penalty at the end."
           },
           {
             "kind": "feature_delta",
             "name": "height",
             "scale": -0.05,
-            "note": "Aggregate column height. Kept small because it rises ~7 per placement however well played -- it is a mild pressure to keep the stack low, not the main signal. It telescopes to -0.05 * final height, so a game that clears lines (keeping height low) pays little and one that stacks to the top pays a lot."
+            "note": "Aggregate column height, un-annealed. Kept small because it rises ~7 per placement however well played -- mild pressure to keep the stack low. Telescopes to -0.05 * final height, so a game that clears lines pays little and one that stacks to the top pays a lot."
           },
           {
             "kind": "feature_delta",
             "name": "bumpiness",
             "scale": -0.15,
-            "note": "Summed step between neighbouring columns. This is what encodes 'prefer a flat line to a tower': at -0.02 it did nothing (a clean tower scored the same as a clean flat placement), so it is raised to -0.15 to make a jagged surface genuinely cost more than a level one."
+            "note": "Summed step between neighbouring columns, un-annealed. This is what encodes 'prefer a flat line to a tower': at -0.02 it did nothing (a clean tower scored the same as a clean flat placement), so it is -0.15 to make a jagged surface genuinely cost more than a level one."
           },
           {
             "kind": "terminal",

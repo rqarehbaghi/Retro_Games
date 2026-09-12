@@ -585,8 +585,8 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
             print("      usbipd attach --wsl --busid <id>      (per device, every replug)")
             print("  Then check both appear:  ls /dev/input/js*   (expect js0 AND js1)")
             print("")
-    else:
-        print(f"Human: PLAYER 1 (Keyboard/Gamepad) | AI: PLAYER 2 ({model_path or 'Random Policy'})")
+    # Who is on which side is printed once the agent's player is resolved,
+    # below -- it is not always human-P1 / AI-P2.
     print("CLICK THE GAME WINDOW ONCE before playing. SDL delivers gamepad")
     print("input to an unfocused window, but never keyboard input -- so an")
     print("unclicked window looks exactly like a dead keyboard.")
@@ -656,6 +656,20 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
         game_vars = None
         ai_slot = 1 if num_players >= 2 else 0
     ai_p = ai_slot + 1
+    if not p2_human:
+        # Now that the agent's player is known, say which side it is on. The
+        # default assumption of human-P1 / AI-P2 is exactly backwards when the
+        # model drives player 1, and there is no human at all with one player.
+        who = model_path or "Random Policy"
+        if num_players >= 2:
+            human_p = 2 if ai_p == 1 else 1
+            print("AI: PLAYER %d (%s) | Human: PLAYER %d (Keyboard/Gamepad)"
+                  % (ai_p, who, human_p))
+            pygame.display.set_caption("Retro AI Arena: AI (P%d) vs Human (P%d) - [%s]"
+                                       % (ai_p, human_p, game))
+        else:
+            print("AI: PLAYER %d (%s) | no human player" % (ai_p, who))
+            pygame.display.set_caption("Retro AI Arena: AI (P%d) - [%s]" % (ai_p, game))
 
     def _ai_buttons(btn_names):
         act = np.array([False] * len(buttons), dtype=bool)

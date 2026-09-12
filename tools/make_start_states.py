@@ -26,6 +26,7 @@ training block declares, so a macro-placement game advances by placements and a
 button game by button presses.
 """
 import argparse
+import gc
 import glob
 import gzip
 import os
@@ -104,28 +105,82 @@ def main():
         sys.exit("Could not reach the emulator through the wrapper stack.")
     rng = np.random.default_rng(args.seed)
 
-    written = []
-    for i in range(args.count):
+    # How long a random policy lasts here decides how far it is safe to walk.
+    # Walking past that saves a state in which the game is ALREADY OVER, and
+    # training from one ends the episode on its first decision. Measured the
+    # first time this ran: 8 of 10 states were dead on arrival, and a --play
+    # across them reported episodes of 1 decision and 1 frame.
+    probe = []
+    for _ in range(3):
         env.reset()
-        want = int(rng.integers(args.min_steps, args.max_steps + 1))
-        done = 0
+        k = 0
+        while k < 400:
+            _o, _r, term, trunc, _i = env.step(int(rng.integers(env.action_space.n)))
+            k += 1
+            if term or trunc:
+                break
+        probe.append(k)
+    typical = int(np.median(probe))
+    safe = max(args.min_steps + 1, int(typical * 0.6))
+    cap = min(args.max_steps, safe)
+    print("a random policy lasts about %d decisions here, so walking at most %d"
+          % (typical, cap))
+    if cap < args.max_steps:
+        print("  (--max-steps %d would have saved states that are already over)"
+              % args.max_steps)
+
+    written, attempts = [], 0
+    while len(written) < args.count and attempts < args.count * 8:
+        attempts += 1
+        env.reset()
+        want = int(rng.integers(args.min_steps, cap + 1))
+        done, dead = 0, False
         for _ in range(want):
             _o, _r, term, trunc, _i = env.step(int(rng.integers(env.action_space.n)))
             done += 1
             if term or trunc:
+                dead = True
                 break
-        if done < args.min_steps:
-            print("  skipped one: the episode ended after %d decisions" % done)
+        if dead or done < args.min_steps:
             continue
         name = "%s_%02d" % (args.prefix, len(written) + 1)
         path = os.path.join(out_dir, name + ".state")
         if not args.dry_run:
             with gzip.open(path, "wb") as fh:
                 fh.write(em.get_state())
-        written.append(name)
+        written.append((name, done))
         print("  %-8s  %2d decisions played%s" % (name, done,
               "  (dry run, not written)" if args.dry_run else ""))
     env.close()
+    # stable-retro allows ONE emulator per process and does not release it on
+    # close() alone -- the next retro.make dies with "Cannot create multiple
+    # emulator instances". Drop the reference and collect before opening
+    # another.
+    del env, em
+    gc.collect()
+
+    # Load each one back and take a step. A state that ends immediately is
+    # worthless for training and must not sit silently in the integration dir.
+    if written and not args.dry_run:
+        print("")
+        print("verifying each state is a live game:")
+        bad = []
+        for name, _ in written:
+            v = make_env(args.game, {"state": name})
+            v.reset()
+            _o, _r, term, trunc, _i = v.step(0)
+            v.close()
+            if term or trunc:
+                bad.append(name)
+                print("  %-8s DEAD -- ends on its first decision" % name)
+            else:
+                print("  %-8s ok" % name)
+        if bad:
+            for name in bad:
+                os.remove(os.path.join(out_dir, name + ".state"))
+            print("  removed %d dead state(s)" % len(bad))
+            written = [w for w in written if w[0] not in bad]
+    written = [w[0] for w in written]
 
     print("")
     print("wrote %d states to %s" % (len(written), out_dir))

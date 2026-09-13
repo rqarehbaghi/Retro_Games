@@ -522,6 +522,9 @@ def main():
                         "hits the stack -> result, with an execution-correctness verdict) under "
                         "<save-dir>/unittest_samples/. Add --resume <ckpt> to eyeball a trained "
                         "model from the middle of a run.")
+    p.add_argument("--unittest-samples", type=int, default=5,
+                   help="How many placement screenshots --unittest saves (default 5). "
+                        "The session runs ~16 placements per sample so they spread out.")
     p.add_argument("--tb", default=None, help="TensorBoard log dir")
     p.add_argument("--progress", action="store_true")
 

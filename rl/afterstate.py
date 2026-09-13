@@ -300,7 +300,9 @@ def _find_macro_wrapper(env):
     return None
 
 
-def unittest_afterstate(args, spec, overrides, n_samples=5, max_steps=100):
+def unittest_afterstate(args, spec, overrides):
+    n_samples = max(1, int(getattr(args, "unittest_samples", None) or 5))
+    max_steps = max(100, n_samples * 16)    # enough placements to spread samples over
     """A short, VISUAL check that placements are decided and executed correctly.
 
     Runs at most `max_steps` afterstate placements (so it is quick), and for a
@@ -370,8 +372,20 @@ def unittest_afterstate(args, spec, overrides, n_samples=5, max_steps=100):
         ax.set_xlim(0, frame.shape[1]); ax.set_ylim(frame.shape[0], 0)
         ax.set_title(title, fontsize=9); ax.axis("off")
 
+    player = getattr(spec, "player", 2)
+
+    def metrics_line(info):
+        """The same game stats the training log prints, from info after the step."""
+        parts = []
+        for label, key in (("score", "score_p%d" % player), ("lines", "lines_p%d" % player),
+                           ("holes", "holes"), ("height", "height"), ("bumpiness", "bumpiness")):
+            if key in info:
+                v = info[key]
+                parts.append("%s=%s" % (label, int(v) if float(v).is_integer() else round(float(v), 1)))
+        return "   ".join(parts)
+
     def save_sample(idx, frame_spawn, piece_type, board_before, chosen,
-                    frame_lock, frame_result, board_after):
+                    frame_lock, frame_result, board_after, info):
         pred = (_np.asarray(chosen["afterstate"])[:n].reshape(rows, cols) > 0.5).astype(_np.uint8)
         diff = int(_np.abs(pred.astype(int) - board_after.astype(int)).sum())
         verdict = "MATCH" if diff <= 4 else "MISMATCH (%d cells)" % diff
@@ -405,7 +419,14 @@ def unittest_afterstate(args, spec, overrides, n_samples=5, max_steps=100):
         overlay(ax[3], frame_result, board_after,
                 "4. Result: execution %s\nboard now: %d filled cells" % (verdict, int(board_after.sum())))
         fig.suptitle("placement sample #%d  (%s model)" % (idx, tag), fontsize=11)
-        fig.tight_layout(rect=[0, 0, 1, 0.96])
+        # Game metrics after this placement -- the same stats the training log
+        # shows (score / lines / holes / height / bumpiness). The log's other
+        # columns (loss, reward) do not exist here because --unittest does not train.
+        mline = metrics_line(info)
+        if mline:
+            fig.text(0.5, 0.015, "metrics after this placement:   " + mline,
+                     ha="center", va="bottom", fontsize=10, family="monospace")
+        fig.tight_layout(rect=[0, 0.05, 1, 0.96])
         p = os.path.join(out_dir, "sample_%02d.png" % idx)
         fig.savefig(p, dpi=85); plt.close(fig)
         return p, verdict
@@ -440,7 +461,7 @@ def unittest_afterstate(args, spec, overrides, n_samples=5, max_steps=100):
             frame_lock = macro.lock_frame if macro is not None else None
             frame_result = env.render()
             p, verdict = save_sample(placements, frame_spawn, piece_type, board_before,
-                                     chosen, frame_lock, frame_result, board_after)
+                                     chosen, frame_lock, frame_result, board_after, info)
             saved.append((p, verdict))
             print("  sample #%d saved: rot=%d col=%d predict_lines=%d  execution=%s  -> %s"
                   % (placements, chosen["rot"], chosen["col"], chosen["lines_cleared"], verdict, p))

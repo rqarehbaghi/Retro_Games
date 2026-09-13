@@ -345,7 +345,7 @@ def play(args, spec, overrides):
         from rl.vars import GameVars
 
         sim_name = spec.afterstate_config.get("simulator") or spec.features_name or spec.game
-        simulator = get_simulator(sim_name)
+        simulator = get_simulator(sim_name, config=spec.afterstate_config)
         if simulator is None:
             sys.exit("No afterstate simulator registered for game %s (expected '%s')"
                      % (args.game, sim_name))

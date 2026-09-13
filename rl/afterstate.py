@@ -241,6 +241,49 @@ class AfterstateAgent:
                 self.optimizer.load_state_dict(data["optimizer_state_dict"])
 
 
+def _verify_simulator(env, simulator, vars, spec, samples: int = 6):
+    """Check the simulator's predicted afterstate against what the emulator
+    actually does, before training on it. This catches wrong piece shapes on the
+    FIRST run instead of after a wasted one -- exactly the bug this pipeline had,
+    where standard tetrominoes were assumed and four of six were wrong.
+
+    A few cells of pixel noise are tolerated; a wrong piece shifts many.
+    """
+    import sys
+    n = getattr(simulator, "rows", 20) * getattr(simulator, "cols", 10)
+    obs, info = env.reset()
+    checked = mism = 0
+    for _ in range(300):
+        cands = simulator.get_candidates(obs=obs, ram=None, info=info, vars=vars, spec=spec)
+        if not cands:
+            obs, _r, term, trunc, info = env.step(0)
+            if term or trunc:
+                obs, info = env.reset()
+            continue
+        c = cands[len(cands) // 2]
+        predicted = (np.asarray(c["afterstate"])[:n] > 0.5).astype(np.uint8)
+        obs, _r, term, trunc, info = env.step(c["action"])
+        actual = (np.asarray(obs)[:n] > 0.5).astype(np.uint8)
+        diff = int(np.abs(predicted.astype(int) - actual.astype(int)).sum())
+        checked += 1
+        if diff > 4:
+            mism += 1
+        if term or trunc:
+            obs, info = env.reset()
+        if checked >= samples:
+            break
+    if checked and mism > checked // 2:
+        print("")
+        print("FATAL: the simulator's predicted board disagrees with the emulator on "
+              "%d of %d sampled placements." % (mism, checked))
+        print("The declared piece shapes almost certainly do not match this game, so "
+              "training would learn on afterstates that never happen.")
+        print("Re-measure the pieces and fix the 'afterstate.shapes' block in games.json.")
+        sys.exit("Simulator shapes do not match the game.")
+    print("simulator self-check : %d/%d sampled placements match the emulator"
+          % (checked - mism, checked))
+
+
 def train_afterstate(args, spec, overrides):
     """
     Standard training runner for Afterstate Lookahead RL.
@@ -252,11 +295,16 @@ def train_afterstate(args, spec, overrides):
     from rl.vars import GameVars
 
     sim_name = spec.afterstate_config.get("simulator") or spec.features_name or spec.game
-    simulator = get_simulator(sim_name)
+    simulator = get_simulator(sim_name, config=spec.afterstate_config)
     if simulator is None:
         sys.exit(
             f"Error: Game '{args.game}' does not have an afterstate simulator registered.\n"
             f"Expected simulator '{sim_name}' in rl/simulators/."
+        )
+    if not getattr(simulator, "shapes", None):
+        sys.exit(
+            f"Error: the afterstate config for '{args.game}' declares no piece shapes.\n"
+            f"Add a 'shapes' block to its 'afterstate' entry in games.json (see the schema)."
         )
 
     save_dir = args.save_dir or os.path.join("checkpoints", args.game)
@@ -278,6 +326,8 @@ def train_afterstate(args, spec, overrides):
 
     env = make_env(args.game, overrides=overrides)
     vars = GameVars(spec.game, entry=spec.entry)
+
+    _verify_simulator(env, simulator, vars, spec)
 
     agent = AfterstateAgent(
         input_dim=simulator.feature_dim,

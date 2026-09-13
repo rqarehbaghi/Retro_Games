@@ -639,7 +639,7 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
 
                 afterstate_spec = TrainingSpec(game, ai_overrides)
                 sim_name = afterstate_spec.afterstate_config.get("simulator") or afterstate_spec.features_name or afterstate_spec.game
-                simulator = get_simulator(sim_name)
+                simulator = get_simulator(sim_name, config=afterstate_spec.afterstate_config)
                 if simulator is None:
                     sys.exit(f"No afterstate simulator registered for game {game} (expected '{sim_name}')")
 

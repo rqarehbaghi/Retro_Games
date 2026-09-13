@@ -601,7 +601,52 @@
         },
         "algorithm": "afterstate",
         "afterstate": {
-          "simulator": "tetris"
+          "simulator": "grid_placement",
+          "board": {
+            "rows": 20,
+            "cols": 10
+          },
+          "line_scale": 10.0,
+          "hole_penalty": 2.0,
+          "shapes_note": "The falling pieces of THIS game, keyed by the RAM piece_type value (see two_player.piece_type_p*), each a list of the four rotations, each rotation a list of [row, col] cells with the piece normalised to its own top-left. MEASURED off the screen and validated against the emulator to the cell -- do not assume the standard tetromino set. TetrisTime is a SIX-piece game (I, T, O, J, L, S); there is NO Z, and the type values run 1..6, not 0..6. type 0 and 7 are transient values between pieces, not shapes. Simulating standard tetrominoes instead was the bug that made the afterstate model imagine the wrong piece for four of six types.",
+          "shapes": {
+            "1": [
+              [[0, 0], [0, 1], [0, 2], [0, 3]],
+              [[0, 0], [1, 0], [2, 0], [3, 0]],
+              [[0, 0], [0, 1], [0, 2], [0, 3]],
+              [[0, 0], [1, 0], [2, 0], [3, 0]]
+            ],
+            "2": [
+              [[0, 0], [0, 1], [0, 2], [1, 1]],
+              [[0, 0], [1, 0], [1, 1], [2, 0]],
+              [[0, 1], [1, 0], [1, 1], [1, 2]],
+              [[0, 1], [1, 0], [1, 1], [2, 1]]
+            ],
+            "3": [
+              [[0, 0], [0, 1], [1, 0], [1, 1]],
+              [[0, 0], [0, 1], [1, 0], [1, 1]],
+              [[0, 0], [0, 1], [1, 0], [1, 1]],
+              [[0, 0], [0, 1], [1, 0], [1, 1]]
+            ],
+            "4": [
+              [[0, 0], [0, 1], [0, 2], [1, 2]],
+              [[0, 0], [0, 1], [1, 0], [2, 0]],
+              [[0, 0], [1, 0], [1, 1], [1, 2]],
+              [[0, 1], [1, 1], [2, 0], [2, 1]]
+            ],
+            "5": [
+              [[0, 0], [0, 1], [0, 2], [1, 0]],
+              [[0, 0], [1, 0], [2, 0], [2, 1]],
+              [[0, 2], [1, 0], [1, 1], [1, 2]],
+              [[0, 0], [0, 1], [1, 1], [2, 1]]
+            ],
+            "6": [
+              [[0, 1], [0, 2], [1, 0], [1, 1]],
+              [[0, 0], [1, 0], [1, 1], [2, 1]],
+              [[0, 1], [0, 2], [1, 0], [1, 1]],
+              [[0, 0], [1, 0], [1, 1], [2, 1]]
+            ]
+          }
         },
         "action_mode": "macro_placement",
         "report_stats": [

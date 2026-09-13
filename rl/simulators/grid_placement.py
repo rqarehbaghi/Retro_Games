@@ -11,9 +11,14 @@ real ROM, and this evaluates every legal placement of the current piece:
       "simulator": "grid_placement",
       "board": {"rows": 20, "cols": 10},
       "line_scale": 10.0,
-      "hole_penalty": 2.0,
+      "hole_penalty": 4.0, "height_penalty": 0.4, "bump_penalty": 0.3,
       "shapes": {"<piece_type>": [ [[r,c],...] per rotation ], ...}
     }
+
+The reward for a placement is `line_scale`-tiered line bonus plus the change in
+a board-quality potential Phi = -(hole_penalty*holes + height_penalty*height +
+bump_penalty*bumpiness). height/bump penalties default to 0, so a game that omits
+them keeps holes-only behaviour.
 
 `shapes` is keyed by the game's own piece_type value, so nothing here needs to
 know a "standard" tetromino order -- assuming one was the bug that made an
@@ -65,6 +70,25 @@ def simulate_drop(board: np.ndarray, shape: np.ndarray, col: int
     return True, nb, lines
 
 
+def board_stats(board: np.ndarray) -> Tuple[float, float, float]:
+    """The three board-quality measurements the reward potential is built from:
+    total holes (covered empty cells), aggregate column height, and bumpiness
+    (summed neighbour height differences). All generic grid geometry."""
+    rows, cols = board.shape
+    heights = np.zeros(cols, dtype=np.float32)
+    holes = 0.0
+    for c in range(cols):
+        col = board[:, c]
+        filled = np.nonzero(col)[0]
+        if filled.size:
+            top = filled[0]
+            heights[c] = float(rows - top)
+            holes += float(np.sum(col[top:] == 0))
+    agg_height = float(heights.sum())
+    bumpiness = float(np.abs(np.diff(heights)).sum()) if cols > 1 else 0.0
+    return holes, agg_height, bumpiness
+
+
 def board_feature_vector(board: np.ndarray) -> Tuple[np.ndarray, float]:
     """The afterstate representation fed to the value net, and the raw hole
     count (used for the immediate-reward hole delta).
@@ -103,7 +127,12 @@ class GridPlacementSimulator(BaseAfterstateSimulator):
         self.rows = int(board.get("rows", 20))
         self.cols = int(board.get("cols", 10))
         self.line_scale = float(cfg.get("line_scale", 10.0))
+        # Weights of the board-quality potential Phi (see get_candidates). Height
+        # and bumpiness default to 0 so a game that declares neither keeps the
+        # old holes-only behaviour; this game sets all three in games.json.
         self.hole_penalty = float(cfg.get("hole_penalty", 2.0))
+        self.height_penalty = float(cfg.get("height_penalty", 0.0))
+        self.bump_penalty = float(cfg.get("bump_penalty", 0.0))
         # {piece_type: [shape_array per rotation]}, straight from games.json.
         self.shapes: Dict[int, List[np.ndarray]] = {}
         for t, rots in (cfg.get("shapes") or {}).items():
@@ -144,12 +173,23 @@ class GridPlacementSimulator(BaseAfterstateSimulator):
             # to place, so no candidates.
             return []
 
-        prev_holes = 0
-        for c in range(self.cols):
-            col = board[:, c]
-            filled = np.nonzero(col)[0]
-            if filled.size:
-                prev_holes += int(np.sum(col[filled[0]:] == 0))
+        # Board-quality potential of the CURRENT settled board, before any drop.
+        #   Phi(board) = -(hole_penalty*holes + height_penalty*height + bump_penalty*bump)
+        # The per-placement reward below is the line bonus plus the CHANGE in Phi
+        # (Phi(after) - Phi(before)). Because it is a potential difference it
+        # telescopes over an episode: damage (a hole, added height or bumpiness)
+        # is charged once when it appears and refunded once a line clear removes
+        # it, and costs nothing while it merely persists -- so a later piece is
+        # never re-penalised for what earlier pieces did. This is what gives the
+        # value net a dense signal; the old rule penalised only newly drilled
+        # holes and left ~74% of placements at exactly reward 0.
+        def phi(bd):
+            holes, height, bump = board_stats(bd)
+            return -(self.hole_penalty * holes
+                     + self.height_penalty * height
+                     + self.bump_penalty * bump)
+
+        phi_before = phi(board)
 
         s = self.line_scale
         tiers = [0.0, s, s * 3, s * 6, s * 12]     # a Tetris is worth far more
@@ -160,11 +200,8 @@ class GridPlacementSimulator(BaseAfterstateSimulator):
                 valid, after, lines = simulate_drop(board, shape, col)
                 if not valid or after is None:
                     continue
-                feat, curr_holes = board_feature_vector(after)
-                imm = tiers[min(lines, 4)]
-                hole_delta = curr_holes - prev_holes
-                if hole_delta > 0:
-                    imm -= float(hole_delta * self.hole_penalty)
+                feat, _curr_holes = board_feature_vector(after)
+                imm = tiers[min(lines, 4)] + (phi(after) - phi_before)
                 out.append({
                     "action": rot * self.cols + col,
                     "afterstate": feat,

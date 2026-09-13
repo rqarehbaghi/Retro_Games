@@ -288,6 +288,157 @@ def _verify_simulator(env, simulator, vars, spec, samples: int = 6):
           % (checked - mism, checked))
 
 
+def _find_macro_wrapper(env):
+    """Walk the wrapper chain to the MacroPlacementWrapper (it holds lock_frame)."""
+    e = env
+    for _ in range(8):
+        if hasattr(e, "capture_lock") and hasattr(e, "lock_frame"):
+            return e
+        e = getattr(e, "env", None)
+        if e is None:
+            break
+    return None
+
+
+def unittest_afterstate(args, spec, overrides, n_samples=5, max_steps=100):
+    """A short, VISUAL check that placements are decided and executed correctly.
+
+    Runs at most `max_steps` afterstate placements (so it is quick), and for a
+    handful of them saves one composite image per placement showing four moments:
+      1. the new piece as it appears,
+      2. what the model DECIDED to do with it (the predicted afterstate),
+      3. the frame at the moment the piece hits the stack,
+      4. the settled result, with the board the code reads overlaid and a verdict
+         on whether the emulator produced the afterstate the model predicted.
+
+    With --resume it loads a checkpoint first, so you can eyeball a trained model
+    from the middle of a real run. Nothing is trained here; it only observes.
+    """
+    import sys
+    import numpy as _np
+    from rl.simulators import get_simulator
+    from rl.env import make_env
+    from rl.vars import GameVars
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        from matplotlib.patches import Rectangle
+    except Exception:
+        sys.exit("The visual unit test needs matplotlib. Install it (pip install matplotlib) and retry.")
+
+    sim = get_simulator(spec.afterstate_config.get("simulator"), config=spec.afterstate_config)
+    if sim is None or not getattr(sim, "shapes", None):
+        sys.exit("This game has no afterstate simulator/shapes; nothing to unit-test.")
+
+    out_dir = args.save_dir or os.path.join("checkpoints", args.game)
+    out_dir = os.path.join(out_dir, "unittest_samples")
+    os.makedirs(out_dir, exist_ok=True)
+
+    env = make_env(args.game, overrides=overrides)
+    vars = GameVars(spec.game, entry=spec.entry)
+    macro = _find_macro_wrapper(env)
+    if macro is not None:
+        macro.capture_lock = True
+
+    device = args.device or ("cuda" if (HAS_TORCH and torch.cuda.is_available()) else "cpu")
+    agent = AfterstateAgent(input_dim=sim.feature_dim, device=device)
+    if args.resume:
+        print("loading weights from %s" % args.resume)
+        agent.load(args.resume)
+        tag = "trained"
+    else:
+        print("no --resume given: sampling an UNTRAINED model (decisions will be poor, "
+              "but execution can still be verified)")
+        tag = "untrained"
+
+    grid = spec.grid or {}
+    rows = int(grid.get("rows", 20)); cols = int(grid.get("cols", 10)); n = rows * cols
+    gx = int(grid.get("x", 153)); gy = int(grid.get("y", 56)); cell = int(grid.get("cell", 8))
+    names = {1: "I", 2: "T", 3: "O", 4: "J", 5: "L", 6: "S"}   # display only
+
+    def board_of(obs):
+        return (_np.asarray(obs)[:n].reshape(rows, cols) > 0.5).astype(_np.uint8)
+
+    def overlay(ax, frame, board, title):
+        ax.imshow(frame)
+        for r in range(rows):
+            for c in range(cols):
+                if board[r, c]:
+                    ax.add_patch(Rectangle((gx + c * cell, gy + r * cell), cell, cell,
+                                 fill=False, edgecolor="lime", lw=0.9))
+        ax.set_xlim(0, frame.shape[1]); ax.set_ylim(frame.shape[0], 0)
+        ax.set_title(title, fontsize=9); ax.axis("off")
+
+    def save_sample(idx, frame_spawn, piece_type, board_before, chosen,
+                    frame_lock, frame_result, board_after):
+        pred = (_np.asarray(chosen["afterstate"])[:n].reshape(rows, cols) > 0.5).astype(_np.uint8)
+        diff = int(_np.abs(pred.astype(int) - board_after.astype(int)).sum())
+        verdict = "MATCH" if diff <= 4 else "MISMATCH (%d cells)" % diff
+        fig, ax = plt.subplots(1, 4, figsize=(19, 5.4))
+        pname = names.get(piece_type, "?")
+        overlay(ax[0], frame_spawn, board_before, "1. New piece appears: type %d (%s)" % (piece_type, pname))
+        # panel 2: the decision, as the predicted afterstate board
+        ax[1].imshow(pred, cmap="Greys", vmin=0, vmax=1, aspect="auto")
+        ax[1].set_title("2. Model decides: rot=%d col=%d\npredicts %d line(s) cleared"
+                        % (chosen["rot"], chosen["col"], chosen["lines_cleared"]), fontsize=9)
+        ax[1].set_xticks(range(cols)); ax[1].set_yticks(range(0, rows, 2)); ax[1].grid(True, lw=0.3)
+        if frame_lock is not None:
+            overlay(ax[2], frame_lock, board_before, "3. Piece hits the stack")
+        else:
+            ax[2].axis("off"); ax[2].set_title("3. (lock frame unavailable)", fontsize=9)
+        overlay(ax[3], frame_result, board_after,
+                "4. Result: execution %s\nboard now: %d filled cells" % (verdict, int(board_after.sum())))
+        fig.suptitle("placement sample #%d  (%s model)" % (idx, tag), fontsize=11)
+        fig.tight_layout(rect=[0, 0, 1, 0.96])
+        p = os.path.join(out_dir, "sample_%02d.png" % idx)
+        fig.savefig(p, dpi=85); plt.close(fig)
+        return p, verdict
+
+    print("\nVisual unit test: up to %d placements, saving %d samples to %s\n"
+          % (max_steps, n_samples, out_dir))
+    obs, info = env.reset()
+    placements = 0
+    saved = []
+    # spread samples across the run, but not the very first placements (empty board)
+    sample_at = set(int(x) for x in _np.linspace(6, max_steps - 2, n_samples))
+    while placements < max_steps:
+        ram = getattr(env.unwrapped, "ram", None) if hasattr(env, "unwrapped") else None
+        cands = sim.get_candidates(obs=obs, ram=ram, info=info, vars=vars, spec=spec)
+        if not cands:
+            obs, _r, term, trunc, info = env.step(0)
+            if term or trunc:
+                obs, info = env.reset()
+            continue
+        piece_type = int(_np.argmax(_np.asarray(obs)[n:n + 7]))
+        action, feat, _imm = agent.select_action(cands, epsilon=0.0)
+        chosen = next((c for c in cands if c["action"] == action), cands[0])
+        take_sample = placements in sample_at
+        frame_spawn = env.render() if take_sample else None
+        board_before = board_of(obs)
+        if macro is not None:
+            macro.lock_frame = None
+        obs, _r, term, trunc, info = env.step(action)
+        placements += 1
+        if take_sample:
+            board_after = board_of(obs)
+            frame_lock = macro.lock_frame if macro is not None else None
+            frame_result = env.render()
+            p, verdict = save_sample(placements, frame_spawn, piece_type, board_before,
+                                     chosen, frame_lock, frame_result, board_after)
+            saved.append((p, verdict))
+            print("  sample #%d saved: rot=%d col=%d predict_lines=%d  execution=%s  -> %s"
+                  % (placements, chosen["rot"], chosen["col"], chosen["lines_cleared"], verdict, p))
+        if term or trunc:
+            obs, info = env.reset()
+    env.close()
+    matches = sum(1 for _p, v in saved if v == "MATCH")
+    print("\nunit test done: %d samples, execution correct on %d/%d."
+          % (len(saved), matches, len(saved)))
+    print("Open the PNGs in %s to confirm the decisions and their execution by eye." % out_dir)
+    return saved
+
+
 def train_afterstate(args, spec, overrides):
     """
     Standard training runner for Afterstate Lookahead RL.

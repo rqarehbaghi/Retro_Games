@@ -131,6 +131,19 @@ class MacroPlacementWrapper(gym.Wrapper):
         self.row_var = self.settle_detect.get("var", self.cfg.get("row_var", "piece_row_p%d" % player))
         self.piece_type_var = self.cfg.get("piece_type_var", "piece_type_p%d" % player)
 
+        # Opt-in frame capture for the visual unit test (train.py --unittest).
+        # Off in normal training; when on, step() records the rendered frame at
+        # the moment the piece LOCKS, which is otherwise gone by the time step()
+        # returns (the emulator has run on to spawn the next piece).
+        self.capture_lock = False
+        self.lock_frame = None
+
+    def _render_frame(self):
+        try:
+            return self.env.render()
+        except Exception:
+            return None
+
     def _ram(self):
         if hasattr(self.env, "_ram"):
             return self.env._ram()
@@ -227,6 +240,11 @@ class MacroPlacementWrapper(gym.Wrapper):
                     prev_row = max(prev_row, curr_row)
                 elif curr_row is not None:
                     prev_row = curr_row
+
+            # The piece has just locked here (before the next one spawns): this
+            # is the "hit the stack" frame the visual unit test wants.
+            if self.capture_lock:
+                self.lock_frame = self._render_frame()
 
             # Wait for the NEXT piece to actually spawn before handing back.
             #

@@ -257,9 +257,15 @@ def policy_for(spec):
 
 def train(args, spec, overrides):
     if getattr(spec, "algorithm", "ppo") == "afterstate":
+        if getattr(args, "unittest", False):
+            from rl.afterstate import unittest_afterstate
+            unittest_afterstate(args, spec, overrides)
+            return
         from rl.afterstate import train_afterstate
         train_afterstate(args, spec, overrides)
         return
+    if getattr(args, "unittest", False):
+        sys.exit("--unittest is currently implemented for the afterstate algorithm only.")
 
     policy, image = policy_for(spec)
     env = build_envs(args.game, overrides, args.n_envs, args.frame_stack, image)
@@ -510,6 +516,12 @@ def main():
     p.add_argument("--save-dir", default=None, help="Default: checkpoints/<game>")
     p.add_argument("--save-every", type=int, default=50_000, help="Checkpoint every N total timesteps")
     p.add_argument("--resume", default=None, help="Checkpoint to continue from")
+    p.add_argument("--unittest", action="store_true",
+                   help="Afterstate only: run a quick 100-placement VISUAL check instead of "
+                        "training. Saves a few composite screenshots (new piece -> decision -> "
+                        "hits the stack -> result, with an execution-correctness verdict) under "
+                        "<save-dir>/unittest_samples/. Add --resume <ckpt> to eyeball a trained "
+                        "model from the middle of a run.")
     p.add_argument("--tb", default=None, help="TensorBoard log dir")
     p.add_argument("--progress", action="store_true")
 

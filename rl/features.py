@@ -92,7 +92,8 @@ def tetris(vars, ram, info, player=2):
             holes += int((col[top:] == 0).sum())
     return {
         "holes": float(holes),
-        "height": float(heights.sum()),
+        "filled": float(int(grid.sum())),
+        "height": float(heights.sum()),          # AGGREGATE height (sum of columns)
         "max_height": float(heights.max()) if cols else 0.0,
         "bumpiness": float(np.abs(np.diff(heights)).sum()) if cols > 1 else 0.0,
     }
@@ -145,8 +146,10 @@ def board_features(grid):
             top = filled[0]
             heights[c] = rows - top
             holes += int((col[top:] == 0).sum())
-    return {"holes": float(holes), "height": float(heights.sum()),
-            "max_height": float(heights.max()) if cols else 0.0,
+    return {"holes": float(holes),
+            "filled": float(int(grid.sum())),        # occupied cells, 0..rows*cols
+            "height": float(heights.sum()),          # AGGREGATE height = sum of column heights (= filled + holes)
+            "max_height": float(heights.max()) if cols else 0.0,   # tallest column, 0..rows
             "bumpiness": float(np.abs(np.diff(heights)).sum()) if cols > 1 else 0.0}
 
 

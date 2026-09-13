@@ -659,9 +659,11 @@
           "score_p{player}",
           "lines_p{player}",
           "holes",
-          "height",
+          "filled",
+          "max_height",
           "bumpiness"
         ],
+        "report_stats_note": "filled = occupied cells (0..200, i.e. the actual filled space). max_height = tallest column (0..20). The old 'height' shown here was AGGREGATE height (sum of all 10 column heights, up to 200), which read like a single-column 0..20 number and was misleading; it is still computed (rl/features.board_features) and used inside the reward, just not printed.",
         "macro_config": {
           "type": "grid_placement",
           "rotations": 4,

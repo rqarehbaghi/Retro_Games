@@ -378,7 +378,8 @@ def unittest_afterstate(args, spec, overrides):
         """The same game stats the training log prints, from info after the step."""
         parts = []
         for label, key in (("score", "score_p%d" % player), ("lines", "lines_p%d" % player),
-                           ("holes", "holes"), ("height", "height"), ("bumpiness", "bumpiness")):
+                           ("holes", "holes"), ("filled", "filled"),
+                           ("max_col_height", "max_height"), ("bumpiness", "bumpiness")):
             if key in info:
                 v = info[key]
                 parts.append("%s=%s" % (label, int(v) if float(v).is_integer() else round(float(v), 1)))

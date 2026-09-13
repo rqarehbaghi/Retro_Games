@@ -378,11 +378,26 @@ def unittest_afterstate(args, spec, overrides, n_samples=5, max_steps=100):
         fig, ax = plt.subplots(1, 4, figsize=(19, 5.4))
         pname = names.get(piece_type, "?")
         overlay(ax[0], frame_spawn, board_before, "1. New piece appears: type %d (%s)" % (piece_type, pname))
-        # panel 2: the decision, as the predicted afterstate board
-        ax[1].imshow(pred, cmap="Greys", vmin=0, vmax=1, aspect="auto")
-        ax[1].set_title("2. Model decides: rot=%d col=%d\npredicts %d line(s) cleared"
+        # panel 2: the decision, drawn as a PROPER cell grid (imshow centres
+        # cells on integers, which made blocks look like they start at x.5).
+        # Pre-existing stack is grey; the cells this placement adds are orange.
+        added = (pred == 1) & (board_before == 0)
+        for r in range(rows):
+            for c in range(cols):
+                if pred[r, c]:
+                    face = "#f08a24" if added[r, c] else "#4a4a4a"
+                else:
+                    face = "#ffffff"
+                ax[1].add_patch(Rectangle((c, r), 1, 1, facecolor=face,
+                                edgecolor="#c8c8c8", linewidth=0.6))
+        ax[1].set_xlim(0, cols); ax[1].set_ylim(rows, 0)   # row 0 at the top
+        ax[1].set_aspect("equal")
+        ax[1].set_xticks([c + 0.5 for c in range(cols)]); ax[1].set_xticklabels(range(cols), fontsize=7)
+        ax[1].set_yticks([r + 0.5 for r in range(0, rows, 2)]); ax[1].set_yticklabels(range(0, rows, 2), fontsize=7)
+        ax[1].tick_params(length=0)
+        ax[1].set_title("2. Model decides: rot=%d col=%d\npredicts %d line(s) cleared "
+                        "(orange = piece placed)"
                         % (chosen["rot"], chosen["col"], chosen["lines_cleared"]), fontsize=9)
-        ax[1].set_xticks(range(cols)); ax[1].set_yticks(range(0, rows, 2)); ax[1].grid(True, lw=0.3)
         if frame_lock is not None:
             overlay(ax[2], frame_lock, board_before, "3. Piece hits the stack")
         else:

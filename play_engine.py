@@ -663,7 +663,7 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
                             vars=self.vars,
                             spec=self.spec
                         )
-                        action, _ = self.agent.select_action(candidates, epsilon=0.0 if deterministic else 0.05)
+                        action, _, _ = self.agent.select_action(candidates, epsilon=0.0 if deterministic else 0.05)
                         return action, None
 
                 model = AfterstatePolicyWrapper(agent, simulator, afterstate_spec, afterstate_vars)

@@ -112,7 +112,7 @@ class AfterstateAgent:
         self,
         candidates: List[Dict[str, Any]],
         epsilon: float = 0.0
-    ) -> Tuple[int, Optional[np.ndarray]]:
+    ) -> Tuple[int, Optional[np.ndarray], float]:
         """
         Generic decision selection over candidate transitions.
 
@@ -126,13 +126,17 @@ class AfterstateAgent:
         Returns:
             best_action: int
             best_afterstate: np.ndarray (or None if no candidates)
+            immediate_reward: float -- the simulator's measured reward for the
+                chosen placement. This is the dense signal training must learn
+                from (line clears minus new holes); the caller pushes it into
+                the replay buffer instead of the sparse env reward.
         """
         if not candidates:
-            return 0, None
+            return 0, None, 0.0
 
         if epsilon > 0.0 and random.random() < epsilon:
             chosen = random.choice(candidates)
-            return chosen["action"], chosen.get("afterstate")
+            return chosen["action"], chosen.get("afterstate"), float(chosen.get("immediate_reward", 0.0))
 
         afterstates = [c["afterstate"] for c in candidates]
 
@@ -150,7 +154,7 @@ class AfterstateAgent:
 
         best_idx = int(np.argmax(scores))
         best_cand = candidates[best_idx]
-        return best_cand["action"], best_cand.get("afterstate")
+        return best_cand["action"], best_cand.get("afterstate"), float(best_cand.get("immediate_reward", 0.0))
 
     def update(self, replay_buffer: AfterstateReplayBuffer, batch_size: int = 64) -> float:
         """Perform one step of TD value-network optimization."""
@@ -370,18 +374,25 @@ def train_afterstate(args, spec, overrides):
             ram = getattr(env.unwrapped, "ram", None) if hasattr(env, "unwrapped") else None
             candidates = simulator.get_candidates(obs=obs, ram=ram, info=info, vars=vars, spec=spec)
 
-            action, afterstate_feat = agent.select_action(candidates, epsilon=epsilon)
+            action, afterstate_feat, imm_reward = agent.select_action(candidates, epsilon=epsilon)
 
             next_obs, reward, terminated, truncated, info = env.step(action)
             done = terminated or truncated
             last_info = info
 
-            ep_reward += float(reward)
+            # Learn from the simulator's MEASURED placement reward (line clears
+            # minus new holes), not the env's sparse lines-only reward. The value
+            # net selects on this signal, so it must be trained on it -- otherwise
+            # V collapses toward zero (rewards are almost always 0) and selection
+            # degenerates to greedy 1-ply with no planning. Fall back to the env
+            # reward only when the placement had no candidate (transient piece).
+            step_reward = imm_reward if afterstate_feat is not None else float(reward)
+            ep_reward += step_reward
             ep_steps += 1
             total_steps += 1
 
             if prev_afterstate_feat is not None:
-                replay.push(prev_afterstate_feat, reward, afterstate_feat, done)
+                replay.push(prev_afterstate_feat, step_reward, afterstate_feat, done)
 
             prev_afterstate_feat = afterstate_feat
 

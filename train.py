@@ -360,7 +360,7 @@ def play(args, spec, overrides):
         while ep < args.episodes:
             ram = getattr(single_env.unwrapped, "ram", None) if hasattr(single_env, "unwrapped") else None
             candidates = simulator.get_candidates(obs=obs, ram=ram, info=info, vars=vars, spec=spec)
-            action, _ = agent.select_action(candidates, epsilon=0.0)
+            action, _, _ = agent.select_action(candidates, epsilon=0.0)
             obs, _r, term, trunc, info = single_env.step(action)
             steps += 1
             if term or trunc:

@@ -212,6 +212,11 @@ class GridPlacementSimulator(BaseAfterstateSimulator):
 
         phi_before = phi(board)
 
+        # Line bonus is TIERED so a multi-line clear (a Tetris) is worth far more
+        # than the same lines one at a time.
+        s = self.line_scale
+        tiers = [0.0, s, s * 3, s * 6, s * 12]
+
         out = []
         for rot, shape in enumerate(rots):
             pw = shape.shape[1]
@@ -221,7 +226,7 @@ class GridPlacementSimulator(BaseAfterstateSimulator):
                     continue
                 feat, _curr_holes = board_feature_vector(after)
                 imm = (self.survival_reward
-                       + self.line_scale * lines
+                       + tiers[min(lines, 4)]
                        + (phi(after) - phi_before)) * self.reward_scale
                 out.append({
                     "action": rot * self.cols + col,

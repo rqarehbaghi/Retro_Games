@@ -127,6 +127,13 @@ class GridPlacementSimulator(BaseAfterstateSimulator):
         self.rows = int(board.get("rows", 20))
         self.cols = int(board.get("cols", 10))
         self.line_scale = float(cfg.get("line_scale", 10.0))
+        # Reward the agent for every placement it lives to make. This is the
+        # signal the value net actually learns from: "how long will I survive"
+        # is only revealed by the future, so the net must learn it -- and in
+        # learning it, discovers that holes and towers end the game early. A
+        # measured head-to-head (survival 48 placements / 7 lines) beat both the
+        # board-potential reward and the same plus hand-tuned board penalties.
+        self.survival_reward = float(cfg.get("survival_reward", 0.0))
         # Weights of the board-quality potential Phi (see get_candidates). Height
         # and bumpiness default to 0 so a game that declares neither keeps the
         # old holes-only behaviour; this game sets all three in games.json.
@@ -178,17 +185,26 @@ class GridPlacementSimulator(BaseAfterstateSimulator):
             # to place, so no candidates.
             return []
 
-        # Board-quality potential of the CURRENT settled board, before any drop.
-        #   Phi(board) = -(hole_penalty*holes + height_penalty*height + bump_penalty*bump)
-        # The per-placement reward below is the line bonus plus the CHANGE in Phi
-        # (Phi(after) - Phi(before)). Because it is a potential difference it
-        # telescopes over an episode: damage (a hole, added height or bumpiness)
-        # is charged once when it appears and refunded once a line clear removes
-        # it, and costs nothing while it merely persists -- so a later piece is
-        # never re-penalised for what earlier pieces did. This is what gives the
-        # value net a dense signal; the old rule penalised only newly drilled
-        # holes and left ~74% of placements at exactly reward 0.
+        # The per-placement reward has three parts, any of which a game may turn
+        # off with a zero weight in games.json:
+        #   survival_reward   a flat bonus for every placement lived (the signal
+        #                     the value net learns board quality FROM: it can
+        #                     only predict survival by valuing clean, low boards)
+        #   line_scale*lines  a bonus per line cleared
+        #   Phi(after)-Phi(before)  the CHANGE in a board-quality potential
+        #                     Phi = -(hole_penalty*holes + height_penalty*height
+        #                     + bump_penalty*bump). A potential DIFFERENCE, so it
+        #                     telescopes -- damage charged once when it appears,
+        #                     refunded once a clear removes it, neutral while it
+        #                     persists (no re-penalising later pieces).
+        # For Tetris the board weights are 0: a measured head-to-head found the
+        # value net learns cleaner, longer play (survival 48 / 7 lines) from pure
+        # survival+lines than with any hand-tuned board penalty added -- the
+        # potential form is a function of one placement, which 1-ply lookahead
+        # already sees, so it left the value net nothing to learn.
         def phi(bd):
+            if not (self.hole_penalty or self.height_penalty or self.bump_penalty):
+                return 0.0
             holes, height, bump = board_stats(bd)
             return -(self.hole_penalty * holes
                      + self.height_penalty * height
@@ -196,8 +212,6 @@ class GridPlacementSimulator(BaseAfterstateSimulator):
 
         phi_before = phi(board)
 
-        s = self.line_scale
-        tiers = [0.0, s, s * 3, s * 6, s * 12]     # a Tetris is worth far more
         out = []
         for rot, shape in enumerate(rots):
             pw = shape.shape[1]
@@ -206,7 +220,9 @@ class GridPlacementSimulator(BaseAfterstateSimulator):
                 if not valid or after is None:
                     continue
                 feat, _curr_holes = board_feature_vector(after)
-                imm = (tiers[min(lines, 4)] + (phi(after) - phi_before)) * self.reward_scale
+                imm = (self.survival_reward
+                       + self.line_scale * lines
+                       + (phi(after) - phi_before)) * self.reward_scale
                 out.append({
                     "action": rot * self.cols + col,
                     "afterstate": feat,

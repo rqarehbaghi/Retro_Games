@@ -494,6 +494,11 @@ def main():
                    help="Anneal the entropy coefficient from --ent-coef (or the "
                         "game default) down to this over the run: explore widely "
                         "early, commit late. The 'temperature' in the annealing.")
+    p.add_argument("--explore-steps", type=int, default=None,
+                   help="Afterstate only: anneal exploration (epsilon) over this "
+                        "many steps instead of the whole --timesteps run. Lets a "
+                        "long run stop playing randomly early, so learned skill "
+                        "shows sooner. Defaults to --timesteps.")
     p.add_argument("--anneal-start", type=float, default=0.0,
                    help="Where on the 0..1 reward-anneal schedule to begin. Fresh "
                         "runs leave it 0 (full warm-up scaffold). RESUMING an "

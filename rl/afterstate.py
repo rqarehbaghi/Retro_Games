@@ -320,13 +320,25 @@ def train_afterstate(args, spec, overrides):
     device = args.device or ("cuda" if (HAS_TORCH and torch.cuda.is_available()) else "cpu")
     eps_start = args.ent_coef if args.ent_coef is not None else 0.20
     eps_final = args.ent_coef_final if args.ent_coef_final is not None else 0.01
+    # Epsilon anneals over its OWN horizon, decoupled from the training length:
+    # tying it to a 500k run left epsilon ~0.19 at 20k (1 in 5 placements random),
+    # so measured play looked bad long before the schedule had moved. Defaults to
+    # the full run when unset, preserving the old behaviour.
+    explore_steps = getattr(args, "explore_steps", None) or args.timesteps
+
+    # The terminal death penalty and the global reward scale are game values, so
+    # they live in games.json (afterstate block), not hardcoded here.
+    a_cfg = spec.afterstate_config or {}
+    reward_scale = float(a_cfg.get("reward_scale", 1.0))
+    terminal_penalty = float(a_cfg.get("terminal_penalty", -20.0)) * reward_scale
 
     print(f"algorithm   : Afterstate Lookahead Value Network")
     print(f"simulator   : {sim_name} (feature dim: {simulator.feature_dim})")
     print(f"timesteps   : {args.timesteps}")
     print(f"device      : {device}")
     print(f"batch / lr  : {batch_size} / {lr} (gamma {gamma})")
-    print(f"exploration : epsilon {eps_start} -> {eps_final}")
+    print(f"exploration : epsilon {eps_start} -> {eps_final} over {explore_steps} steps")
+    print(f"reward scale: {reward_scale}   terminal penalty: {terminal_penalty:.2f}")
 
     env = make_env(args.game, overrides=overrides)
     vars = GameVars(spec.game, entry=spec.entry)
@@ -367,7 +379,7 @@ def train_afterstate(args, spec, overrides):
         loss_updates = 0
         last_info = info
 
-        eps_progress = min(1.0, total_steps / float(max(1, args.timesteps)))
+        eps_progress = min(1.0, total_steps / float(max(1, explore_steps)))
         epsilon = eps_start + (eps_final - eps_start) * eps_progress
 
         while not done and total_steps < args.timesteps:
@@ -412,9 +424,9 @@ def train_afterstate(args, spec, overrides):
 
             obs = next_obs
 
-        # Terminal transition penalty
+        # Terminal transition penalty (game value from games.json, scaled)
         if prev_afterstate_feat is not None:
-            replay.push(prev_afterstate_feat, -20.0, None, True)
+            replay.push(prev_afterstate_feat, terminal_penalty, None, True)
 
         recent_rewards.append(ep_reward)
         recent_steps.append(ep_steps)

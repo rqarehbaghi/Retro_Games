@@ -133,6 +133,11 @@ class GridPlacementSimulator(BaseAfterstateSimulator):
         self.hole_penalty = float(cfg.get("hole_penalty", 2.0))
         self.height_penalty = float(cfg.get("height_penalty", 0.0))
         self.bump_penalty = float(cfg.get("bump_penalty", 0.0))
+        # One factor scaling the whole per-placement reward. Kept separate from
+        # the weights so those stay interpretable; small values keep the value
+        # net's targets small enough to converge (see reward_scale_why in
+        # games.json -- at 1.0 the net diverged, at 0.3 it settled).
+        self.reward_scale = float(cfg.get("reward_scale", 1.0))
         # {piece_type: [shape_array per rotation]}, straight from games.json.
         self.shapes: Dict[int, List[np.ndarray]] = {}
         for t, rots in (cfg.get("shapes") or {}).items():
@@ -201,7 +206,7 @@ class GridPlacementSimulator(BaseAfterstateSimulator):
                 if not valid or after is None:
                     continue
                 feat, _curr_holes = board_feature_vector(after)
-                imm = tiers[min(lines, 4)] + (phi(after) - phi_before)
+                imm = (tiers[min(lines, 4)] + (phi(after) - phi_before)) * self.reward_scale
                 out.append({
                     "action": rot * self.cols + col,
                     "afterstate": feat,

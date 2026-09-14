@@ -48,7 +48,7 @@ if HAS_TORCH:
 
 
 class AfterstateReplayBuffer:
-    """Experience replay buffer for off-policy afterstate TD learning."""
+    """Experience replay for sampled afterstate TD policy evaluation."""
 
     def __init__(self, capacity: int = 50000):
         self.capacity = capacity
@@ -56,7 +56,10 @@ class AfterstateReplayBuffer:
         self.pos = 0
 
     def push(self, state: np.ndarray, reward: float, next_state: Optional[np.ndarray], done: bool):
-        item = (state, float(reward), next_state, bool(done))
+        if next_state is None and not done:
+            raise ValueError("A nonterminal transition requires an observed successor")
+        item = (np.array(state, copy=True), float(reward),
+                None if next_state is None else np.array(next_state, copy=True), bool(done))
         if len(self.buffer) < self.capacity:
             self.buffer.append(item)
         else:
@@ -80,6 +83,29 @@ class AfterstateReplayBuffer:
         return len(self.buffer)
 
 
+class AfterstateTrajectory:
+    """V(afterstate) excludes the reward already earned creating that state.
+
+    Only real settled states enter replay. A death belongs to the last observed
+    afterstate; neither collector exhaustion nor truncation is a death.
+    """
+    def __init__(self, replay):
+        self.replay = replay
+        self.previous = None
+
+    def record(self, reward, observed=None, terminated=False):
+        recorded = self.previous is not None and (terminated or observed is not None)
+        if terminated:
+            if self.previous is not None:
+                self.replay.push(self.previous, reward, None, True)
+            self.previous = None
+        elif observed is not None:
+            if self.previous is not None:
+                self.replay.push(self.previous, reward, observed, False)
+            self.previous = np.array(observed, copy=True)
+        return recorded
+
+
 class AfterstateAgent:
     """
     Generic Lookahead Agent powered by Deep Afterstate Value Network.
@@ -94,6 +120,8 @@ class AfterstateAgent:
         lr: float = 2.5e-4,
         gamma: float = 0.99
     ):
+        if not HAS_TORCH:
+            raise RuntimeError("Afterstate learning requires PyTorch")
         self.input_dim = input_dim
         self.device = torch.device(device if (HAS_TORCH and torch.cuda.is_available() and device == "cuda") else "cpu")
         self.gamma = gamma
@@ -126,10 +154,8 @@ class AfterstateAgent:
         Returns:
             best_action: int
             best_afterstate: np.ndarray (or None if no candidates)
-            immediate_reward: float -- the simulator's measured reward for the
-                chosen placement. This is the dense signal training must learn
-                from (line clears minus new holes); the caller pushes it into
-                the replay buffer instead of the sparse env reward.
+            immediate_reward: float -- predicted reward for action ranking.
+                Training separately scores the observed transition.
         """
         if not candidates:
             return 0, None, 0.0
@@ -260,7 +286,7 @@ def _verify_simulator(env, simulator, vars, spec, samples: int = 6):
     for _ in range(300):
         cands = simulator.get_candidates(obs=obs, ram=None, info=info, vars=vars, spec=spec)
         if not cands:
-            obs, _r, term, trunc, info = env.step(0)
+            obs, _r, term, trunc, info = env.step(None)
             if term or trunc:
                 obs, info = env.reset()
             continue
@@ -357,7 +383,7 @@ def unittest_afterstate(args, spec, overrides):
     grid = spec.grid or {}
     rows = int(grid.get("rows", 20)); cols = int(grid.get("cols", 10)); n = rows * cols
     gx = int(grid.get("x", 153)); gy = int(grid.get("y", 56)); cell = int(grid.get("cell", 8))
-    names = {1: "I", 2: "T", 3: "O", 4: "J", 5: "L", 6: "S"}   # display only
+    names = {int(k): v for k, v in spec.afterstate_config.get("piece_names", {}).items()}
 
     def board_of(obs):
         return (_np.asarray(obs)[:n].reshape(rows, cols) > 0.5).astype(_np.uint8)
@@ -443,11 +469,11 @@ def unittest_afterstate(args, spec, overrides):
         ram = getattr(env.unwrapped, "ram", None) if hasattr(env, "unwrapped") else None
         cands = sim.get_candidates(obs=obs, ram=ram, info=info, vars=vars, spec=spec)
         if not cands:
-            obs, _r, term, trunc, info = env.step(0)
+            obs, _r, term, trunc, info = env.step(None)
             if term or trunc:
                 obs, info = env.reset()
             continue
-        piece_type = int(_np.argmax(_np.asarray(obs)[n:n + 7]))
+        piece_type = int(_np.argmax(_np.asarray(obs)[n:n + sim.piece_types]))
         action, feat, _imm = agent.select_action(cands, epsilon=0.0)
         chosen = next((c for c in cands if c["action"] == action), cands[0])
         take_sample = placements in sample_at
@@ -493,12 +519,8 @@ def train_afterstate(args, spec, overrides):
             f"Error: Game '{args.game}' does not have an afterstate simulator registered.\n"
             f"Expected simulator '{sim_name}' in rl/simulators/."
         )
-    if not getattr(simulator, "shapes", None):
-        sys.exit(
-            f"Error: the afterstate config for '{args.game}' declares no piece shapes.\n"
-            f"Add a 'shapes' block to its 'afterstate' entry in games.json (see the schema)."
-        )
-
+    if hasattr(simulator, "validate_training"):
+        simulator.validate_training(spec)
     save_dir = args.save_dir or os.path.join("checkpoints", args.game)
     os.makedirs(save_dir, exist_ok=True)
 
@@ -518,7 +540,7 @@ def train_afterstate(args, spec, overrides):
     # they live in games.json (afterstate block), not hardcoded here.
     a_cfg = spec.afterstate_config or {}
     reward_scale = float(a_cfg.get("reward_scale", 1.0))
-    terminal_penalty = float(a_cfg.get("terminal_penalty", -20.0)) * reward_scale
+    terminal_penalty = float(a_cfg.get("terminal_penalty", 0.0)) * reward_scale
 
     print(f"algorithm   : Afterstate Lookahead Value Network")
     print(f"simulator   : {sim_name} (feature dim: {simulator.feature_dim})")
@@ -531,7 +553,8 @@ def train_afterstate(args, spec, overrides):
     env = make_env(args.game, overrides=overrides)
     vars = GameVars(spec.game, entry=spec.entry)
 
-    _verify_simulator(env, simulator, vars, spec)
+    if sim_name == "grid_placement":
+        _verify_simulator(env, simulator, vars, spec)
 
     agent = AfterstateAgent(
         input_dim=simulator.feature_dim,
@@ -562,7 +585,10 @@ def train_afterstate(args, spec, overrides):
         done = False
         ep_reward = 0.0
         ep_steps = 0
-        prev_afterstate_feat = None
+        trajectory = AfterstateTrajectory(replay)
+        pending = None
+        mismatches = 0
+        wait_steps = 0
         ep_loss = 0.0
         loss_updates = 0
         last_info = info
@@ -570,38 +596,53 @@ def train_afterstate(args, spec, overrides):
         eps_progress = min(1.0, total_steps / float(max(1, explore_steps)))
         epsilon = eps_start + (eps_final - eps_start) * eps_progress
 
-        while not done and total_steps < args.timesteps:
+        while not done and (total_steps < args.timesteps or pending is not None):
             ram = getattr(env.unwrapped, "ram", None) if hasattr(env, "unwrapped") else None
             candidates = simulator.get_candidates(obs=obs, ram=ram, info=info, vars=vars, spec=spec)
 
-            action, afterstate_feat, imm_reward = agent.select_action(candidates, epsilon=epsilon)
-
+            action = None
+            if pending is None and candidates:
+                action, predicted, _imm_reward = agent.select_action(candidates, epsilon=epsilon)
+                pending = (np.array(obs, copy=True), dict(info), predicted)
             next_obs, reward, terminated, truncated, info = env.step(action)
             done = terminated or truncated
             last_info = info
 
-            # Learn from the simulator's MEASURED placement reward (line clears
-            # minus new holes), not the env's sparse lines-only reward. The value
-            # net selects on this signal, so it must be trained on it -- otherwise
-            # V collapses toward zero (rewards are almost always 0) and selection
-            # degenerates to greedy 1-ply with no planning. Fall back to the env
-            # reward only when the placement had no candidate (transient piece).
-            step_reward = imm_reward if afterstate_feat is not None else float(reward)
+            step_reward = 0.0
+            new_transition = False
+            if terminated:
+                if pending is not None:
+                    before, before_info, _predicted = pending
+                    step_reward = simulator.observed_reward(before, next_obs, before_info, info, terminated=True)
+                step_reward += terminal_penalty
+                new_transition = trajectory.record(step_reward, terminated=True)
+                pending = None
+            elif info.get("afterstate_discontinuity", False):
+                trajectory.previous = None
+                pending = None
+            elif pending is not None and info.get("afterstate_ready", True):
+                before, before_info, predicted = pending
+                actual = simulator.encode_observation(next_obs, info)
+                step_reward = simulator.observed_reward(before, next_obs, before_info, info)
+                new_transition = trajectory.record(step_reward, actual)
+                mismatches += int(not np.array_equal(predicted, actual))
+                pending = None
             ep_reward += step_reward
-            ep_steps += 1
-            total_steps += 1
+            if action is not None:
+                ep_steps += 1
+                total_steps += 1
+            else:
+                wait_steps += 1
+                # An entirely unplayable episode must still consume budget.
+                if done and ep_steps == 0:
+                    total_steps += 1
 
-            if prev_afterstate_feat is not None:
-                replay.push(prev_afterstate_feat, step_reward, afterstate_feat, done)
-
-            prev_afterstate_feat = afterstate_feat
-
-            if len(replay) >= batch_size:
+            if new_transition and len(replay) >= batch_size:
                 loss = agent.update(replay, batch_size=batch_size)
                 ep_loss += loss
                 loss_updates += 1
 
-            if total_steps % 500 == 0:
+            if action is not None and total_steps % 500 == 0:
                 agent.sync_target_network()
 
             if total_steps >= next_save_step:
@@ -611,10 +652,6 @@ def train_afterstate(args, spec, overrides):
                 next_save_step += args.save_every
 
             obs = next_obs
-
-        # Terminal transition penalty (game value from games.json, scaled)
-        if prev_afterstate_feat is not None:
-            replay.push(prev_afterstate_feat, terminal_penalty, None, True)
 
         recent_rewards.append(ep_reward)
         recent_steps.append(ep_steps)
@@ -646,7 +683,7 @@ def train_afterstate(args, spec, overrides):
                 elif isinstance(val, (float, np.floating)):
                     stat_parts.append(f"{k}={val:.1f}" if not val.is_integer() else f"{k}={int(val)}")
 
-        stats_str = " ".join(stat_parts)
+        stats_str = " ".join(stat_parts) + f" prediction_mismatches={mismatches} waits={wait_steps} start={last_info.get('start_state', '')}"
 
         print(f"{total_steps:8d} | {ep:5d} | {ep_steps:5d} | {avg_len:6.1f} | {epsilon:7.3f} | {ep_reward:8.1f} | {avg_rew:8.1f} | {avg_loss:7.4f} | {stats_str}")
 

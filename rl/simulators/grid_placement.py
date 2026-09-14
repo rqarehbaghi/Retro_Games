@@ -89,7 +89,7 @@ def board_stats(board: np.ndarray) -> Tuple[float, float, float]:
     return holes, agg_height, bumpiness
 
 
-def board_feature_vector(board: np.ndarray) -> Tuple[np.ndarray, float]:
+def board_feature_vector(board: np.ndarray, hole_normalizer=None) -> Tuple[np.ndarray, float]:
     """The afterstate representation fed to the value net, and the raw hole
     count (used for the immediate-reward hole delta).
 
@@ -111,7 +111,7 @@ def board_feature_vector(board: np.ndarray) -> Tuple[np.ndarray, float]:
     norm_heights = heights / float(rows)
     norm_diffs = (np.abs(np.diff(heights)) / float(rows)
                   if cols > 1 else np.zeros(1, dtype=np.float32))
-    norm_holes = np.array([holes / 20.0], dtype=np.float32)
+    norm_holes = np.array([holes / float(hole_normalizer or rows)], dtype=np.float32)
     norm_max = np.array([np.max(heights) / float(rows) if cols else 0.0],
                         dtype=np.float32)
     feat = np.concatenate([raw, norm_heights, norm_diffs, norm_holes, norm_max])
@@ -127,17 +127,12 @@ class GridPlacementSimulator(BaseAfterstateSimulator):
         self.rows = int(board.get("rows", 20))
         self.cols = int(board.get("cols", 10))
         self.line_scale = float(cfg.get("line_scale", 10.0))
-        # Reward the agent for every placement it lives to make. This is the
-        # signal the value net actually learns from: "how long will I survive"
-        # is only revealed by the future, so the net must learn it -- and in
-        # learning it, discovers that holes and towers end the game early. A
-        # measured head-to-head (survival 48 placements / 7 lines) beat both the
-        # board-potential reward and the same plus hand-tuned board penalties.
+        # All reward weights and tiers are supplied by the game configuration.
         self.survival_reward = float(cfg.get("survival_reward", 0.0))
         # Weights of the board-quality potential Phi (see get_candidates). Height
         # and bumpiness default to 0 so a game that declares neither keeps the
         # old holes-only behaviour; this game sets all three in games.json.
-        self.hole_penalty = float(cfg.get("hole_penalty", 2.0))
+        self.hole_penalty = float(cfg.get("hole_penalty", 0.0))
         self.height_penalty = float(cfg.get("height_penalty", 0.0))
         self.bump_penalty = float(cfg.get("bump_penalty", 0.0))
         # One factor scaling the whole per-placement reward. Kept separate from
@@ -145,10 +140,14 @@ class GridPlacementSimulator(BaseAfterstateSimulator):
         # net's targets small enough to converge (see reward_scale_why in
         # games.json -- at 1.0 the net diverged, at 0.3 it settled).
         self.reward_scale = float(cfg.get("reward_scale", 1.0))
+        self.line_tiers = cfg.get("line_tiers")
+        self.lines_var = cfg.get("lines_var")
+        self.hole_normalizer = float(cfg.get("hole_normalizer", self.rows))
         # {piece_type: [shape_array per rotation]}, straight from games.json.
         self.shapes: Dict[int, List[np.ndarray]] = {}
         for t, rots in (cfg.get("shapes") or {}).items():
             self.shapes[int(t)] = [cells_to_array(r) for r in rots]
+        self.piece_types = int(cfg.get("piece_types", max(self.shapes, default=0) + 1))
         # board cells + heights + neighbour diffs + holes + max height
         self._feature_dim = (self.rows * self.cols + self.cols
                              + max(1, self.cols - 1) + 1 + 1)
@@ -157,14 +156,54 @@ class GridPlacementSimulator(BaseAfterstateSimulator):
     def feature_dim(self) -> int:
         return self._feature_dim
 
+    def validate_training(self, spec):
+        if not self.shapes:
+            raise ValueError("grid_placement requires configured shapes")
+        if not self.lines_var:
+            raise ValueError("grid_placement training requires afterstate.lines_var")
+        if (int(spec.grid.get("rows", 0)), int(spec.grid.get("cols", 0))) != (self.rows, self.cols):
+            raise ValueError("Simulator and observation board dimensions must agree")
+        if int(spec.grid.get("piece_types", 1)) != self.piece_types:
+            raise ValueError("Simulator and observation piece_types must agree")
+
+    def encode_observation(self, obs, info=None):
+        board = (np.asarray(obs)[:self.rows * self.cols].reshape(self.rows, self.cols) > 0.5).astype(np.uint8)
+        return board_feature_vector(board, self.hole_normalizer)[0]
+
+    def _phi(self, board):
+        holes, height, bump = board_stats(board)
+        return -(self.hole_penalty * holes + self.height_penalty * height + self.bump_penalty * bump)
+
+    def _line_reward(self, lines):
+        if self.line_tiers is None:
+            return self.line_scale * lines
+        if not 0 <= lines < len(self.line_tiers):
+            raise ValueError("Observed line clear is outside configured line_tiers")
+        return self.line_scale * float(self.line_tiers[lines])
+
+    def observed_reward(self, obs, next_obs, info, next_info, terminated=False):
+        if not self.lines_var or self.lines_var not in info or self.lines_var not in next_info:
+            raise ValueError("Grid training requires afterstate.lines_var with an observed counter")
+        lines = max(0, int(next_info[self.lines_var]) - int(info[self.lines_var]))
+        bonus = self._line_reward(lines)
+        # Terminal animations are not settled boards. Only counter rewards are
+        # meaningful there; the runner adds the configured terminal reward once.
+        if terminated:
+            return bonus * self.reward_scale
+        n = self.rows * self.cols
+        before = (np.asarray(obs)[:n].reshape(self.rows, self.cols) > 0.5).astype(np.uint8)
+        after = (np.asarray(next_obs)[:n].reshape(self.rows, self.cols) > 0.5).astype(np.uint8)
+        return (self.survival_reward + bonus + self._phi(after) - self._phi(before)) * self.reward_scale
+
     def _board_and_piece(self, obs, ram, vars, spec):
         """Read the settled board and the current piece type from the
         observation (a grid game's obs is board cells then a piece one-hot),
         falling back to RAM if the caller has no observation."""
         n = self.rows * self.cols
-        if obs is not None and getattr(obs, "size", 0) >= n + 7:
+        if obs is not None and getattr(obs, "size", 0) >= n + self.piece_types:
             board = (obs[:n].reshape(self.rows, self.cols) > 0.5).astype(np.uint8)
-            piece_type = int(np.argmax(obs[n:n + 7]))
+            onehot = obs[n:n + self.piece_types]
+            piece_type = int(np.argmax(onehot)) if np.any(onehot) else None
             return board, piece_type
         if vars is not None and ram is not None:
             player = getattr(spec, "player", 2)
@@ -185,37 +224,10 @@ class GridPlacementSimulator(BaseAfterstateSimulator):
             # to place, so no candidates.
             return []
 
-        # The per-placement reward has three parts, any of which a game may turn
-        # off with a zero weight in games.json:
-        #   survival_reward   a flat bonus for every placement lived (the signal
-        #                     the value net learns board quality FROM: it can
-        #                     only predict survival by valuing clean, low boards)
-        #   line_scale*lines  a bonus per line cleared
-        #   Phi(after)-Phi(before)  the CHANGE in a board-quality potential
-        #                     Phi = -(hole_penalty*holes + height_penalty*height
-        #                     + bump_penalty*bump). A potential DIFFERENCE, so it
-        #                     telescopes -- damage charged once when it appears,
-        #                     refunded once a clear removes it, neutral while it
-        #                     persists (no re-penalising later pieces).
-        # For Tetris the board weights are 0: a measured head-to-head found the
-        # value net learns cleaner, longer play (survival 48 / 7 lines) from pure
-        # survival+lines than with any hand-tuned board penalty added -- the
-        # potential form is a function of one placement, which 1-ply lookahead
-        # already sees, so it left the value net nothing to learn.
-        def phi(bd):
-            if not (self.hole_penalty or self.height_penalty or self.bump_penalty):
-                return 0.0
-            holes, height, bump = board_stats(bd)
-            return -(self.hole_penalty * holes
-                     + self.height_penalty * height
-                     + self.bump_penalty * bump)
-
-        phi_before = phi(board)
-
-        # Line bonus is TIERED so a multi-line clear (a Tetris) is worth far more
-        # than the same lines one at a time.
-        s = self.line_scale
-        tiers = [0.0, s, s * 3, s * 6, s * 12]
+        # Selection predicts the same configured reward that observed_reward
+        # measures after execution. Board-potential differences are an explicit
+        # reward objective, not a claim of discount-invariant shaping.
+        phi_before = self._phi(board)
 
         out = []
         for rot, shape in enumerate(rots):
@@ -224,10 +236,10 @@ class GridPlacementSimulator(BaseAfterstateSimulator):
                 valid, after, lines = simulate_drop(board, shape, col)
                 if not valid or after is None:
                     continue
-                feat, _curr_holes = board_feature_vector(after)
+                feat, _curr_holes = board_feature_vector(after, self.hole_normalizer)
                 imm = (self.survival_reward
-                       + tiers[min(lines, 4)]
-                       + (phi(after) - phi_before)) * self.reward_scale
+                       + self._line_reward(lines)
+                       + (self._phi(after) - phi_before)) * self.reward_scale
                 out.append({
                     "action": rot * self.cols + col,
                     "afterstate": feat,

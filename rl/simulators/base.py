@@ -18,6 +18,18 @@ class BaseAfterstateSimulator(ABC):
         """The dimensionality of the afterstate feature vector."""
         pass
 
+    def encode_observation(self, obs, info=None) -> np.ndarray:
+        """Encode an observed, settled state in the candidate feature space."""
+        raise NotImplementedError("Simulator must encode observed afterstates for training")
+
+    def validate_training(self, spec):
+        """Optional configuration validation before creating an emulator."""
+        return None
+
+    def observed_reward(self, obs, next_obs, info, next_info, terminated=False) -> float:
+        """Score an executed transition, never a prediction or terminal pixels."""
+        raise NotImplementedError("Simulator must score observed transitions for training")
+
     @abstractmethod
     def get_candidates(
         self,

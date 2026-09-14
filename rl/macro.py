@@ -30,7 +30,7 @@ class MacroPlanGenerator:
     """Generates frame-by-frame button sequences for grid placement games."""
 
     @staticmethod
-    def plan(action, config, current_rot=0, current_col=None):
+    def plan(action, config, current_rot=0, current_col=None, piece_type=None):
         rotations = int(config.get("rotations", 4))
         columns = int(config.get("columns", 10))
         target_rot = int(action) // columns
@@ -68,7 +68,9 @@ class MacroPlanGenerator:
                 frames.append([])
 
         # 2. Horizontal placement (tap LEFT or RIGHT)
-        col_diff = target_col - current_col
+        offsets = config.get("piece_col_offsets", {}).get(str(piece_type))
+        origin_shift = int(offsets[target_rot]) - int(config.get("col_offset", 0)) if offsets is not None else 0
+        col_diff = target_col - current_col + origin_shift
         if col_diff < 0:
             btn = left_button
             taps = abs(col_diff)
@@ -169,110 +171,89 @@ class MacroPlacementWrapper(gym.Wrapper):
         return self.env.reset(**kwargs)
 
     def step(self, action):
-        target_rot = int(action) // self.columns
-        target_col = int(action) % self.columns
-
+        """Execute at most one placement. None waits without issuing controls."""
         current_rot = self._read_var(self.rot_var, 0)
         col_raw = self._read_var(self.col_var, None)
-        current_col = (col_raw - self.col_offset) if col_raw is not None else self.spawn_col
-        initial_piece_type = self._read_var(self.piece_type_var, None)
-
-        plan = MacroPlanGenerator.plan(
-            action, self.cfg, current_rot=current_rot, current_col=current_col
-        )
-
-        obs = None
-        info = {}
+        current_col = col_raw - self.col_offset if col_raw is not None else self.spawn_col
+        initial_type = self._read_var(self.piece_type_var, None)
+        peak_row = self._read_var(self.row_var, None)
+        min_row = int(self.settle_detect.get("min_previous", 0))
+        valid_types = self.cfg.get("valid_piece_types")
+        completed = False
+        respawned = False
         env_term = env_trunc = False
+        obs, info = None, {}
+        self.lock_frame = None
 
-        # Phase 1: Execute rotation and horizontal movement frames
-        #
-        # Stop early if the piece this plan was made for is no longer the one
-        # falling. The taps run up to 32 frames (measured: 3 rotations plus 9
-        # columns), and a piece falls a row every ~7 frames at level 8, so once
-        # the stack is high enough that a piece locks after 4 rows the taps
-        # outlast it -- and every remaining tap then moves the NEXT piece,
-        # which this action was not chosen for. It cannot happen on a low board
-        # (a piece takes ~125 frames to fall from spawn) which is why it went
-        # unseen, but the high board is exactly where placement matters.
-        for btn_list in plan["frames"]:
-            obs, _r, term, trunc, info = self.env.step_raw_frame(btn_list)
-            if term or trunc:
-                env_term = env_term or bool(term)
-                env_trunc = env_trunc or bool(trunc)
-                break
-            now_type = self._read_var(self.piece_type_var, None)
-            if (now_type is not None and initial_piece_type is not None
-                    and now_type != initial_piece_type):
-                break
+        def tick(buttons):
+            nonlocal obs, info, env_term, env_trunc, completed, respawned, peak_row
+            obs, _r, term, trunc, info = self.env.step_raw_frame(buttons)
+            env_term = env_term or bool(term)
+            env_trunc = env_trunc or bool(trunc)
+            row = self._read_var(self.row_var, None)
+            kind = self._read_var(self.piece_type_var, None)
+            dropped = row is not None and peak_row is not None and row < peak_row and peak_row >= min_row
+            changed = kind is not None and initial_type is not None and kind != initial_type
+            if dropped or changed:
+                if not completed and self.capture_lock:
+                    self.lock_frame = self._render_frame()
+                completed = True
+            respawned = respawned or dropped
+            if row is not None:
+                peak_row = row if peak_row is None else max(peak_row, row)
 
-        # Neutral frame so subsequent DOWN press is recognized as a fresh press
-        if not (env_term or env_trunc):
-            obs, _r, term, trunc, info = self.env.step_raw_frame([])
-            if term or trunc:
-                env_term = env_term or bool(term)
-                env_trunc = env_trunc or bool(trunc)
+        def active_type():
+            kind = self._read_var(self.piece_type_var, None)
+            return kind is not None and (valid_types is None or kind in valid_types)
 
-        # Phase 2: Soft drop until piece settles
-        if not (env_term or env_trunc):
-            settled = False
-            prev_row = self._read_var(self.row_var, None)
-            frame_count = 0
-            while not settled and frame_count < self.max_settle_frames:
-                obs, _r, term, trunc, info = self.env.step_raw_frame([self.commit_button])
-                frame_count += 1
-                if term or trunc:
-                    env_term = env_term or bool(term)
-                    env_trunc = env_trunc or bool(trunc)
-                    settled = True
+        if action is None:
+            # Missing candidates are not action zero (which moves and drops).
+            tick([])
+        else:
+            target_rot, target_col = divmod(int(action), self.columns)
+            # Rotate first, then read the column again: games may shift the
+            # anchor during rotation, and normalized shape origins can differ.
+            rotation_plan = MacroPlanGenerator.plan(
+                target_rot * self.columns, self.cfg, current_rot, 0)
+            for buttons in rotation_plan["frames"]:
+                tick(buttons)
+                if completed or env_term or env_trunc:
                     break
-
-                curr_row = self._read_var(self.row_var, None)
-                curr_type = self._read_var(self.piece_type_var, None)
-                # Settle triggered if piece type changes (new spawn) or row drops
-                if curr_type is not None and initial_piece_type is not None and curr_type != initial_piece_type:
-                    settled = True
-                    break
-                if curr_row is not None and prev_row is not None:
-                    if curr_row < prev_row and prev_row >= 5:
-                        settled = True
+            if not (completed or env_term or env_trunc):
+                offsets = self.cfg.get("piece_col_offsets", {}).get(str(initial_type))
+                offset = int(offsets[target_rot]) if offsets is not None else self.col_offset
+                raw_col = self._read_var(self.col_var, None)
+                current_col = raw_col - offset if raw_col is not None else self.spawn_col
+                move_plan = MacroPlanGenerator.plan(action, self.cfg, target_rot, current_col)
+                for buttons in move_plan["frames"]:
+                    tick(buttons)
+                    if completed or env_term or env_trunc:
                         break
-                    prev_row = max(prev_row, curr_row)
-                elif curr_row is not None:
-                    prev_row = curr_row
-
-            # The piece has just locked here (before the next one spawns): this
-            # is the "hit the stack" frame the visual unit test wants.
-            if self.capture_lock:
-                self.lock_frame = self._render_frame()
-
-            # Wait for the NEXT piece to actually spawn before handing back.
-            #
-            # Settle fires on the LOCK frame, and the replacement piece appears
-            # a frame or two later. One neutral frame was not always enough,
-            # and when it was not, every reader downstream saw the LOCKED
-            # piece's row and column instead of the new one's. Measured on ~14%
-            # of placements: the board mask then erased a 5x4 box in the middle
-            # of the stack, deleting 5-7 cells of the piece that was just
-            # placed -- so the holes it had created sat under nothing and were
-            # not counted, height was understated, and the next step's delta
-            # was taken against a board that never existed. The same stale read
-            # also made the NEXT plan start from the wrong column and rotation.
-            #
-            # Also serves as the release frame: no buttons are held here.
-            settle_row = self._read_var(self.row_var, None)
-            for _ in range(int(self.cfg.get("spawn_wait_frames", 30))):
-                obs, _r, term, trunc, info = self.env.step_raw_frame([])
-                if term or trunc:
-                    env_term = env_term or bool(term)
-                    env_trunc = env_trunc or bool(trunc)
+            if not (completed or env_term or env_trunc):
+                tick([])
+            for _ in range(self.max_settle_frames):
+                if completed or env_term or env_trunc:
                     break
-                row_now = self._read_var(self.row_var, None)
-                if (row_now is not None and settle_row is not None
-                        and row_now < settle_row):
-                    break
+                tick([self.commit_button])
 
-        # Phase 3: Finalize macro step in GenericRetroEnv (calculates reward, checks game over)
+            # Release controls after lock. If the row already reset, do not wait
+            # for a SECOND reset and let the next piece fall unattended.
+            if completed and not (env_term or env_trunc):
+                for _ in range(int(self.cfg.get("spawn_wait_frames", 30))):
+                    tick([])
+                    if env_term or env_trunc or (respawned and active_type()):
+                        break
+            elif not (env_term or env_trunc):
+                # A timeout is not a completed placement and must not train on
+                # the falling piece's board. End collection without death.
+                env_trunc = True
+
+        ready = (action is None or (completed and respawned)) and active_type()
         if hasattr(self.env, "finalize_macro_step"):
-            return self.env.finalize_macro_step(obs, info, env_term, env_trunc)
-        return obs, 0.0, bool(env_term), bool(env_trunc), info
+            result = self.env.finalize_macro_step(obs, info, env_term, env_trunc)
+        else:
+            result = obs, 0.0, env_term, env_trunc, info
+        obs, reward, term, trunc, info = result
+        info = dict(info)
+        info["afterstate_ready"] = bool(ready and not term)
+        return obs, reward, term, trunc, info

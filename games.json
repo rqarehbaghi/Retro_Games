@@ -607,6 +607,11 @@
             "cols": 10
           },
           "survival_reward": 0.0,
+          "piece_types": 7,
+          "piece_names": {"1": "I", "2": "T", "3": "O", "4": "J", "5": "L", "6": "S"},
+          "hole_normalizer": 20,
+          "line_tiers": [0, 1, 3, 6, 12],
+          "lines_var": "lines_p{player}",
           "line_scale": 10.0,
           "hole_penalty": 4.0,
           "height_penalty": 0.4,
@@ -673,15 +678,20 @@
           "right_button": "RIGHT",
           "commit_button": "DOWN",
           "col_offset": 3,
+          "piece_col_offsets": {"1": [3, 2, 3, 2]},
+          "piece_col_offsets_why": "Measured with tools/measure_piece_origins.py on level0_2p: all six piece types and all four rotations matched declared shapes. RAM column minus rendered leftmost grid column is 2 for type 1 rotations 1 and 3, and 3 for all other cases. A constant offset placed vertical I pieces one column right of the simulated destination.",
           "spawn_col": 4,
           "tap_hold": 2,
           "tap_release": 2,
           "rotate_step": -1,
+          "valid_piece_types": [1, 2, 3, 4, 5, 6],
+          "spawn_wait_frames": 30,
           "rotate_step_why": "One tap of A moves piece_rot_p2 by -1, MEASURED: tapping A from a fresh piece ran the counter 0 -> 3 -> 2 -> 1 -> 0. The planner needs this because the taps to reach a target are (current - target) mod 4, not (target - current). A piece always spawns at rotation 0, so the old sign made the action index a fixed permutation of the real rotation that a policy could learn around, and it only became visible when a plan started from an already-rotated piece.",
           "measured": "col_offset 3 verified by driving P2: piece_col_p2 reads 7 at spawn and taps reach 3 (left wall) and 10 (right wall), so grid column = raw - 3 and spawn is column 4. Requested columns land where asked: (rot,col)=(2,0) put cells in grid columns 0-2, (0,7) in 7-9, (3,8) in 8-9. One macro placement runs 18-54 emulator frames, median 38.",
           "settle_detect": {
             "kind": "ram_trigger",
             "trigger_on": "decrease_event",
+            "min_previous": 5,
             "var": "piece_row_p{player}"
           }
         },
@@ -707,6 +717,12 @@
         "observation": {
           "kind": "grid",
           "grid": {
+            "piece_types": 7,
+            "rotation_normalizer": 3,
+            "row_normalizer": 24,
+            "mask_rows": 5,
+            "mask_cols": 4,
+            "mask_row_margin": 1,
             "per_player": {
               "1": {
                 "x": 9

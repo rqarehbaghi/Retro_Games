@@ -499,6 +499,8 @@ class GenericRetroEnv(gym.Env):
             joint = self.empty_joint()
         obs, r, term, trunc, info = self.env.step(joint)
         self.frames += 1
+        if not self.use_data_json:
+            term = trunc = False
         ram = self._ram()
         if self._ended(ram, self._seen(info)):
             term = True
@@ -516,10 +518,11 @@ class GenericRetroEnv(gym.Env):
             ram = self._ram()
             self.reward_model.rebaseline(ram, self._seen(info), obs,
                                          self.spec_.grid, is_macro=True)
-            return obs, 0.0, False, False, self._info(
-                ram, self._seen(info), self.reward_model.prev_feats)
+            out = self._info(ram, self._seen(info), self.reward_model.prev_feats)
+            out["afterstate_discontinuity"] = True
+            return obs, 0.0, self._ended(ram, self._seen(info)), False, out
         if not (env_term or env_trunc):
-            obs, info = self._settle_board(obs, info)
+            obs, info, env_term, env_trunc = self._settle_board(obs, info)
         ram = self._ram()
         terminated = self._ended(ram, self._seen(info)) or env_term
         reward, feats = self.reward_model.step(ram, self._seen(info), terminated,
@@ -549,7 +552,7 @@ class GenericRetroEnv(gym.Env):
         """
         cfg = dict(self.spec_.raw.get("settle_board") or {})
         if not cfg:
-            return obs, info
+            return obs, info, False, False
         want = int(cfg.get("stable_frames", 2))
         prev, same = None, 0
         for _ in range(int(cfg.get("max_frames", 40))):
@@ -562,11 +565,10 @@ class GenericRetroEnv(gym.Env):
             else:
                 same = 0
             prev = cur
-            obs, _r, term, trunc, info = self.env.step(self.empty_joint())
-            self.frames += 1
+            obs, _r, term, trunc, info = self.step_raw_frame([])
             if term or trunc:
-                break
-        return obs, info
+                return obs, info, term, trunc
+        return obs, info, False, False
 
     def _ram(self):
         return self.env.unwrapped.get_ram()
@@ -602,14 +604,20 @@ class GenericRetroEnv(gym.Env):
         # to 54 -- so multiplying decisions by frameskip to get survival time
         # is wrong by about 10x. Anything comparing runs must read this.
         out["frames"] = self.frames
+        out["start_state"] = getattr(self, "start_state", self.spec_.state)
         return out
 
     # -- gym API ---------------------------------------------------------
     def reset(self, **kwargs):
         # Draw this episode's start state when several were given. Each seeds a
         # different game, which is what stops every episode being identical.
+        if kwargs.get("seed") is not None:
+            self._rng = np.random.default_rng(kwargs["seed"])
+        selected_state = self.spec_.state
         if len(self.spec_.states) > 1:
-            self.env.unwrapped.load_state(self._rng.choice(self.spec_.states))
+            selected_state = str(self._rng.choice(self.spec_.states))
+            self.env.unwrapped.load_state(selected_state)
+        self.start_state = selected_state
         obs, info = self.env.reset(**kwargs)
         obs, info = self._skip(obs, info)
         ram = self._ram()
@@ -727,17 +735,18 @@ def build_grid_observation(frame, ram, gspec, vars, player):
         v = vars.read("%s_p%d" % (name, player), ram, {}, default)
         return default if v is None else int(v)
 
-    onehot = np.zeros(7, dtype=np.float32)
+    piece_types = int(gspec.get("piece_types", 1))
+    onehot = np.zeros(piece_types, dtype=np.float32)
     t = rd("piece_type", 0)
-    if 0 <= t < 7:
+    if 0 <= t < piece_types:
         onehot[t] = 1.0
 
     extra = np.concatenate([
         onehot,
         np.array([
-            rd("piece_rot", 0) / 3.0,
+            rd("piece_rot", 0) / max(1, float(gspec.get("rotation_normalizer", 1))),
             rd("piece_col", 0) / max(1, cols),
-            rd("piece_row", 0) / 24.0,
+            rd("piece_row", 0) / max(1, float(gspec.get("row_normalizer", gspec.get("rows", 1)))),
         ], dtype=np.float32)
     ])
     return np.concatenate([g, extra]).astype(np.float32)
@@ -765,7 +774,7 @@ class GridObservation(gym.ObservationWrapper):
         self.rows = int(self.gspec.get("rows", 20))
         self.cols = int(self.gspec.get("cols", 10))
         # board cells + piece type (one-hot 7) + rotation + column + row
-        self.extra = 7 + 3
+        self.extra = int(self.gspec.get("piece_types", 1)) + 3
         self.observation_space = gym.spaces.Box(
             low=0.0, high=1.0, shape=(self.rows * self.cols + self.extra,),
             dtype=np.float32)
@@ -836,7 +845,7 @@ def make_observer(game, overrides=None, n_stack=4):
             return build_grid_observation(frame, ram, gs, vars, player)
 
         # A grid observation is a single 1D vector (rows*cols + piece info), not stacked.
-        return process, (rows * cols + 10,)
+        return process, (rows * cols + int(gs.get("piece_types", 1)) + 3,)
 
     crop = o.get("crop")
     width = int(o.get("width", 84))

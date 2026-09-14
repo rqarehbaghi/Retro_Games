@@ -1,5 +1,9 @@
 # Afterstate RL — handoff brief for a code reviewer
 
+**Update 2026-09-13:** transition/macro correctness fixes and measured piece-origin
+corrections are documented in `AFTERSTATE_RL_FIXES.md`. The snapshot below is
+historical; long-run multi-state convergence remains to be evaluated.
+
 **Purpose of this file:** a self-contained briefing for a fresh reviewer (human or
 LLM) who has the repo but none of the prior conversation. It explains what the
 project is, the specific goal, what has already been verified so you don't repeat

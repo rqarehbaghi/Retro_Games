@@ -174,12 +174,13 @@ def mask_piece(grid, ram, vars, player, spec):
     c = vars.read("piece_col_p%d" % player, ram, {})
     if r is None or c is None:
         return grid
-    row0 = int(r) - int((spec or {}).get("row_offset", 6)) - 1
-    col0 = int(c) - int((spec or {}).get("col_offset", 3))
+    spec = spec or {}
+    row0 = int(r) - int(spec.get("row_offset", 0)) - int(spec.get("mask_row_margin", 0))
+    col0 = int(c) - int(spec.get("col_offset", 0))
     out = grid.copy()
     rows, cols = out.shape
-    for y in range(max(0, row0), min(rows, row0 + 5)):
-        for x in range(max(0, col0), min(cols, col0 + 4)):
+    for y in range(max(0, row0), min(rows, row0 + int(spec.get("mask_rows", 1)))):
+        for x in range(max(0, col0), min(cols, col0 + int(spec.get("mask_cols", 1)))):
             out[y, x] = 0
     return out
 

@@ -918,7 +918,7 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
                 if curr_p2_type is not None and initial_p2_type is not None and curr_p2_type != initial_p2_type:
                     settled = True
                 elif curr_p2_row is not None and prev_p2_row is not None:
-                    if curr_p2_row < prev_p2_row and prev_p2_row >= 5:
+                    if curr_p2_row < prev_p2_row and prev_p2_row >= int(macro_cfg.get("settle_detect", {}).get("min_previous", 0)):
                         settled = True
                 if settled:
                     macro_state = "IDLE"
@@ -936,7 +936,8 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
                 else:
                     action_idx = np.random.randint(len(ai_combos))
 
-                plan = MacroPlanGenerator.plan(action_idx, macro_cfg, current_rot=curr_p2_rot, current_col=curr_p2_col)
+                plan = MacroPlanGenerator.plan(action_idx, macro_cfg, current_rot=curr_p2_rot,
+                                               current_col=curr_p2_col, piece_type=curr_p2_type)
                 macro_plan_queue = deque(plan["frames"])
                 macro_plan_queue.append([])  # Neutral frame for fresh DOWN press
                 macro_state = "TAPPING"

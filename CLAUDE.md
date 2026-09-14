@@ -1,9 +1,18 @@
 # Working on this repo
 
-Two halves. **The studio pipeline works and is what gets used.** The training
-half is on hold — the agent speedruns without collecting and cannot reliably
-clear World 1-1, and the owner deferred it deliberately. Do not restart
-training work unless asked.
+Two halves. **The studio pipeline works and is what gets used.**
+
+The training half has two threads:
+- **SMB3 PPO training is on hold** — the agent speedruns without collecting and
+  cannot reliably clear World 1-1, and the owner deferred it deliberately. Do not
+  restart SMB3 training work unless asked.
+- **TetrisTime afterstate RL is ACTIVE** — a learned value network is being
+  trained to play Tetris well. This is the current focus. Its architecture,
+  what has been verified, and the open blocker (multi-state training destabilises
+  the value net) are written up in `AFTERSTATE_RL_HANDOFF.md` — read that before
+  touching `rl/afterstate.py`, `rl/simulators/`, or the `TetrisTime` block of
+  `games.json`. Standing rules for it: keep it a learned AI/RL agent (not a fixed
+  heuristic), and keep everything game-specific in `games.json`.
 
 ## The one command
 
@@ -59,14 +68,24 @@ python restyle.py ./studio_out/<folder>
 - `tts.py` — Qwen3-TTS speech and the ducking mux
 - `restyle.py` — re-render from an edited `overlays.json`
 - `games.json` — verified RAM addresses per game, with the evidence for each
-- `train.py` — the GENERIC PPO trainer: one CLI for any game, with everything
+- `train.py` — the GENERIC trainer: one CLI for any game, with everything
   game-shaped (button map, save state, episode end, reward terms) read from
-  `games.json`. `--describe` prints a game's whole setup; `--no-data-json`
-  ignores retro's integration file so a game is defined only by this repo.
+  `games.json`. Two algorithms, chosen by the game's `training.algorithm`: `ppo`
+  (stable-baselines3) and `afterstate` (see below). `--describe` prints a game's
+  whole setup; `--no-data-json` ignores retro's integration file; `--unittest`
+  saves visual before/decision/contact/result screenshots of afterstate
+  placements (see `AFTERSTATE_RL_HANDOFF.md`).
 - `rl/` — what train.py is built on: `vars.py` reads any variable encoding out
-  of `games.json`, `env.py` turns a game's declared reward TERMS into a Gym env,
+  of `games.json`, `env.py` turns a game's declared reward TERMS into a Gym env
+  (and builds the grid observation used by the afterstate trainer),
   `features.py` holds the per-game hooks for values that must be computed
-  (Tetris's holes/bumpiness) rather than simply read
+  (Tetris's holes/bumpiness) rather than simply read. The **afterstate** trainer
+  lives in `rl/afterstate.py` (value net, agent, TD loop, `--unittest`) and
+  `rl/simulators/grid_placement.py` (the generic drop simulator + the reward,
+  driven entirely by the game's `afterstate` block in `games.json`);
+  `rl/macro.py` turns a chosen (rotation, column) into the button taps that
+  execute the placement. **`AFTERSTATE_RL_HANDOFF.md` is the orientation doc for
+  all of this**, including the current open blocker.
 - `train_smb3_legacy.py` — the original SMB3-only trainer, kept verbatim. Its
   tuned wrappers (auto-advance, stuck/backtrack, sprite observations) are not
   all expressible as declarative terms yet, and other modules still import
@@ -246,7 +265,15 @@ first.
 
 ## Known open
 
-- Training: the agent under-collects and cannot reliably clear World 1-1.
+- **TetrisTime afterstate RL — multi-state training destabilises the value net.**
+  Training from a single empty state (`level0_2p`) is stable and reaches ~43
+  placements / ~8 lines by 80k. Training from the owner's full set of ~32 start
+  states (empty + deep mid-game `rs_*` wells) makes the value net diverge (loss
+  climbs, the trained policy drops below near-random). Lowering the learning rate
+  and curating to shallow states both help only partially. This is the active
+  blocker; full write-up, evidence, and what's been ruled out are in
+  `AFTERSTATE_RL_HANDOFF.md`.
+- SMB3 PPO training: the agent under-collects and cannot reliably clear World 1-1.
   Reward weights, sprite observation and a ? block detector are all in; the
   binding constraint is that PPO cannot reinforce behaviour its own rollouts
   never contain. Behaviour cloning from collection demos plus the current

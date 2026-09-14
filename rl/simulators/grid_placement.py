@@ -140,6 +140,21 @@ class GridPlacementSimulator(BaseAfterstateSimulator):
         # net's targets small enough to converge (see reward_scale_why in
         # games.json -- at 1.0 the net diverged, at 0.3 it settled).
         self.reward_scale = float(cfg.get("reward_scale", 1.0))
+        # How the board-quality term enters the reward.
+        #   "delta"    : Phi(after) - Phi(before)  (a potential difference)
+        #   "absolute" : Phi(after)                (a cost paid every placement)
+        # MEASURED: with "delta" the value net learns V ~= C - Phi (corr(V,Phi)
+        # reached -0.91, slope dV/dPhi -0.42 by 20k steps) and therefore CANCELS
+        # the board term out of argmax(imm + gamma*V): the effective board weight
+        # 1 + gamma*dV/dPhi fell from 1.00 untrained to 0.59, heading for 0.01.
+        # Greedy play degraded with training (survival 42 untrained -> 23 at 10k
+        # -> 17 at 20k). A difference is exactly what a value function absorbs.
+        # "absolute" puts the candidate's own board quality only in the immediate
+        # reward -- V(s') covers FUTURE boards -- so it cannot be cancelled.
+        self.board_term_mode = str(cfg.get("board_term_mode", "delta"))
+        # An absolute cost is paid every step, so it must be scaled down by about
+        # (1 - gamma) to keep the value targets in the range that converged.
+        self.board_term_scale = float(cfg.get("board_term_scale", 1.0))
         self.line_tiers = cfg.get("line_tiers")
         self.lines_var = cfg.get("lines_var")
         self.hole_normalizer = float(cfg.get("hole_normalizer", self.rows))
@@ -174,6 +189,12 @@ class GridPlacementSimulator(BaseAfterstateSimulator):
         holes, height, bump = board_stats(board)
         return -(self.hole_penalty * holes + self.height_penalty * height + self.bump_penalty * bump)
 
+    def _board_term(self, after, before):
+        """Board-quality contribution for one placement (see board_term_mode)."""
+        if self.board_term_mode == "absolute":
+            return self._phi(after) * self.board_term_scale
+        return (self._phi(after) - self._phi(before)) * self.board_term_scale
+
     def _line_reward(self, lines):
         if self.line_tiers is None:
             return self.line_scale * lines
@@ -193,7 +214,7 @@ class GridPlacementSimulator(BaseAfterstateSimulator):
         n = self.rows * self.cols
         before = (np.asarray(obs)[:n].reshape(self.rows, self.cols) > 0.5).astype(np.uint8)
         after = (np.asarray(next_obs)[:n].reshape(self.rows, self.cols) > 0.5).astype(np.uint8)
-        return (self.survival_reward + bonus + self._phi(after) - self._phi(before)) * self.reward_scale
+        return (self.survival_reward + bonus + self._board_term(after, before)) * self.reward_scale
 
     def _board_and_piece(self, obs, ram, vars, spec):
         """Read the settled board and the current piece type from the
@@ -227,8 +248,6 @@ class GridPlacementSimulator(BaseAfterstateSimulator):
         # Selection predicts the same configured reward that observed_reward
         # measures after execution. Board-potential differences are an explicit
         # reward objective, not a claim of discount-invariant shaping.
-        phi_before = self._phi(board)
-
         out = []
         for rot, shape in enumerate(rots):
             pw = shape.shape[1]
@@ -239,7 +258,7 @@ class GridPlacementSimulator(BaseAfterstateSimulator):
                 feat, _curr_holes = board_feature_vector(after, self.hole_normalizer)
                 imm = (self.survival_reward
                        + self._line_reward(lines)
-                       + (self._phi(after) - phi_before)) * self.reward_scale
+                       + self._board_term(after, board)) * self.reward_scale
                 out.append({
                     "action": rot * self.cols + col,
                     "afterstate": feat,

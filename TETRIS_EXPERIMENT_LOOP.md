@@ -55,6 +55,26 @@ board progress toward 30+ lines and persistent execution/prediction mismatches.
 
 ## Active experiment
 
+LATEST 2026-09-15 08:38 UTC: user launched the fresh production run
+`checkpoints/tetris_v50` from commit `73b3bf3` with states
+`level0_2p,rs_01..rs_15`, 400k placements, epsilon 0.20->0.03 over 200k,
+and checkpoints every 10k. WSL PID 841 was the only active trainer when checked.
+At step2185 the rolling mixed-state AvgLen was32.2 and AvgRew3.2; the supplied
+13-episode excerpt contained29 actual lines, with9 from the one empty-board
+episode and most zero-line episodes coming from damaged `rs_*` starts. This is
+too early and too confounded by state difficulty/exploration to promote or reject
+the learner. Do not launch competing GPU work. At the first10k checkpoint, run
+fixed epsilon-zero evaluation per state and compare actual new lines/placements
+with prior checkpoints and a zero-value immediate-placement control.
+
+REGRESSION/FIX 2026-09-15: reward-rate scaling initially made random value-head
+outputs dominate scaled immediate placement guidance. The user observed repeated
+zero-line episodes in v46. Commit `73b3bf3` zero-initializes configured value
+heads. A fresh real-emulator v48 smoke test then cleared lines in all17 episodes:
+97 actual lines over800 placements (mean5.7 lines, AvgLen47.1) while epsilon stayed
+~0.199; startup simulator verification was6/6. This proves the startup regression
+is fixed, not that long-run/multi-state improvement is established.
+
 LATEST2026-09-15 03:38 UTC: old extension completed, no competing jobs found.
 Launched experiments/tetris_lines_only_control_s17.json, output
 checkpoints/experiment_loop/lines_only_control_s17_10k/. Check status/process.

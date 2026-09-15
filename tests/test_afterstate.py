@@ -18,6 +18,20 @@ from rl import afterstate as module
 
 class TrajectoryTests(unittest.TestCase):
     @unittest.skipUnless(module.HAS_TORCH, "PyTorch required")
+    def test_zero_value_initialization_preserves_immediate_policy(self):
+        for model_type in ("linear", "mlp"):
+            agent = module.AfterstateAgent(5, model_type=model_type,
+                                           value_reward_scale=.01,
+                                           zero_init_value=True)
+            states = module.torch.randn(3, 5)
+            self.assertEqual(agent.val_net(states).tolist(), [0., 0., 0.])
+            action, _, _ = agent.select_action([
+                {"action": 1, "afterstate": np.ones(5), "immediate_reward": -1.},
+                {"action": 2, "afterstate": np.zeros(5), "immediate_reward": 2.},
+            ])
+            self.assertEqual(action, 2)
+
+    @unittest.skipUnless(module.HAS_TORCH, "PyTorch required")
     def test_linear_value_model_and_checkpoint_type_guard(self):
         linear = module.AfterstateAgent(5, model_type="linear", value_reward_scale=.01,
                                         target_tau=.001)

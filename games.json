@@ -626,6 +626,8 @@
           "value_units_why": "Scale task rewards by 1-gamma inside Bellman targets, as in tetris-zero, so long-game values remain numerically conditioned without changing action ordering or printed raw rewards.",
           "target_tau": 0.001,
           "target_tau_why": "Polyak-update the target after every optimizer step instead of infrequent hard copies, matching stable fitted value iteration.",
+          "zero_init_value": true,
+          "zero_init_value_why": "Start a fresh value model at V=0 so the verified immediate placement guidance controls play until real line-return targets have trained the value head. Random initial values otherwise dominate reward-rate-scaled action scores.",
           "board_term_mode": "selection_delta",
           "board_term_scale": 0.1,
           "discount": 0.99,

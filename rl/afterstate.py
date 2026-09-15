@@ -130,7 +130,8 @@ class AfterstateAgent:
         gamma: float = 0.99,
         model_type: str = "mlp",
         value_reward_scale: float = 1.0,
-        target_tau: float = 1.0
+        target_tau: float = 1.0,
+        zero_init_value: bool = False
     ):
         if not HAS_TORCH:
             raise RuntimeError("Afterstate learning requires PyTorch")
@@ -140,6 +141,7 @@ class AfterstateAgent:
         self.model_type = model_type
         self.value_reward_scale = float(value_reward_scale)
         self.target_tau = float(target_tau)
+        self.zero_init_value = bool(zero_init_value)
         if self.value_reward_scale <= 0:
             raise ValueError("value_reward_scale must be positive")
         if not 0 < self.target_tau <= 1:
@@ -150,6 +152,15 @@ class AfterstateAgent:
                                                model_type=model_type).to(self.device)
             self.target_net = AfterstateValueNet(input_dim=input_dim, hidden_dim=hidden_dim,
                                                   model_type=model_type).to(self.device)
+            if self.zero_init_value:
+                # With reward-rate value units, a default random head can be
+                # larger than the immediate action signal before a single
+                # transition has been learned.  Starting V at zero makes the
+                # initial policy exactly the configured immediate-reward policy.
+                output = self.val_net.net if model_type == "linear" else self.val_net.net[-1]
+                nn.init.zeros_(output.weight)
+                if output.bias is not None:
+                    nn.init.zeros_(output.bias)
             self.target_net.load_state_dict(self.val_net.state_dict())
             self.optimizer = torch.optim.Adam(self.val_net.parameters(), lr=lr)
         else:
@@ -260,13 +271,15 @@ class AfterstateAgent:
                 "model_type": self.model_type,
                 "value_reward_scale": self.value_reward_scale,
                 "target_tau": self.target_tau,
+                "zero_init_value": self.zero_init_value,
                 "model_state_dict": self.val_net.state_dict(),
                 "optimizer_state_dict": self.optimizer.state_dict() if self.optimizer else None,
             }, buf)
             meta = json.dumps({"model_type": "afterstate", "input_dim": self.input_dim,
                                "value_model_type": self.model_type,
                                "value_reward_scale": self.value_reward_scale,
-                               "target_tau": self.target_tau}, indent=2)
+                               "target_tau": self.target_tau,
+                               "zero_init_value": self.zero_init_value}, indent=2)
 
             with zipfile.ZipFile(filepath, "w", compression=zipfile.ZIP_DEFLATED) as zf:
                 zf.writestr("value_net.pth", buf.getvalue())
@@ -597,6 +610,7 @@ def train_afterstate(args, spec, overrides):
         raise ValueError("afterstate.value_units must be 'reward' or 'reward_rate'")
     value_reward_scale = (1.0 - gamma) if value_units == "reward_rate" else 1.0
     target_tau = float(a_cfg.get("target_tau", 1.0))
+    zero_init_value = bool(a_cfg.get("zero_init_value", False))
     reward_scale = float(a_cfg.get("reward_scale", 1.0))
     terminal_penalty = float(a_cfg.get("terminal_penalty", 0.0)) * reward_scale
     if "terminal_penalty" not in a_cfg:
@@ -614,6 +628,7 @@ def train_afterstate(args, spec, overrides):
     print(f"exploration : epsilon {eps_start} -> {eps_final} over {explore_steps} steps")
     print(f"reward scale: {reward_scale}   terminal penalty: {terminal_penalty:.2f}")
     print(f"value units : {value_units} (reward multiplier {value_reward_scale:g}); target tau {target_tau:g}")
+    print(f"value init  : {'zero output' if zero_init_value else 'framework default'}")
 
     env = make_env(args.game, overrides=overrides)
     vars = GameVars(spec.game, entry=spec.entry)
@@ -628,7 +643,8 @@ def train_afterstate(args, spec, overrides):
         gamma=gamma,
         model_type=model_type,
         value_reward_scale=value_reward_scale,
-        target_tau=target_tau
+        target_tau=target_tau,
+        zero_init_value=zero_init_value
     )
     replay_capacity = int(a_cfg.get("replay_capacity", 50000))
     if replay_capacity < batch_size:

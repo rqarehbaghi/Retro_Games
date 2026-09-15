@@ -33,7 +33,8 @@ def main():
         env = make_env(args.game, {'state': state})
         penalty = spec.afterstate_config['terminal_penalty'] * sim.reward_scale
         for ck in [None] + args.checkpoint:
-            agent = AfterstateAgent(sim.feature_dim)
+            agent = AfterstateAgent(sim.feature_dim,
+                                    model_type=spec.afterstate_config.get('model_type', 'mlp'))
             if ck:
                 agent.load(ck)
             else:

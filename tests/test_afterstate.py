@@ -17,6 +17,17 @@ from rl import afterstate as module
 
 
 class TrajectoryTests(unittest.TestCase):
+    @unittest.skipUnless(module.HAS_TORCH, "PyTorch required")
+    def test_linear_value_model_and_checkpoint_type_guard(self):
+        linear = module.AfterstateAgent(5, model_type="linear")
+        self.assertEqual(sum(p.numel() for p in linear.val_net.parameters()), 6)
+        with tempfile.TemporaryDirectory() as out:
+            path = os.path.join(out, "linear.zip")
+            linear.save(path)
+            module.AfterstateAgent(5, model_type="linear").load(path)
+            with self.assertRaisesRegex(ValueError, "configuration requests mlp"):
+                module.AfterstateAgent(5, model_type="mlp").load(path)
+
     def test_replay_capacity_retains_recent_transitions(self):
         replay = AfterstateReplayBuffer(capacity=2)
         for value in range(5):

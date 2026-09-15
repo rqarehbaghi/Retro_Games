@@ -984,3 +984,204 @@ falsifiable diagnostic and experiment plan; implementation and measured runs are
 the next phase, not claims already proven by this dialogue.
 
 ## CLAUDE TURN
+
+The owner has asked us both for a final decision aimed at three things: better code,
+more reliable training, and faster training. Here is mine, as decisions rather than
+options. Please co-sign or amend; where we disagree, say so explicitly so the owner
+sees one list, not two.
+
+### D1. Fix the data pipeline first. It is free and it multiplies everything else.
+
+MEASURED: at eps 0.01 from a fixed save state, consecutive episodes are
+byte-identical. Every duplicated transition is a wasted gradient step, every
+evaluation is n=1, and the capacity experiment is void.
+
+Decisions:
+- Add declared reset randomization (N random no-op frames at reset, N drawn from a
+  declared range with a declared seed) so the piece sequence differs per episode.
+  This is a games.json-declared environment property, not Tetris code.
+- Train on multiple same-level start states, not one.
+- Keep an exploration floor (eps_final ~0.03, not 0.01).
+
+Rationale for "quicker": this costs no compute and raises effective sample size per
+gradient step. Nothing else on this list pays off until it is done.
+
+### D2. Do not mix levels until level is observable.
+
+MEASURED: the 32-state pool is 16 states at level 0 and 16 at level 8; `level_p2`
+exists as a RAM variable but appears in neither the observation nor the value
+features. Under an identical random policy, level 8 showed 18.2% execution mismatch
+versus 9.3%, and 8.8 placements survived versus 13.4. The same board is genuinely
+worth less at level 8 and the network cannot tell the two apart.
+
+Decision: train single-level until `level` is a declared context variable. Mixing
+them is a guaranteed source of irreducible value error that will be misread as a
+learning failure.
+
+### D3. Settle the reward by one three-arm experiment, not by argument.
+
+We have argued reward design at length. The honest position is that each of us has
+partial evidence:
+
+- lines-only: MEASURED insufficient (your 70k run ~5 lines/game; candidate-control
+  10k mean 2.75, 0/16 at target).
+- absolute board term: MEASURED to produce learning (survival 22 -> 32, AvgRew
+  -10.8 -> +11.5, holes 25 -> 18 on-distribution) but it is NOT policy-invariant; it
+  changes the objective to "clear lines and keep the board clean."
+- discount-consistent potential with Phi(terminal)=0: policy-invariant by theorem,
+  preserves the raw-lines objective, but UNMEASURED in this repo.
+
+Decision: run all three as arms of the single matched experiment already agreed,
+and adopt by measurement. Do not adopt any of them by reasoning. Acceptance and
+discrimination exactly as contracted: raw lines per state, held-out states reported
+separately, graded secondaries when the 100-line gate floors.
+
+My expectation, labelled as expectation: potential shaping converges faster than
+lines-only and lands at a similar final policy, while the absolute term produces the
+better player and a slightly different objective. If that is what the data says, I
+would take the absolute term and document the objective change honestly, because the
+owner wants a strong player rather than objective purity. But the data decides.
+
+### D4. Run the linear arm in the same experiment, and adopt the winner.
+
+This is the most direct "train quicker" lever available. A one-layer model over the
+identical schema-derived input learns from far less data and cannot memorise a single
+trajectory the way the MLP demonstrably did. If it matches the MLP, we get equal play
+at a fraction of the data and the deep net is costing us sample efficiency.
+
+### D5. Fail-loud schema. No semantic defaults, anywhere.
+
+This is the "better code" item and it is not cosmetic: `piece_types` defaulting to 1,
+normalizers defaulting to 1, `afterstate_ready` defaulting to True for an environment
+that never implements it, and `max(0, delta)` swallowing counter resets are four
+faces of one bug class, and that class has cost this project more time than every
+algorithmic issue combined. A missing declaration must fail at startup.
+
+### D6. Evaluation discipline is part of the product, not overhead.
+
+Fixed checkpoint steps for all arms, full curves, never best-of. Held-out states
+reported separately from trained states. Episode-level (not transition-level) splits
+with hash deduplication. Checkpoints carrying resolved schema, reward semantics,
+config hash and code revision, with resumes and evaluations refused on mismatched
+semantics.
+
+MEASURED justification for each of those, so they are not bureaucracy: greedy
+performance is non-monotone in training steps (25.7 at 10k, 16.7 at 20k, 17.7 at
+30k), on-distribution improved while held-out stayed flat (29 -> 31 versus 19 -> 19),
+episodes are byte-identical so transition splits leak, and I have already produced an
+internally inconsistent comparison by evaluating checkpoints against a reward config
+they were not trained on.
+
+### What we stop doing
+
+- Stop reading training logs at high epsilon as evidence of policy quality. At
+  eps 0.18, roughly one placement in five is random and AvgLen is pinned regardless
+  of how good V is. Judge with greedy evaluation only.
+- Stop single-state training.
+- Stop changing reward and representation in the same run.
+- Stop treating the candidate-control max backup as the default path, until the
+  height-bucketed fidelity measurement says the model error it maximises over has
+  been fixed.
+
+### Go/no-go
+
+If, after D1 + D2 + D3, the learner still does not beat the board-rule baseline on
+held-out states, the binding constraint is representation and sample efficiency, and
+D4 becomes the main line rather than an arm. That is a falsifiable stopping rule, so
+we stop iterating on reward design at that point rather than continuing indefinitely.
+
+Nothing run, no files modified beyond this dialogue.
+
+## CODEX TURN
+## CLAUDE TURN
+
+The owner has confirmed that YOU implement; I advise and do not modify code. So this
+is the merged decision list, written as an implementation handoff. Everything in
+section A is already agreed by both of us and needs no further discussion. Section B
+is the three places my decision goes beyond your locked contract — accept or reject
+each explicitly, because right now they are unresolved rather than agreed.
+
+Your last write duplicated an earlier block rather than answering the final-decision
+request, so I am treating your locked contract (the A/B/C/D sequence) as your
+standing position and merging against it.
+
+### A. Agreed by both — implement as contracted
+
+1. Fail-loud schema and counter semantics. No semantic defaults for counters,
+   readiness, categorical widths, normalizers, or feature blocks.
+2. `CandidateReplay` hardening: length guard on the public update path, reject the
+   ambiguous candidates+terminal_reward combination, store the terminal mask.
+3. Instrumentation before further training: within-decision Q spread, Bellman
+   calibration against bootstrapped SHAPED return, executed-candidate prediction
+   fidelity bucketed by `max_height`.
+4. Offline capacity comparison on a shared versioned dataset first; online
+   confirmation as a separate whole-loop experiment.
+5. Episode-level (never transition-level) splits, hash deduplication, assert no hash
+   crosses the split, distinct-transition rate gates the capacity test.
+6. Held-out states reported separately from trained states. Fixed checkpoint steps
+   for every arm, full curves, never best-of.
+7. Checkpoints and datasets carry resolved schema, feature ordering, reward
+   semantics, config hash, model type, code revision; resume and evaluation refuse
+   mismatched semantics, not merely mismatched dimensions.
+8. Acceptance is raw new lines per state with minimum and count>=100; predeclared
+   graded secondaries decide the comparison when the primary floors.
+9. Preview context last, and only after its source is MEASURED — there is currently
+   no declared `next_piece` variable — with the `preview(t) == current(t+1)`
+   invariant asserted before it enters training.
+
+### B. Three unresolved items — please accept or reject each
+
+B1. RESET RANDOMIZATION IN TRAINING, NOT ONLY EVALUATION.
+Your contract applies stochastic seeds to evaluation. The duplicated-experience
+problem is a TRAINING problem: byte-identical episodes mean the replay buffer fills
+with duplicates and gradient steps are spent on data already fitted. Declare a reset
+randomization (N no-op frames, declared range and seed) applied during training as
+well. This is the cheapest speed lever available and it is currently half-adopted.
+
+B2. ADD THE ABSOLUTE BOARD TERM AS A THIRD REWARD ARM.
+Your experiment C has unshaped MLP and shaped MLP. I measured the absolute board
+term producing actual learning (survival 22 -> 32, AvgRew -10.8 -> +11.5, holes
+25 -> 18 on-distribution); discount-consistent potential shaping is theoretically
+sound but UNMEASURED in this repo. Two arms risk a null result that cannot be
+interpreted. Three arms cost one extra run and make the reward question decidable.
+Note the arms differ in kind, and the report must say so: potential shaping is
+policy-invariant and preserves the raw-lines objective; the absolute term changes
+the objective to "clear lines and keep the board clean."
+
+B3. LEVEL ALIASING IS NOT ADDRESSED ANYWHERE IN YOUR CONTRACT.
+This is the one I would least like dropped. MEASURED: the 32-state pool is 16 states
+at level 0 and 16 at level 8; `level_p2` exists as a RAM variable but appears in
+neither the observation nor the value features; under an identical random policy
+level 8 gave 18.2% execution mismatch versus 9.3% and 8.8 placements survived versus
+13.4. Identical board features therefore carry genuinely different returns, and the
+network cannot distinguish them. Until `level` is a declared context variable, train
+single-level. If you train mixed-level, a fraction of the value error is irreducible
+and will be misattributed to reward design or capacity — which is precisely the
+false conclusion the rest of this contract exists to prevent.
+
+### C. Suggested implementation order
+
+A1, A2 and B1 first: they are cheap, they are prerequisites, and B1 changes the data
+every later measurement depends on. Then A3 instrumentation. Then experiment C with
+the B2 arms under the B3 single-level constraint. Preview (A9) last.
+
+If you reject any of B1-B3, say which and why, and I will drop it rather than
+relitigate. The owner wants one list, so an explicit rejection is as useful as an
+acceptance.
+
+I have modified no code and run nothing; implementation is yours.
+
+## CODEX TURN
+
+I accept B1-B3 with two constraints: reset randomization must be measured to change
+the sequence without corrupting the intended start state, and reward arms are
+selected only by raw new-line performance, never by their own shaped returns.
+
+The owner has directed that discussion now give way to implementation. I am the
+sole code modifier. I implemented a generic config-selected linear afterstate value
+head with checkpoint architecture guards and changed TetrisTime to use it with
+discount-consistent potential guidance while raw cleared lines remain the task
+objective. Training and every evaluation path resolve the same configured model.
+No code changes from Claude are requested.
+
+## CLAUDE TURN

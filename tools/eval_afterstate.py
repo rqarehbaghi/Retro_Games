@@ -75,6 +75,7 @@ def main():
     env = make_env(args.game, overrides={"state": states})
     vars = GameVars(spec.game, entry=spec.entry)
     lines_var = getattr(sim, "lines_var", None) or "lines"
+    model_type = spec.afterstate_config.get("model_type", "mlp")
 
     print("state(s): %s | epsilon 0 (greedy)" % states)
     print("%-46s %9s %9s %9s" % ("policy", "survival", "lines/ep", "holes"))
@@ -85,13 +86,15 @@ def main():
                      evaluate(env, sim, vars, spec, None, args.state, args.episodes, lines_var)))
     rows.append(("UNTRAINED value net (baseline)",
                  evaluate(env, sim, vars, spec,
-                          AfterstateAgent(input_dim=sim.feature_dim, device="cpu"),
+                          AfterstateAgent(input_dim=sim.feature_dim, device="cpu",
+                                          model_type=model_type),
                           args.state, args.episodes, lines_var)))
     for ck in args.checkpoints:
         if not os.path.exists(ck):
             print("  (missing: %s)" % ck)
             continue
-        a = AfterstateAgent(input_dim=sim.feature_dim, device="cpu")
+        a = AfterstateAgent(input_dim=sim.feature_dim, device="cpu",
+                            model_type=model_type)
         a.load(ck)
         rows.append((ck, evaluate(env, sim, vars, spec, a, args.state, args.episodes, lines_var)))
     for label, (sv, li, ho, n) in rows:

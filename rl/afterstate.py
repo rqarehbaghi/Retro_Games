@@ -28,20 +28,27 @@ if HAS_TORCH:
         Output: Scalar state-value estimate V(S').
         """
 
-        def __init__(self, input_dim: int, hidden_dim: int = 256):
+        def __init__(self, input_dim: int, hidden_dim: int = 256,
+                     model_type: str = "mlp"):
             super().__init__()
             self.input_dim = input_dim
-            self.net = nn.Sequential(
-                nn.Linear(input_dim, hidden_dim),
-                nn.LayerNorm(hidden_dim),
-                nn.ReLU(),
-                nn.Linear(hidden_dim, hidden_dim),
-                nn.LayerNorm(hidden_dim),
-                nn.ReLU(),
-                nn.Linear(hidden_dim, hidden_dim // 2),
-                nn.ReLU(),
-                nn.Linear(hidden_dim // 2, 1)
-            )
+            self.model_type = model_type
+            if model_type == "linear":
+                self.net = nn.Linear(input_dim, 1)
+            elif model_type == "mlp":
+                self.net = nn.Sequential(
+                    nn.Linear(input_dim, hidden_dim),
+                    nn.LayerNorm(hidden_dim),
+                    nn.ReLU(),
+                    nn.Linear(hidden_dim, hidden_dim),
+                    nn.LayerNorm(hidden_dim),
+                    nn.ReLU(),
+                    nn.Linear(hidden_dim, hidden_dim // 2),
+                    nn.ReLU(),
+                    nn.Linear(hidden_dim // 2, 1)
+                )
+            else:
+                raise ValueError("Unknown afterstate model_type: " + str(model_type))
 
         def forward(self, x: torch.Tensor) -> torch.Tensor:
             return self.net(x).squeeze(-1)
@@ -120,17 +127,21 @@ class AfterstateAgent:
         hidden_dim: int = 256,
         device: str = "cpu",
         lr: float = 2.5e-4,
-        gamma: float = 0.99
+        gamma: float = 0.99,
+        model_type: str = "mlp"
     ):
         if not HAS_TORCH:
             raise RuntimeError("Afterstate learning requires PyTorch")
         self.input_dim = input_dim
         self.device = torch.device(device if (HAS_TORCH and torch.cuda.is_available() and device == "cuda") else "cpu")
         self.gamma = gamma
+        self.model_type = model_type
 
         if HAS_TORCH:
-            self.val_net = AfterstateValueNet(input_dim=input_dim, hidden_dim=hidden_dim).to(self.device)
-            self.target_net = AfterstateValueNet(input_dim=input_dim, hidden_dim=hidden_dim).to(self.device)
+            self.val_net = AfterstateValueNet(input_dim=input_dim, hidden_dim=hidden_dim,
+                                               model_type=model_type).to(self.device)
+            self.target_net = AfterstateValueNet(input_dim=input_dim, hidden_dim=hidden_dim,
+                                                  model_type=model_type).to(self.device)
             self.target_net.load_state_dict(self.val_net.state_dict())
             self.optimizer = torch.optim.Adam(self.val_net.parameters(), lr=lr)
         else:
@@ -230,10 +241,12 @@ class AfterstateAgent:
             buf = io.BytesIO()
             torch.save({
                 "input_dim": self.input_dim,
+                "model_type": self.model_type,
                 "model_state_dict": self.val_net.state_dict(),
                 "optimizer_state_dict": self.optimizer.state_dict() if self.optimizer else None,
             }, buf)
-            meta = json.dumps({"model_type": "afterstate", "input_dim": self.input_dim}, indent=2)
+            meta = json.dumps({"model_type": "afterstate", "input_dim": self.input_dim,
+                               "value_model_type": self.model_type}, indent=2)
 
             with zipfile.ZipFile(filepath, "w", compression=zipfile.ZIP_DEFLATED) as zf:
                 zf.writestr("value_net.pth", buf.getvalue())
@@ -267,6 +280,13 @@ class AfterstateAgent:
             else:
                 data = torch.load(resolved, map_location=self.device)
 
+            saved_type = data.get("model_type", "mlp")
+            if saved_type != self.model_type:
+                raise ValueError(
+                    f"Checkpoint value model is {saved_type}, but configuration requests "
+                    f"{self.model_type}; start a fresh run or use matching configuration")
+            if int(data.get("input_dim", self.input_dim)) != self.input_dim:
+                raise ValueError("Checkpoint input dimension does not match the resolved game schema")
             self.val_net.load_state_dict(data["model_state_dict"])
             self.target_net.load_state_dict(self.val_net.state_dict())
             if self.optimizer and "optimizer_state_dict" in data and data["optimizer_state_dict"]:
@@ -543,6 +563,9 @@ def train_afterstate(args, spec, overrides):
     # The terminal death penalty and the global reward scale are game values, so
     # they live in games.json (afterstate block), not hardcoded here.
     a_cfg = spec.afterstate_config or {}
+    model_type = str(a_cfg.get("model_type", "mlp"))
+    if model_type not in ("mlp", "linear"):
+        raise ValueError("afterstate.model_type must be 'mlp' or 'linear'")
     reward_scale = float(a_cfg.get("reward_scale", 1.0))
     terminal_penalty = float(a_cfg.get("terminal_penalty", 0.0)) * reward_scale
     if "terminal_penalty" not in a_cfg:
@@ -552,7 +575,7 @@ def train_afterstate(args, spec, overrides):
     if max_wait_steps <= 0 or max_wait_frames <= 0:
         raise ValueError("Afterstate wait limits must be positive")
 
-    print(f"algorithm   : Afterstate Lookahead Value Network")
+    print(f"algorithm   : Afterstate Lookahead Value Network ({model_type})")
     print(f"simulator   : {sim_name} (feature dim: {simulator.feature_dim})")
     print(f"timesteps   : {args.timesteps}")
     print(f"device      : {device}")
@@ -570,7 +593,8 @@ def train_afterstate(args, spec, overrides):
         input_dim=simulator.feature_dim,
         device=device,
         lr=lr,
-        gamma=gamma
+        gamma=gamma,
+        model_type=model_type
     )
     replay_capacity = int(a_cfg.get("replay_capacity", 50000))
     if replay_capacity < batch_size:

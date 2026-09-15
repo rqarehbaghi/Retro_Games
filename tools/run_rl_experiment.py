@@ -39,7 +39,8 @@ def evaluate(game, config, states, checkpoint, max_placements):
     for state in states:
         spec = TrainingSpec(game, {'state': state})
         sim = get_simulator(spec.afterstate_config['simulator'], config=spec.afterstate_config)
-        agent = AfterstateAgent(sim.feature_dim, device='cpu')
+        agent = AfterstateAgent(sim.feature_dim, device='cpu',
+                                model_type=spec.afterstate_config.get('model_type', 'mlp'))
         if checkpoint:
             agent.load(str(checkpoint))
         else:

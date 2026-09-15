@@ -356,7 +356,8 @@ def play(args, spec, overrides):
             sys.exit("No afterstate simulator registered for game %s (expected '%s')"
                      % (args.game, sim_name))
 
-        agent = AfterstateAgent(input_dim=simulator.feature_dim, device=args.device or "cpu")
+        agent = AfterstateAgent(input_dim=simulator.feature_dim, device=args.device or "cpu",
+                                model_type=spec.afterstate_config.get("model_type", "mlp"))
         agent.load(path)
         single_env = make_env(args.game, overrides)
         vars = GameVars(spec.game, entry=spec.entry)

@@ -570,11 +570,11 @@
       },
       "training": {
         "preferred_state": {
-          "1": "level0_1p",
+          "1": "endless_1p",
           "2": "level8_2p"
         },
-        "start_state": "level0_1p",
-        "start_state_notes": "integrations/TetrisTime-Nes-v0/level0_1p.state -- a 1-player game already underway at level 0 (score 0, lines 0, first piece falling), so training never has to drive the boot screen and menus. Captured from studio_out/20260908-012346 at frame 1515, chosen because 0x0631 first reads 240 (playing) at frame 1485. Load with retro.make(state=level0_1p).",
+        "start_state": "endless_1p",
+        "start_state_notes": "integrations/TetrisTime-Nes-v0/endless_1p.state -- the standard endless 1-player mode at level 0, extracted at active-play frame 4000 from the verified recording studio_out/20260907-231546. That recording crosses 30 lines, resumes on level 1, and reaches 42 lines. The older level0_1p state came from the top-out recording and exposed the intermission bug but should not be the training default. Save states are ROM-derived local files and remain gitignored.",
         "episode_end": {
           "var": "game_over_p{player}",
           "equals": 0
@@ -768,7 +768,20 @@
         },
         "skip_while": {
           "var": "level_transition",
-          "equals": 1
+          "equals": 1,
+          "max_frames": 2000,
+          "resume_on_change": {
+            "var": "piece_row_p{player}",
+            "after": 300,
+            "changes": 2
+          },
+          "input_script": [
+            {"start": 0, "hold": 5, "repeat_every": 80, "buttons": ["B"]},
+            {"start": 20, "hold": 5, "repeat_every": 80, "buttons": ["RIGHT"]},
+            {"start": 40, "hold": 5, "repeat_every": 80, "buttons": ["B"]},
+            {"start": 60, "hold": 5, "repeat_every": 80, "buttons": ["DOWN"]}
+          ],
+          "input_script_why": "Tengen Tetris pauses every 30 lines for its bonus/high-score intermission. A no-input skip reaches the score table and never resumes play. The verified endless one-player recording studio_out/20260907-231546 advances that screen with B, RIGHT and DOWN runs; this short repeating cycle makes the same navigation robust to different bonus totals and score-table timing while keeping the game-specific behavior out of Python. Some paths leave the transition byte at 1 briefly after play has visibly resumed, so two changes of the falling-piece row after the non-play minimum are the independently configured readiness signal. The generic skip guard truncates instead of spinning forever if neither signal clears."
         },
         "max_steps": 20000,
         "ppo": {

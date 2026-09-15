@@ -9,6 +9,42 @@ This includes future experiment/code changes, not just the initial check-in.
 Keep ROMs, checkpoints, generated outputs and unrelated private data out of Git.
 Do not leave completed source changes uncommitted/unpushed; report push failures.
 
+## Update 2026-09-15: 30-line ceiling removed
+
+The v50 10k/20k/30k gate failed: fixed 16-state totals were 297/285/331
+lines versus the value-disabled control's 328 (only +0.9% at 30k, with large
+state-to-state regressions). The run is stopped; no training worker is active.
+
+The follow-up found a hard environment boundary hidden underneath the learning
+problem. Tengen Tetris pauses every 30 lines for a bonus/high-score
+intermission. `skip_while` sent only no-op frames and trusted RAM 0x01D2 to
+become zero. Depending on the bonus path, that left the emulator on the score
+screen or let play visibly resume while the byte still read one. The pending
+placement then repeated forever or the round appeared capped at exactly 30.
+
+The generic skip configuration now supports JSON-declared timed/repeating
+button input, a second readiness signal based on a changing RAM variable, and
+a hard timeout that truncates instead of spinning. Tetris declares its own
+B/RIGHT/DOWN intermission cycle and detects resumed falling-piece motion in
+`games.json`; there is no Tetris-specific branch in Python. The verified
+endless one-player state was extracted locally as `endless_1p.state` from
+`studio_out/20260907-231546`, whose original recording reaches level 1 and 42
+lines. ROM-derived states remain gitignored.
+
+Real emulator verification after the fix:
+
+- one-player `endless_1p`: crossed 29->31 at placement 77, did not terminate or
+  truncate, and reached 53 lines by placement 130;
+- two-player `level0_2p`: crossed 29->30 at placement 91, resumed without a
+  false truncation, reached 34 lines, then genuinely topped out at placement
+  121;
+- the full 41-test suite passes.
+
+This removes the artificial 30-line ceiling; it does not claim the value
+network already reaches 100 lines. The next clean experiment should train from
+the endless one-player state first, gate at 10k against the now-unbounded fixed
+control, then expand to multi-state/two-player only after learning improves.
+
 ## Locations
 
 - Editable code: G:/GitHub/Retro_Games (WSL /mnt/g/GitHub/Retro_Games).

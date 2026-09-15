@@ -44,6 +44,18 @@ This target is NOT met. No claim that any single fix guarantees it.
    from an empty board. New default1000, report caps explicitly. This cap did
    not cause the low results of episodes that terminated before it.
 
+5. **Thirty-line intermission was not a playable successor.** Tengen Tetris is
+   endless, but pauses every30 lines for bonus/high-score screens. The generic
+   skip path sent only no-op frames and waited solely for one transition byte;
+   observed runs either stalled on that screen or resumed visibly while that
+   byte still read1. The framework now accepts a timed/repeating input script,
+   an independently configured change-based readiness signal, and a hard
+   timeout in `skip_while`. Tetris supplies only its own B/RIGHT/DOWN timings
+   and falling-piece-row signal in games.json. Real verification crossed31 and
+   continued to53 lines in one-player, and crossed30 to34 before a genuine
+   top-out in two-player. The successful boundary placement keeps its measured
+   line reward; the intermission itself remains uncredited.
+
 ## Other audited paths / limits
 
 - Sampled TD associates reward with the prior observed afterstate, as required

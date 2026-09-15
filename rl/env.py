@@ -107,6 +107,25 @@ def _for_player(spec, player):
     return out
 
 
+def _scripted_buttons(config, frame):
+    """Return buttons declared for one frame of a non-play transition.
+
+    Some games require menu or confirmation input during a level intermission.
+    The timing belongs in games.json; this only implements the generic
+    ``start``/``hold``/``buttons`` schema.
+    """
+    for event in config.get("input_script") or []:
+        start = int(event.get("start", 0))
+        hold = max(1, int(event.get("hold", 1)))
+        offset = frame - start
+        repeat = int(event.get("repeat_every", 0))
+        if offset >= 0 and repeat > 0:
+            offset %= repeat
+        if 0 <= offset < hold:
+            return list(event.get("buttons") or [])
+    return []
+
+
 class TrainingSpec:
     """Everything games.json says about training one game."""
 
@@ -424,6 +443,7 @@ class GenericRetroEnv(gym.Env):
         self._releases = s.releases
         self.action_space = gym.spaces.Discrete(len(self._combos))
         self.steps = self.frames = 0
+        self._skip_resume_latched = False
         self._rng = np.random.default_rng(s.raw.get("seed"))
         self.observation_space = self.env.observation_space
 
@@ -529,7 +549,9 @@ class GenericRetroEnv(gym.Env):
             out = self._info(ram, self._seen(info), self.reward_model.prev_feats)
             out["afterstate_discontinuity"] = True
             out["afterstate_boundary_info"] = boundary_info
-            return obs, 0.0, self._ended(ram, self._seen(info)), False, out
+            self._mark_skip(out)
+            return (obs, 0.0, self._ended(ram, self._seen(info)),
+                    bool(self._last_skip_timeout), out)
         if not (env_term or env_trunc):
             obs, info, env_term, env_trunc = self._settle_board(obs, info)
         ram = self._ram()
@@ -588,7 +610,11 @@ class GenericRetroEnv(gym.Env):
 
     def _skipping(self, ram, info):
         c = self.spec_.skip_while
-        return bool(c) and self.vars.matches(c["var"], ram, info, c.get("equals"))
+        matches = bool(c) and self.vars.matches(c["var"], ram, info, c.get("equals"))
+        if not matches:
+            self._skip_resume_latched = False
+            return False
+        return not self._skip_resume_latched
 
     def _ended(self, ram, info):
         c = self.spec_.episode_end
@@ -596,13 +622,49 @@ class GenericRetroEnv(gym.Env):
 
     def _skip(self, obs, info):
         """Run past a stretch the agent cannot act on, paying nothing for it."""
+        config = self.spec_.skip_while or {}
+        limit = max(1, int(config.get("max_frames", 2000)))
+        resume = config.get("resume_on_change") or {}
+        resume_var = resume.get("var")
+        resume_after = max(0, int(resume.get("after", 0)))
+        resume_needed = max(1, int(resume.get("changes", 1)))
+        previous_resume = (self.vars.read(resume_var, self._ram(), self._seen(info))
+                           if resume_var else None)
+        resume_changes = 0
+        resumed = False
         guard = 0
-        while self._skipping(self._ram(), info) and guard < 2000:
+        while self._skipping(self._ram(), self._seen(info)) and guard < limit:
+            buttons = _scripted_buttons(config, guard)
             obs, _r, _t, _tr, info = self.env.step(
-                [False] * (self.n_buttons * self.spec_.players))
+                self.buttons_to_joint(buttons) if buttons else self.empty_joint())
             self.frames += 1
             guard += 1
+            if resume_var:
+                current_resume = self.vars.read(
+                    resume_var, self._ram(), self._seen(info))
+                if (current_resume is not None and previous_resume is not None
+                        and current_resume != previous_resume):
+                    resume_changes += 1
+                if current_resume is not None:
+                    previous_resume = current_resume
+                if guard >= resume_after and resume_changes >= resume_needed:
+                    resumed = True
+                    self._skip_resume_latched = True
+                    break
+        self._last_skip_frames = guard
+        self._last_skip_resumed = resumed
+        self._last_skip_timeout = (not resumed and
+                                   self._skipping(self._ram(), self._seen(info)))
         return obs, info
+
+    def _mark_skip(self, info):
+        """Expose transition diagnostics without teaching game-specific rules."""
+        info["skip_frames"] = getattr(self, "_last_skip_frames", 0)
+        if getattr(self, "_last_skip_resumed", False):
+            info["skip_resumed_on_change"] = True
+        if getattr(self, "_last_skip_timeout", False):
+            info["skip_timeout"] = True
+        return info
 
     def _info(self, ram, info, feats=None):
         out = {n: self.vars.read(n, ram, info) for n in self.vars.names()}
@@ -629,6 +691,11 @@ class GenericRetroEnv(gym.Env):
         self.start_state = selected_state
         obs, info = self.env.reset(**kwargs)
         obs, info = self._skip(obs, info)
+        if self._last_skip_timeout:
+            raise RuntimeError(
+                "skip_while did not clear within %d frames while resetting %s; "
+                "fix its input_script/max_frames in games.json"
+                % (self._last_skip_frames, self.spec_.game))
         ram = self._ram()
         is_macro = (getattr(self.spec_, "action_mode", "button_stream") == "macro_placement")
         self.reward_model.reset(ram, self._seen(info), obs, self.spec_.grid, is_macro=is_macro)
@@ -672,8 +739,9 @@ class GenericRetroEnv(gym.Env):
             obs, info = self._skip(obs, info)
             ram = self._ram()
             self.reward_model.rebaseline(ram, self._seen(info), obs, self.spec_.grid)
-            return obs, 0.0, False, False, self._info(ram, self._seen(info),
-                                                      self.reward_model.prev_feats)
+            out = self._info(ram, self._seen(info), self.reward_model.prev_feats)
+            self._mark_skip(out)
+            return obs, 0.0, False, bool(self._last_skip_timeout), out
 
         terminated = self._ended(ram, self._seen(info)) or env_term
         reward, feats = self.reward_model.step(ram, self._seen(info), terminated,

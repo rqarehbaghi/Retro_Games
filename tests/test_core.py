@@ -110,7 +110,7 @@ def test_reward_terms():
 
 # --------------------------------------------------------- player plumbing ---
 def test_player_substitution():
-    from rl.env import _fill_player, _for_player
+    from rl.env import _fill_player, _for_player, _scripted_buttons
     print("per-player config")
     check("{player} is replaced through nested structures",
           _fill_player({"a": "game_over_p{player}",
@@ -127,6 +127,14 @@ def test_player_substitution():
           {"y": 56, "x": 9})
     check("a block with no per_player is returned as-is",
           _for_player({"x": 1}, 2), {"x": 1})
+    script = {"input_script": [
+        {"start": 2, "hold": 2, "buttons": ["B"]},
+        {"start": 5, "hold": 1, "repeat_every": 4, "buttons": ["RIGHT"]},
+    ]}
+    check("transition input is idle before its start", _scripted_buttons(script, 1), [])
+    check("transition input holds declared buttons", _scripted_buttons(script, 3), ["B"])
+    check("transition input repeats on its period", _scripted_buttons(script, 9), ["RIGHT"])
+    check("transition input releases between pulses", _scripted_buttons(script, 10), [])
 
 
 # ------------------------------------------------------- macro placement ---

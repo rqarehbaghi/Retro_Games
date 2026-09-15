@@ -128,7 +128,9 @@ class AfterstateAgent:
         device: str = "cpu",
         lr: float = 2.5e-4,
         gamma: float = 0.99,
-        model_type: str = "mlp"
+        model_type: str = "mlp",
+        value_reward_scale: float = 1.0,
+        target_tau: float = 1.0
     ):
         if not HAS_TORCH:
             raise RuntimeError("Afterstate learning requires PyTorch")
@@ -136,6 +138,12 @@ class AfterstateAgent:
         self.device = torch.device(device if (HAS_TORCH and torch.cuda.is_available() and device == "cuda") else "cpu")
         self.gamma = gamma
         self.model_type = model_type
+        self.value_reward_scale = float(value_reward_scale)
+        self.target_tau = float(target_tau)
+        if self.value_reward_scale <= 0:
+            raise ValueError("value_reward_scale must be positive")
+        if not 0 < self.target_tau <= 1:
+            raise ValueError("target_tau must be in (0, 1]")
 
         if HAS_TORCH:
             self.val_net = AfterstateValueNet(input_dim=input_dim, hidden_dim=hidden_dim,
@@ -189,7 +197,7 @@ class AfterstateAgent:
         scores = []
         for i, c in enumerate(candidates):
             imm_r = float(c.get("immediate_reward", 0.0))
-            scores.append(imm_r + self.gamma * future_values[i])
+            scores.append(self.value_reward_scale * imm_r + self.gamma * future_values[i])
 
         best_idx = int(np.argmax(scores))
         best_cand = candidates[best_idx]
@@ -212,7 +220,7 @@ class AfterstateAgent:
         with torch.no_grad():
             next_vals = self.target_net(ns_t)
             next_vals[d_t] = 0.0
-            targets = r_t + self.gamma * next_vals
+            targets = self.value_reward_scale * r_t + self.gamma * next_vals
 
         loss = F.smooth_l1_loss(pred_vals, targets)
 
@@ -220,6 +228,7 @@ class AfterstateAgent:
         loss.backward()
         torch.nn.utils.clip_grad_norm_(self.val_net.parameters(), 1.0)
         self.optimizer.step()
+        self.update_target_network()
 
         return float(loss.item())
 
@@ -227,6 +236,13 @@ class AfterstateAgent:
         """Update target network weights."""
         if HAS_TORCH and self.val_net is not None and self.target_net is not None:
             self.target_net.load_state_dict(self.val_net.state_dict())
+
+    def update_target_network(self):
+        """Polyak target update; tau=1 retains the historical hard update."""
+        if HAS_TORCH and self.val_net is not None and self.target_net is not None:
+            with torch.no_grad():
+                for online, target in zip(self.val_net.parameters(), self.target_net.parameters()):
+                    target.lerp_(online, self.target_tau)
 
     def save(self, filepath: str):
         """Save model checkpoint as a .zip archive (matching standard studio/train checkpoint format)."""
@@ -242,11 +258,15 @@ class AfterstateAgent:
             torch.save({
                 "input_dim": self.input_dim,
                 "model_type": self.model_type,
+                "value_reward_scale": self.value_reward_scale,
+                "target_tau": self.target_tau,
                 "model_state_dict": self.val_net.state_dict(),
                 "optimizer_state_dict": self.optimizer.state_dict() if self.optimizer else None,
             }, buf)
             meta = json.dumps({"model_type": "afterstate", "input_dim": self.input_dim,
-                               "value_model_type": self.model_type}, indent=2)
+                               "value_model_type": self.model_type,
+                               "value_reward_scale": self.value_reward_scale,
+                               "target_tau": self.target_tau}, indent=2)
 
             with zipfile.ZipFile(filepath, "w", compression=zipfile.ZIP_DEFLATED) as zf:
                 zf.writestr("value_net.pth", buf.getvalue())
@@ -287,6 +307,12 @@ class AfterstateAgent:
                     f"{self.model_type}; start a fresh run or use matching configuration")
             if int(data.get("input_dim", self.input_dim)) != self.input_dim:
                 raise ValueError("Checkpoint input dimension does not match the resolved game schema")
+            # Preserve the units in which the checkpoint learned V.  Historical
+            # checkpoints predate this field and therefore use raw reward units.
+            saved_scale = float(data.get("value_reward_scale", 1.0))
+            if saved_scale <= 0:
+                raise ValueError("Checkpoint value_reward_scale must be positive")
+            self.value_reward_scale = saved_scale
             self.val_net.load_state_dict(data["model_state_dict"])
             self.target_net.load_state_dict(self.val_net.state_dict())
             if self.optimizer and "optimizer_state_dict" in data and data["optimizer_state_dict"]:
@@ -566,6 +592,11 @@ def train_afterstate(args, spec, overrides):
     model_type = str(a_cfg.get("model_type", "mlp"))
     if model_type not in ("mlp", "linear"):
         raise ValueError("afterstate.model_type must be 'mlp' or 'linear'")
+    value_units = str(a_cfg.get("value_units", "reward"))
+    if value_units not in ("reward", "reward_rate"):
+        raise ValueError("afterstate.value_units must be 'reward' or 'reward_rate'")
+    value_reward_scale = (1.0 - gamma) if value_units == "reward_rate" else 1.0
+    target_tau = float(a_cfg.get("target_tau", 1.0))
     reward_scale = float(a_cfg.get("reward_scale", 1.0))
     terminal_penalty = float(a_cfg.get("terminal_penalty", 0.0)) * reward_scale
     if "terminal_penalty" not in a_cfg:
@@ -582,6 +613,7 @@ def train_afterstate(args, spec, overrides):
     print(f"batch / lr  : {batch_size} / {lr} (gamma {gamma})")
     print(f"exploration : epsilon {eps_start} -> {eps_final} over {explore_steps} steps")
     print(f"reward scale: {reward_scale}   terminal penalty: {terminal_penalty:.2f}")
+    print(f"value units : {value_units} (reward multiplier {value_reward_scale:g}); target tau {target_tau:g}")
 
     env = make_env(args.game, overrides=overrides)
     vars = GameVars(spec.game, entry=spec.entry)
@@ -594,7 +626,9 @@ def train_afterstate(args, spec, overrides):
         device=device,
         lr=lr,
         gamma=gamma,
-        model_type=model_type
+        model_type=model_type,
+        value_reward_scale=value_reward_scale,
+        target_tau=target_tau
     )
     replay_capacity = int(a_cfg.get("replay_capacity", 50000))
     if replay_capacity < batch_size:
@@ -606,7 +640,7 @@ def train_afterstate(args, spec, overrides):
     control_replay = None
     if backup == "greedy_candidates":
         from rl.control import CandidateReplay, update_candidates
-        control_replay = CandidateReplay(replay_capacity)
+        control_replay = CandidateReplay(replay_capacity, reward_key="task_reward")
     print(f"value backup: {backup}; replay capacity {replay_capacity}")
 
     if args.resume:
@@ -738,7 +772,7 @@ def train_afterstate(args, spec, overrides):
                 ep_loss += loss
                 loss_updates += 1
 
-            if action is not None and total_steps % 500 == 0:
+            if target_tau >= 1.0 and action is not None and total_steps % 500 == 0:
                 agent.sync_target_network()
 
             if total_steps >= next_save_step:

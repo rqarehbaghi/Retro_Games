@@ -11,18 +11,20 @@ import torch.nn.functional as F
 
 
 class CandidateReplay:
-    def __init__(self, capacity):
+    def __init__(self, capacity, reward_key='immediate_reward'):
         if capacity <= 0:
             raise ValueError('Replay capacity must be positive')
         self.capacity = capacity
         self.buffer = []
         self.pos = 0
+        self.reward_key = reward_key
 
     def push(self, state, candidates=None, terminal_reward=None):
         if not candidates and terminal_reward is None:
             raise ValueError('An empty candidate set is not evidence of death')
         features = np.asarray([c['afterstate'] for c in candidates], dtype=np.float32) if candidates else None
-        rewards = np.asarray([c.get('immediate_reward', 0.) for c in candidates], dtype=np.float32) if candidates else None
+        rewards = np.asarray([c.get(self.reward_key, c.get('immediate_reward', 0.))
+                              for c in candidates], dtype=np.float32) if candidates else None
         terminals = np.asarray([c.get('terminal', False) for c in candidates], dtype=bool) if candidates else None
         item = (np.array(state, copy=True), features, rewards, terminal_reward, terminals)
         if len(self.buffer) < self.capacity:
@@ -57,14 +59,15 @@ def candidate_targets(agent, batch):
         offset = 0
         for row, count in zip(batch, lengths):
             if not count:
-                values.append(float(row[3]))
+                values.append(float(getattr(agent, 'value_reward_scale', 1.0)) * float(row[3]))
                 continue
             rewards = torch.as_tensor(row[2], device=agent.device)
             live = torch.as_tensor(~row[4], device=agent.device)
             online_values = online[offset:offset+count].masked_fill(~live, 0.)
             target_values = target[offset:offset+count].masked_fill(~live, 0.)
-            choice = torch.argmax(rewards + agent.gamma * online_values)
-            values.append(float(rewards[choice] + agent.gamma * target_values[choice]))
+            scaled_rewards = float(getattr(agent, 'value_reward_scale', 1.0)) * rewards
+            choice = torch.argmax(scaled_rewards + agent.gamma * online_values)
+            values.append(float(scaled_rewards[choice] + agent.gamma * target_values[choice]))
             offset += count
     return torch.tensor(values, device=agent.device, dtype=torch.float32)
 
@@ -78,4 +81,6 @@ def update_candidates(agent, replay, batch_size):
     loss.backward()
     torch.nn.utils.clip_grad_norm_(agent.val_net.parameters(), 1.)
     agent.optimizer.step()
+    if hasattr(agent, 'update_target_network'):
+        agent.update_target_network()
     return float(loss.item())

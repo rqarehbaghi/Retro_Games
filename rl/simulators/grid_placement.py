@@ -295,6 +295,7 @@ class GridPlacementSimulator(BaseAfterstateSimulator):
                     "action": rot * self.cols + col,
                     "afterstate": feat,
                     "immediate_reward": float(imm),
+                    "task_reward": float(self._line_reward(lines) * self.reward_scale),
                     "lines_cleared": lines,
                     "rot": rot,
                     "col": col,

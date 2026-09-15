@@ -19,12 +19,15 @@ from rl import afterstate as module
 class TrajectoryTests(unittest.TestCase):
     @unittest.skipUnless(module.HAS_TORCH, "PyTorch required")
     def test_linear_value_model_and_checkpoint_type_guard(self):
-        linear = module.AfterstateAgent(5, model_type="linear")
+        linear = module.AfterstateAgent(5, model_type="linear", value_reward_scale=.01,
+                                        target_tau=.001)
         self.assertEqual(sum(p.numel() for p in linear.val_net.parameters()), 6)
         with tempfile.TemporaryDirectory() as out:
             path = os.path.join(out, "linear.zip")
             linear.save(path)
-            module.AfterstateAgent(5, model_type="linear").load(path)
+            loaded = module.AfterstateAgent(5, model_type="linear")
+            loaded.load(path)
+            self.assertEqual(loaded.value_reward_scale, .01)
             with self.assertRaisesRegex(ValueError, "configuration requests mlp"):
                 module.AfterstateAgent(5, model_type="mlp").load(path)
 

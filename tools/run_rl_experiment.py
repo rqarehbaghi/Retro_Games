@@ -149,6 +149,16 @@ def run(manifest_path):
                     results[name] = evaluate(manifest['game'], config, manifest['eval_states'], ck,
                                              manifest.get('max_eval_placements', 1000))
                     dump(output / 'results.json', results)
+                    line_target = manifest.get('eval_line_target', 100)
+                    dump(output / 'summary.json', {
+                        label: {'episodes': len(rows),
+                                'total_lines': sum(r['lines'] for r in rows),
+                                'mean_lines': sum(r['lines'] for r in rows) / len(rows),
+                                'min_lines': min(r['lines'] for r in rows),
+                                'episodes_at_target': sum(r['lines'] >= line_target for r in rows),
+                                'line_target': line_target,
+                                'capped_episodes': sum(r['capped'] for r in rows)}
+                        for label, rows in results.items()})
             status.update(phase='complete', finished=time.time())
             dump(output / 'status.json', status)
             print(json.dumps(results), flush=True)

@@ -55,6 +55,17 @@ board progress toward 30+ lines and persistent execution/prediction mismatches.
 
 ## Active experiment
 
+NEXT/AWAITING OLD WORKER RELEASE: experiments/tetris_lines_only_control_s17.json
+->checkpoints/experiment_loop/lines_only_control_s17_10k/. Fresh seed17, strict
+lines-only production snapshot and CORRECTED candidate feedback/boundary handling.
+10k diagnostic stage, evaluations5k/10k, cap1000, target100lines per episode.
+summary.json reports mean/min/count>=100 as well as total and capped episodes.
+IMPORTANT: under new lines-only config, the value-disabled control is myopic
+line-only, NOT the former board-heuristic330line reference. Likewise v36 with
+new immediate reward is an objective-switched ablation, not historical v36.
+Never relabel those as unchanged controls.35 unittest tests and standalone
+tests/test_core.py pass. Code/config pushed;100+ gameplay remains unproven.
+
 AUDIT UPDATE2026-09-15: preserved successful level-boundary clears and corrected
 the newly introduced experimental candidate-backup death feedback. These fixes
 are newer than the still-running old extension and do NOT affect its imported

@@ -1,0 +1,14 @@
+{
+  "game": "TetrisTime-Nes-v0",
+  "output": "checkpoints/experiment_loop/lines_only_control_s17_10k",
+  "integration_dir": "/home/reza/RetroGames/integrations",
+  "baseline": "/home/reza/RetroGames/checkpoints/tetris_v36/final.zip",
+  "seed": 17,
+  "train_states": ["level0_2p", "rs_01", "rs_02", "rs_03", "rs_04", "rs_05", "rs_06", "rs_07", "rs_08", "rs_09", "rs_10", "rs_11", "rs_12", "rs_13", "rs_14", "rs_15"],
+  "eval_states": ["level0_2p", "rs_01", "rs_02", "rs_03", "rs_04", "rs_05", "rs_06", "rs_07", "rs_08", "rs_09", "rs_10", "rs_11", "rs_12", "rs_13", "rs_14", "rs_15"],
+  "max_eval_placements": 1000,
+  "eval_line_target": 100,
+  "evaluate_steps": [5000, 10000],
+  "train_options": {"timesteps": 10000, "save_every": 5000, "explore_steps": 10000},
+  "afterstate_overrides": {"backup": "greedy_candidates"}
+}

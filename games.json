@@ -574,7 +574,7 @@
           "2": "level8_2p"
         },
         "start_state": "endless_1p",
-        "start_state_notes": "integrations/TetrisTime-Nes-v0/endless_1p.state -- the standard endless 1-player mode at level 0, extracted at active-play frame 4000 from the verified recording studio_out/20260907-231546. That recording crosses 30 lines, resumes on level 1, and reaches 42 lines. The older level0_1p state came from the top-out recording and exposed the intermission bug but should not be the training default. Save states are ROM-derived local files and remain gitignored.",
+        "start_state_notes": "integrations/TetrisTime-Nes-v0/endless_1p.state -- the standard endless 1-player mode at level 0, extracted at active-play frame 4000 from the verified recording studio_out/20260907-231546. That recording crosses 30 lines, resumes on level 1, and reaches 42 lines. The older level0_1p state came from the top-out recording and exposed the intermission bug but should not be the training default. This state is tracked beside the repository's existing boot/level Tetris states so a pull contains the verified start point.",
         "episode_end": {
           "var": "game_over_p{player}",
           "equals": 0

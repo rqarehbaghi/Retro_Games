@@ -29,7 +29,7 @@ B/RIGHT/DOWN intermission cycle and detects resumed falling-piece motion in
 `games.json`; there is no Tetris-specific branch in Python. The verified
 endless one-player state was extracted locally as `endless_1p.state` from
 `studio_out/20260907-231546`, whose original recording reaches level 1 and 42
-lines. ROM-derived states remain gitignored.
+lines. It is tracked beside the repository's existing Tetris start states.
 
 Real emulator verification after the fix:
 

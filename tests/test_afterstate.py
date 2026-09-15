@@ -147,8 +147,10 @@ class SimulatorTests(unittest.TestCase):
 
 
 class RunnerTests(unittest.TestCase):
-    def run_case(self, ending, delayed=False):
+    def run_case(self, ending, delayed=False, backup="sampled"):
         replay = AfterstateReplayBuffer()
+        from rl.control import CandidateReplay
+        control = CandidateReplay(50000)
         actions = []
         class Sim:
             feature_dim = 1  # not a grid game; deliberately no shapes property
@@ -184,7 +186,7 @@ class RunnerTests(unittest.TestCase):
                 return c["action"], c["afterstate"], c["immediate_reward"]
             def save(self, *args):
                 pass
-        spec = SimpleNamespace(afterstate_config={"simulator": "toy", "terminal_penalty": -6,
+        spec = SimpleNamespace(afterstate_config={"simulator": "toy", "terminal_penalty": -6, "backup": backup,
                                "max_wait_steps": 3, "max_wait_frames": 100},
                                features_name=None, game="toy", entry={}, report_stats=[], terms=[])
         with tempfile.TemporaryDirectory() as out:
@@ -195,9 +197,27 @@ class RunnerTests(unittest.TestCase):
                     patch("rl.simulators.get_simulator", return_value=Sim()), \
                     patch.object(module, "AfterstateAgent", Agent), \
                     patch.object(module, "AfterstateReplayBuffer", return_value=replay), \
+                    patch("rl.control.CandidateReplay", return_value=control), \
                     contextlib.redirect_stdout(io.StringIO()):
                 module.train_afterstate(args, spec, {})
-        return replay.buffer, actions
+        return (replay.buffer if backup == "sampled" else control.buffer), actions
+
+    def test_control_uses_observed_predecessor_and_candidates(self):
+        rows, _ = self.run_case("budget", backup="greedy_candidates")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0][0].tolist(), [1.])
+        self.assertEqual(rows[0][1].tolist(), [[999.]])
+
+    def test_control_missing_candidate_terminal_once(self):
+        rows, _ = self.run_case("missing", backup="greedy_candidates")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0][0].tolist(), [1.])
+        self.assertEqual(rows[0][3], -6.)
+
+    def test_control_wait_does_not_duplicate_decision(self):
+        rows, actions = self.run_case("budget", delayed=True, backup="greedy_candidates")
+        self.assertEqual(actions, [5, 5, None])
+        self.assertEqual(len(rows), 1)
 
     def test_terminal_reward_on_observed_predecessor(self):
         rows, _ = self.run_case("death")

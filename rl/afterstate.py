@@ -576,6 +576,14 @@ def train_afterstate(args, spec, overrides):
     if replay_capacity < batch_size:
         raise ValueError("afterstate.replay_capacity must be at least batch_size")
     replay = AfterstateReplayBuffer(capacity=replay_capacity)
+    backup = a_cfg.get("backup", "sampled")
+    if backup not in ("sampled", "greedy_candidates"):
+        raise ValueError("Unknown afterstate.backup: " + str(backup))
+    control_replay = None
+    if backup == "greedy_candidates":
+        from rl.control import CandidateReplay, update_candidates
+        control_replay = CandidateReplay(replay_capacity)
+    print(f"value backup: {backup}; replay capacity {replay_capacity}")
 
     if args.resume:
         print(f"resuming weights from {args.resume}")
@@ -607,6 +615,7 @@ def train_afterstate(args, spec, overrides):
         ep_loss = 0.0
         loss_updates = 0
         last_info = info
+        control_previous = None
 
         eps_progress = min(1.0, total_steps / float(max(1, explore_steps)))
         epsilon = eps_start + (eps_final - eps_start) * eps_progress
@@ -616,7 +625,14 @@ def train_afterstate(args, spec, overrides):
             candidates = simulator.get_candidates(obs=obs, ram=ram, info=info, vars=vars, spec=spec)
 
             action = None
+            control_added = False
             if pending is None and candidates:
+                if control_replay is not None and control_previous is not None:
+                    # Sample the real next piece, optimize its action choice.
+                    # Do not turn missing candidates/transient frames into death.
+                    control_replay.push(control_previous, candidates=candidates)
+                    control_previous = None
+                    control_added = True
                 action, predicted, _imm_reward = agent.select_action(candidates, epsilon=epsilon)
                 pending = (np.array(obs, copy=True), dict(info), predicted)
             next_obs, reward, terminated, truncated, info = env.step(action)
@@ -645,14 +661,20 @@ def train_afterstate(args, spec, overrides):
                     before, before_info, _predicted = pending
                     step_reward = simulator.observed_reward(before, next_obs, before_info, info, terminated=True)
                 step_reward += terminal_penalty
+                if control_replay is not None and control_previous is not None:
+                    control_replay.push(control_previous, terminal_reward=step_reward)
+                    control_added = True
+                    control_previous = None
                 new_transition = trajectory.record(step_reward, terminated=True)
                 pending = None
             elif info.get("afterstate_discontinuity", False):
+                control_previous = None
                 trajectory.previous = None
                 pending = None
             elif pending is not None and info.get("afterstate_ready", True):
                 before, before_info, predicted = pending
                 actual = simulator.encode_observation(next_obs, info)
+                control_previous = np.array(actual, copy=True)
                 step_reward = simulator.observed_reward(before, next_obs, before_info, info)
                 new_transition = trajectory.record(step_reward, actual)
                 mismatches += int(not np.array_equal(predicted, actual))
@@ -667,7 +689,11 @@ def train_afterstate(args, spec, overrides):
                 if done and ep_steps == 0:
                     total_steps += 1
 
-            if new_transition and len(replay) >= batch_size:
+            if control_replay is not None and control_added and len(control_replay) >= batch_size:
+                loss = update_candidates(agent, control_replay, batch_size)
+                ep_loss += loss
+                loss_updates += 1
+            elif control_replay is None and new_transition and len(replay) >= batch_size:
                 loss = agent.update(replay, batch_size=batch_size)
                 ep_loss += loss
                 loss_updates += 1

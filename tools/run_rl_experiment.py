@@ -101,7 +101,7 @@ def run(manifest_path):
         cfg.update(manifest.get('afterstate_overrides', {}))
         dump(output / 'games.json', source_config)
         fingerprints = {}
-        for source in ['train.py', 'rl/afterstate.py', 'rl/env.py', 'rl/macro.py',
+        for source in ['train.py', 'rl/afterstate.py', 'rl/control.py', 'rl/env.py', 'rl/macro.py',
                        'rl/features.py', 'rl/vars.py', 'rl/simulators/base.py',
                        'rl/simulators/grid_placement.py', 'tools/run_rl_experiment.py']:
             path = ROOT / source

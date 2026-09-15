@@ -43,6 +43,28 @@ board progress toward 30+ lines and persistent execution/prediction mismatches.
 
 ## Active experiment
 
+LATEST 2026-09-15: user stopped all jobs and explicitly reiterated that the
+objective is to MAKE THE NETWORK TRAIN BETTER. Confirmed no train processes.
+New experiment experiments/tetris_control_s17.json ->
+checkpoints/experiment_loop/seven_piece_control_s17_10k/. Check status/process.
+Optional generic backup=greedy_candidates in rl/control.py compares simulator
+placements for the REAL observed next piece (no invented next-piece distribution).
+Online net selects reward+gamma*V, target net evaluates the chosen candidate.
+The previous sampled observed-transition mode remains the production default.
+This tests control-target formulation, not an epsilon tweak. The model-based
+mode can be optimistic about unreachable/terminal placements; measured simulator
+errors remain a risk, and this is NOT promoted as a proven fix. It does not
+replace the learned network with a heuristic. 28 afterstate +3 control tests pass.
+Fresh seed17, same potential task reward, state suite, replay50000, epsilon
+schedule10000 as previous seven-piece run. Evaluate5k/10k; compare10k against
+sampled10k43 lines (small-buffer10k54), plus current value-disabled330 lines.
+All state evaluations fixed; no claims based on loss. Keep WSL clean/untouched.
+
+Recent CPU diagnosis of the user's v37/70k on rs12: learned7placements/0lines,
+return-9.881 versus value-disabled45/6, return0.322. Same production absolute
+objective; poor learned ranking is not explained by reward preference on this
+trajectory. Evidence: checkpoints/experiment_loop/v37_70k_rs12_calibration.jsonl.
+
 CHECK-IN 2026-09-14: user requested committed changes and a clean WSL checkout
 ready for git pull. WSL older tracked edits and standalone env.py were preserved
 in named stash codex-before-pull-2026-09-14. Local assets remain in place under

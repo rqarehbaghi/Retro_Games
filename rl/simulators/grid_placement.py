@@ -327,9 +327,6 @@ class GridPlacementSimulator(BaseAfterstateSimulator):
                 out.append({
                     "action": rot * self.cols + col,
                     "afterstate": feat,
-                    # Verification/execution fidelity is a board-space concern,
-                    # independent of whichever learned feature encoding is active.
-                    "predicted_board": after.copy(),
                     "immediate_reward": float(imm),
                     "lines_cleared": lines,
                     "rot": rot,

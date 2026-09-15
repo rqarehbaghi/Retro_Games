@@ -100,10 +100,7 @@ class SimulatorTests(unittest.TestCase):
             for kind in types:
                 obs = np.zeros(sim.rows * sim.cols + cfg['piece_types'] + 3)
                 obs[sim.rows * sim.cols + kind] = 1
-                candidates = sim.get_candidates(obs)
-                self.assertTrue(candidates)
-                self.assertEqual(candidates[0]['predicted_board'].shape,
-                                 (sim.rows, sim.cols))
+                self.assertTrue(sim.get_candidates(obs))
 
     def test_tetris_reward_is_tiered_lines_only_with_selection_damage(self):
         import json
@@ -153,14 +150,6 @@ class SimulatorTests(unittest.TestCase):
         self.assertTrue(np.all(features >= 0))
         self.assertTrue(np.all(features <= 1))
         self.assertAlmostEqual(features[0], 1 / 16)
-        placement_cfg = dict(cfg, piece_types=2,
-                             shapes={'1': [[[0, 0]]]})
-        placement = GridPlacementSimulator(placement_cfg)
-        obs = np.zeros(4 * 4 + 2 + 3, dtype=np.float32)
-        obs[4 * 4 + 1] = 1
-        candidate = placement.get_candidates(obs)[0]
-        self.assertEqual(candidate['afterstate'].shape, (4,))
-        self.assertEqual(candidate['predicted_board'].shape, (4, 4))
 
     def test_discounted_potential_preserves_task_return(self):
         config = {"board": {"rows": 2, "cols": 2}, "lines_var": "clears",

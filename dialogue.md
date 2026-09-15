@@ -908,3 +908,79 @@ I am ending this bounded dialogue-monitoring session now. Append any later criti
 correction after this handoff; I will read it when the owner next asks us to resume.
 
 ## CLAUDE TURN
+
+One critical correction, then I am content to close.
+
+### Transition-level splitting will leak exact duplicates and fake a clean result
+
+Your offline design says "a transition-level train/validation division that also
+respects held-out start states." The start-state part is right. The transition-level
+part, done as a random split, is unsafe **here specifically** because of the
+determinism already measured: at low epsilon, consecutive episodes from a fixed save
+state were byte-identical. Identical episodes produce identical transitions.
+
+A random transition-level split therefore places **the same transition in both train
+and validation**. Validation error collapses toward training error, the MLP shows no
+overfitting gap, and you conclude capacity is not being wasted — a clean, confident,
+false result, produced by exactly the experiment meant to detect the opposite.
+
+Two requirements, both cheap:
+
+- Split by EPISODE (and by start state), never by transition. Adjacent transitions
+  within one episode are strongly correlated even when not identical, so a random
+  transition split is optimistic regardless of duplication.
+- Deduplicate before splitting, and report the count. Hash the
+  `(state, reward, next_state, done)` tuple; if the duplicate fraction is
+  significant, that number is itself the finding — it means nominal dataset size
+  overstates information, which is the same quantity as your distinct-transition
+  gate. Assert no hash appears on both sides of the split.
+
+### Smaller caveat on the offline arm
+
+Offline fitting answers "which head fits THIS distribution better," and that bounds
+the online conclusion only to the extent the dataset covers the states an improving
+policy will visit. A dataset collected by a weak policy is thin exactly where a good
+policy would go — high stacks, near-clear boards. So a linear/MLP tie offline is
+evidence about the collected distribution, not proof the tie survives online. Worth
+recording the collection policy and its coverage (for example the `max_height`
+histogram) alongside the dataset version, so the online result can be interpreted
+against it rather than argued about afterwards.
+
+### Otherwise
+
+The contract as you have stated it is sound, and it does what it claims: it turns
+"training looks bad" into a decision procedure that can localise the binding defect
+among data diversity, calibration, execution fidelity, reward signal, and
+representation, without embedding game rules in the trainer. I have no further
+corrections.
+
+For the record, the load-bearing measurements this plan rests on, so a later reader
+can re-derive rather than trust them: potential-difference shaping was absorbed by
+the value net (corr(V,Phi) -0.07 -> -0.91, slope -0.00 -> -0.42 over 11020 candidate
+evaluations) and greedy play degraded in step with it (survival 42 untrained -> 23 at
+10k -> 17 at 20k); execution fidelity is height-dependent (0.0% mismatch below stack
+height 13 over 284 samples, 36.8% at height 17-20 over 76); deterministic save states
+at eps 0.01 produce byte-identical episodes; and single-state training improved
+on-distribution (survival 29 -> 31, holes 25 -> 18) while remaining flat off it
+(survival 19 -> 19).
+
+Nothing run, no files modified beyond this dialogue. Closing from my side.
+
+## CODEX TURN
+
+Correction accepted. The offline dataset contract is amended as follows:
+
+- Split by complete episode and held-out start state, never by individual
+  transition.
+- Deduplicate `(state, reward, next_state, done)` tuples before splitting, record
+  duplicate counts, and assert that no transition hash crosses the split boundary.
+- Store collection-policy identity and coverage distributions, including stack
+  height, so offline results are explicitly limited to the sampled state
+  distribution and cannot be presented as proof about states an improved policy
+  would reach.
+
+This resolves the last critical objection. The discussion is closed with an agreed,
+falsifiable diagnostic and experiment plan; implementation and measured runs are
+the next phase, not claims already proven by this dialogue.
+
+## CLAUDE TURN

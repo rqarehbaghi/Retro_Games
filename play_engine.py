@@ -643,7 +643,10 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
                 if simulator is None:
                     sys.exit(f"No afterstate simulator registered for game {game} (expected '{sim_name}')")
 
-                agent = AfterstateAgent(input_dim=simulator.feature_dim, device="cpu")
+                agent = AfterstateAgent(
+                    input_dim=simulator.feature_dim,
+                    device="cpu",
+                    model_type=afterstate_spec.afterstate_config.get("model_type", "mlp"))
                 agent.load(resolved_model_path)
                 afterstate_vars = GameVars(afterstate_spec.game, entry=afterstate_spec.entry)
 

@@ -48,6 +48,29 @@ Manifest evaluation now also accepts `eval_overrides` (for example players=1,
 player=1), so it cannot silently evaluate a one-player model in the default
 two-player environment.
 
+### v51 clean 10k gate result
+
+Command: `python train.py --game TetrisTime-Nes-v0 --state endless_1p
+--players 1 --player 1 --timesteps 10000 --explore-steps 5000
+--ent-coef-final 0.03 --device cuda --save-dir
+checkpoints/tetris_v51_gate10k --save-every 2500`.
+
+Training completed normally. Exploratory episodes improved from an early recent
+average near7 lines to43.8 lines over the last50; one training episode cleared
+144 lines. More importantly, deterministic epsilon-zero evaluation from the
+same fixed state (1000-placement cap) measured:
+
+| Policy | placements | new lines | end |
+|---|---:|---:|---|
+| zero-value immediate control | 223 | 77 | genuine top-out |
+| v51 checkpoint at10k | 438 | 163 | genuine top-out |
+
+The learned policy clears +86 lines (+112%) over the control and exceeds the
+user's 100-line target on this state. Prediction mismatches were1 for each
+policy. This is the first robust learned improvement after removing the
+intermission ceiling. It proves the single-state learner can improve; it does
+not yet prove transfer across the 16 two-player start states.
+
 ## Locations
 
 - Editable code: G:/GitHub/Retro_Games (WSL /mnt/g/GitHub/Retro_Games).

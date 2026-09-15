@@ -16,8 +16,8 @@ Do not leave completed source changes uncommitted/unpushed; report push failures
 - ROM/states, read-only: /home/reza/RetroGames/integrations.
 - Baseline: /home/reza/RetroGames/checkpoints/tetris_v36/final.zip.
 - Results and immutable per-run games.json: checkpoints/experiment_loop/.
-- Production reward remains unchanged. Verified type-7 configuration correction
-  was applied to Windows games.json on 2026-09-14; WSL checkout not yet synced.
+- Production reward is now lines-only (2026-09-15). Type7 correction was applied
+  earlier. User manages WSL git pulls; inspect its revision, do not assume sync.
 
 ## Diagnosis and acceptance
 
@@ -54,6 +54,14 @@ board progress toward 30+ lines and persistent execution/prediction mismatches.
 7. Pause heartbeat only after robust improvement is verified or user stops work.
 
 ## Active experiment
+
+LATEST2026-09-15 03:38 UTC: old extension completed, no competing jobs found.
+Launched experiments/tetris_lines_only_control_s17.json, output
+checkpoints/experiment_loop/lines_only_control_s17_10k/. Check status/process.
+Old extension cumulative20k105lines,30k170lines across16 (mean10.625 at30k),
+minimum1; ZERO games at100; no caps. This used the OLD potential reward and
+uncorrected candidate terminal/boundary implementation. Do not attribute its
+results to the newer fixes. New fresh run uses lines-only and corrected code.
 
 NEXT/AWAITING OLD WORKER RELEASE: experiments/tetris_lines_only_control_s17.json
 ->checkpoints/experiment_loop/lines_only_control_s17_10k/. Fresh seed17, strict

@@ -1,5 +1,25 @@
 # Afterstate correctness fixes — 2026-09-13
 
+## Follow-up — 2026-09-14
+
+- AGENTS.md now points to CLAUDE.md instead of duplicating and corrupting backend names.
+- Training rejects omitted grid observation/masking settings, grid hole weight/type
+  count, and terminal reward with explicit configuration errors. Specify zero
+  explicitly to disable a reward. Existing TetrisTime settings satisfy these checks.
+- Consecutive neutral waits are bounded by `afterstate.max_wait_steps` and
+  `afterstate.max_wait_frames` (both default to 10000). The step bound works even
+  when an environment does not expose its frame count. Reaching a bound saves
+  `wait_timeout.zip`, closes the environment, and raises an error without adding
+  terminal experience. These are collection safety limits, not game timings.
+- 21 regression tests pass, including missing settings and stalls with/without
+  frame counters. No long-run convergence claim is made.
+- Separate newer work already changed games.json to `board_term_mode: absolute`
+  with `board_term_scale: 0.02`. This follow-up preserves that configuration.
+  The reward discussion below records the earlier implementation, not a promise
+  that the current configuration still uses delta shaping.
+
+## Original implementation notes
+
 The trainer still learns a value network. The fixes address incorrect experience
 and controls; they do not establish that long multi-state training now converges.
 

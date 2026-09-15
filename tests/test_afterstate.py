@@ -17,6 +17,15 @@ from rl import afterstate as module
 
 
 class TrajectoryTests(unittest.TestCase):
+    def test_replay_capacity_retains_recent_transitions(self):
+        replay = AfterstateReplayBuffer(capacity=2)
+        for value in range(5):
+            replay.push(np.array([value]), value, None, True)
+        self.assertEqual(len(replay), 2)
+        self.assertEqual({row[1] for row in replay.buffer}, {3., 4.})
+        with self.assertRaises(ValueError):
+            AfterstateReplayBuffer(capacity=0)
+
     def test_observed_successor_and_terminal_credit(self):
         replay = AfterstateReplayBuffer()
         t = AfterstateTrajectory(replay)
@@ -51,6 +60,62 @@ class TrajectoryTests(unittest.TestCase):
 
 
 class SimulatorTests(unittest.TestCase):
+    def test_declared_grid_shapes_are_encodable_and_controllable(self):
+        import json
+        from pathlib import Path
+        data = json.loads((Path(__file__).resolve().parents[1] / 'games.json').read_text())
+        for entry in data['games'].values():
+            training = entry.get('training', {})
+            cfg = training.get('afterstate', {})
+            if cfg.get('simulator') != 'grid_placement':
+                continue
+            types = {int(t) for t in cfg['shapes']}
+            self.assertEqual(types, set(training['macro_config']['valid_piece_types']))
+            self.assertGreater(cfg['piece_types'], max(types))
+            self.assertEqual(cfg['piece_types'], training['observation']['grid']['piece_types'])
+            sim = GridPlacementSimulator(cfg)
+            for kind in types:
+                obs = np.zeros(sim.rows * sim.cols + cfg['piece_types'] + 3)
+                obs[sim.rows * sim.cols + kind] = 1
+                self.assertTrue(sim.get_candidates(obs))
+
+    def test_discounted_potential_preserves_task_return(self):
+        config = {"board": {"rows": 2, "cols": 2}, "lines_var": "clears",
+                  "hole_penalty": 4, "height_penalty": .4, "bump_penalty": .3,
+                  "board_term_mode": "potential", "board_term_scale": .1,
+                  "discount": .99, "survival_reward": 1, "reward_scale": .1}
+        shaped = GridPlacementSimulator(config)
+        task = GridPlacementSimulator(dict(config, board_term_scale=0))
+        boards = [np.array([1, 0, 0, 0]), np.array([1, 0, 1, 0]), np.zeros(4)]
+        def total(sim):
+            r0 = sim.observed_reward(boards[0], boards[1], {'clears': 0}, {'clears': 0})
+            r1 = sim.observed_reward(boards[1], boards[2], {'clears': 0}, {'clears': 1})
+            rt = sim.observed_reward(boards[2], None, {'clears': 1}, {'clears': 1}, True)
+            return r0 + .99*r1 + .99**2*rt
+        initial_phi = shaped._phi(boards[0].reshape(2, 2))
+        self.assertAlmostEqual(total(shaped) - total(task), -initial_phi * .1 * .1)
+
+    def test_recovery_beats_early_death_under_task_reward(self):
+        sim = GridPlacementSimulator({'board': {'rows': 2, 'cols': 2}, 'lines_var': 'clears',
+              'hole_penalty': 4, 'board_term_mode': 'potential', 'board_term_scale': .1,
+              'survival_reward': 1, 'reward_scale': .1, 'line_scale': 10})
+        board = np.array([1, 0, 0, 0])
+        death = sim.observed_reward(board, None, {'clears': 0}, {'clears': 0}, True)
+        recovery = sim.observed_reward(board, np.zeros(4), {'clears': 0}, {'clears': 1})
+        recovery += .99 * sim.observed_reward(np.zeros(4), None, {'clears': 1}, {'clears': 1}, True)
+        self.assertGreater(recovery, death)
+
+    def test_missing_grid_settings_fail_explicitly(self):
+        from rl.env import TrainingSpec
+        with patch("rl.env.load_entry", return_value={"training": {"observation": {"kind": "grid"}}}):
+            with self.assertRaisesRegex(ValueError, "Declare observation.grid"):
+                TrainingSpec("OtherGridGame")
+
+    def test_missing_reward_defaults_fail_explicitly(self):
+        sim = GridPlacementSimulator({"shapes": {"1": [[[0, 0]]]}})
+        with self.assertRaisesRegex(ValueError, "hole_penalty"):
+            sim.validate_training(SimpleNamespace(grid={}))
+
     def test_platformer_keeps_pixel_ppo_path(self):
         from rl.env import TrainingSpec
         from train import policy_for
@@ -106,7 +171,9 @@ class RunnerTests(unittest.TestCase):
                 return (np.array([float(self.i)]), 888.,
                         self.i == end_at and ending in ("death", "missing"),
                         self.i == end_at and (ending == "truncation" or delayed),
-                        {"afterstate_ready": not (delayed and self.i == 2)})
+                        {"afterstate_ready": not ((delayed and self.i == 2) or
+                                                   (ending in ("stall", "frame_stall") and self.i >= 2)),
+                         "frames": self.i * 100 if ending == "frame_stall" else 0})
             def close(self):
                 pass
         class Agent:
@@ -117,7 +184,8 @@ class RunnerTests(unittest.TestCase):
                 return c["action"], c["afterstate"], c["immediate_reward"]
             def save(self, *args):
                 pass
-        spec = SimpleNamespace(afterstate_config={"simulator": "toy", "terminal_penalty": -6},
+        spec = SimpleNamespace(afterstate_config={"simulator": "toy", "terminal_penalty": -6,
+                               "max_wait_steps": 3, "max_wait_frames": 100},
                                features_name=None, game="toy", entry={}, report_stats=[], terms=[])
         with tempfile.TemporaryDirectory() as out:
             args = SimpleNamespace(game="toy", save_dir=out, lr=None, gamma=None,
@@ -136,6 +204,14 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0][0].tolist(), [1.])
         self.assertEqual(rows[0][1:], (-4., None, True))
+
+    def test_pending_stall_is_bounded_without_frame_counter(self):
+        with self.assertRaisesRegex(RuntimeError, "3 neutral steps"):
+            self.run_case("stall")
+
+    def test_frame_limit_bounds_neutral_macro_wait(self):
+        with self.assertRaisesRegex(RuntimeError, "1 neutral steps / 100 frames"):
+            self.run_case("frame_stall")
 
     def test_no_candidate_death(self):
         rows, actions = self.run_case("missing")

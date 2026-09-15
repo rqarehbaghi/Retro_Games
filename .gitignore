@@ -15,6 +15,15 @@ venv/
 
 # Training / recording outputs
 checkpoints/
+checkpoints_*/
+studio_out/
+ROMs/
+_verify_out/
+block_shots/
+probe_shots/
+sprite_shots/
+font_sheet.png
+integrations/**/rs_*.state
 recordings/
 human_demos/
 progress_reels/
@@ -28,4 +37,3 @@ integrations/**/rom.sfc
 integrations/**/rom.gb
 integrations/**/rom.md
 integrations/**/rom.bin
-

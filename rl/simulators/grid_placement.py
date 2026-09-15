@@ -123,6 +123,7 @@ class GridPlacementSimulator(BaseAfterstateSimulator):
 
     def __init__(self, config: Optional[Dict[str, Any]] = None):
         cfg = dict(config or {})
+        self.config = cfg
         board = cfg.get("board") or {}
         self.rows = int(board.get("rows", 20))
         self.cols = int(board.get("cols", 10))
@@ -155,6 +156,9 @@ class GridPlacementSimulator(BaseAfterstateSimulator):
         # An absolute cost is paid every step, so it must be scaled down by about
         # (1 - gamma) to keep the value targets in the range that converged.
         self.board_term_scale = float(cfg.get("board_term_scale", 1.0))
+        self.discount = float(cfg.get("discount", 0.99))
+        if self.board_term_mode not in ("delta", "absolute", "potential"):
+            raise ValueError("Unknown board_term_mode: " + self.board_term_mode)
         self.line_tiers = cfg.get("line_tiers")
         self.lines_var = cfg.get("lines_var")
         self.hole_normalizer = float(cfg.get("hole_normalizer", self.rows))
@@ -172,6 +176,9 @@ class GridPlacementSimulator(BaseAfterstateSimulator):
         return self._feature_dim
 
     def validate_training(self, spec):
+        missing = [key for key in ("hole_penalty", "piece_types") if key not in self.config]
+        if missing:
+            raise ValueError("Declare afterstate settings explicitly: " + ", ".join(missing))
         if not self.shapes:
             raise ValueError("grid_placement requires configured shapes")
         if not self.lines_var:
@@ -193,6 +200,8 @@ class GridPlacementSimulator(BaseAfterstateSimulator):
         """Board-quality contribution for one placement (see board_term_mode)."""
         if self.board_term_mode == "absolute":
             return self._phi(after) * self.board_term_scale
+        if self.board_term_mode == "potential":
+            return (self.discount * self._phi(after) - self._phi(before)) * self.board_term_scale
         return (self._phi(after) - self._phi(before)) * self.board_term_scale
 
     def _line_reward(self, lines):
@@ -210,7 +219,14 @@ class GridPlacementSimulator(BaseAfterstateSimulator):
         # Terminal animations are not settled boards. Only counter rewards are
         # meaningful there; the runner adds the configured terminal reward once.
         if terminated:
-            return bonus * self.reward_scale
+            shaping = 0.0
+            if self.board_term_mode == "potential":
+                n = self.rows * self.cols
+                before = (np.asarray(obs)[:n].reshape(self.rows, self.cols) > 0.5).astype(np.uint8)
+                # The absorbing terminal state has zero potential; never read
+                # terminal animation pixels as a board.
+                shaping = -self._phi(before) * self.board_term_scale
+            return (bonus + shaping) * self.reward_scale
         n = self.rows * self.cols
         before = (np.asarray(obs)[:n].reshape(self.rows, self.cols) > 0.5).astype(np.uint8)
         after = (np.asarray(next_obs)[:n].reshape(self.rows, self.cols) > 0.5).astype(np.uint8)

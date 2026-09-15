@@ -607,8 +607,8 @@
             "cols": 10
           },
           "survival_reward": 0.0,
-          "piece_types": 7,
-          "piece_names": {"1": "I", "2": "T", "3": "O", "4": "J", "5": "L", "6": "S"},
+          "piece_types": 8,
+          "piece_names": {"1": "I", "2": "T", "3": "O", "4": "J", "5": "L", "6": "S", "7": "Z"},
           "hole_normalizer": 20,
           "line_tiers": [0, 1, 3, 6, 12],
           "lines_var": "lines_p{player}",
@@ -622,7 +622,7 @@
           "board_term_scale": 0.02,
           "board_term_why": "MEASURED root cause of training making play WORSE. With the previous \"delta\" board term (Phi(after)-Phi(before)) the reward telescopes, so the value net converges to V ~= C - Phi: over 11020 candidate evaluations corr(V,Phi) went -0.07 untrained -> -0.87 at 10k -> -0.91 at 20k, slope dV/dPhi -0.00 -> -0.33 -> -0.42. Because selection is argmax(imm + gamma*V), that CANCELS the board term: its effective weight 1 + gamma*dV/dPhi fell 1.00 -> 0.67 -> 0.59 and heads to 0.01. Greedy evaluation matched exactly: survival 42 untrained -> 23 at 10k -> 17 at 20k, i.e. training deleted the only signal making the agent play well. A potential DIFFERENCE is precisely what a value function learns to absorb. In \"absolute\" mode the candidate board pays Phi(after) once, in the immediate reward only; V(s') covers FUTURE boards, so it cannot cancel the candidate's own quality and instead reinforces it (dV/dPhi becomes positive). board_term_scale ~ (1 - gamma) = 0.01-0.02 because an absolute cost is paid every placement: without it the discounted return is ~100x larger and the value net diverges, which reward_scale 0.3 was introduced to prevent. 0.02 centres the discounted board cost near |V| ~28, the range where earlier runs converged; 0.01 halves it. Raise if board quality is under-weighted, lower if |V| grows past ~40.",
           "reward_why": "Per placement: a TIERED line bonus (line_scale*[0,1,3,6,12] for 0..4 lines) plus the CHANGE in a board-quality potential Phi = -(hole_penalty*holes + height_penalty*aggregate_height + bump_penalty*bumpiness). Being a potential difference it telescopes -- damage (a hole, added height/bumpiness) is charged once when it appears and refunded once a line clear removes it, neutral while it persists, so a piece is never re-penalised for earlier pieces' damage. reward_scale keeps the whole signal small so the value net's targets converge; at scale 1.0 it diverged (mean|V| 9 -> 70, loss stuck ~5.2, the deadly triad), at 0.3 it settled and the real 80k run reached survival ~43 placements / 8 lines per episode with holes falling to ~20-30. This reward WON a measured 4-way search: a survival-only reward (survival_reward>0, board weights 0) collapsed to ~12 placements / 0 lines because with the board term off, selection for a non-clearing piece is a constant and the value net alone cannot steer placement; adding a survival term ON TOP of this board potential did not help (34/4.8 -> 32/4.0). survival_reward is kept as a generic knob (default 0) for other games. terminal_penalty and reward_scale live here, not hardcoded in rl/afterstate.py, so the framework stays generic.",
-          "shapes_note": "The falling pieces of THIS game, keyed by the RAM piece_type value (see two_player.piece_type_p*), each a list of the four rotations, each rotation a list of [row, col] cells with the piece normalised to its own top-left. MEASURED off the screen and validated against the emulator to the cell -- do not assume the standard tetromino set. TetrisTime is a SIX-piece game (I, T, O, J, L, S); there is NO Z, and the type values run 1..6, not 0..6. type 0 and 7 are transient values between pieces, not shapes. Simulating standard tetrominoes instead was the bug that made the afterstate model imagine the wrong piece for four of six types.",
+          "shapes_note": "Seven playable types 1..7; type 0 is the lock transient. CORRECTION 2026-09-14: type 7 is Z, previously wrongly excluded. tools/trace_unknown_piece.py from level0_2p captured type 7 descending at center from frame 704 through 955 and beyond while the old trainer waited without controls. checkpoints/experiment_loop/type7_rotations/rotations.json and rotation PNGs measure all four RAM rotations: 0/2 horizontal Z, 1/3 vertical Z, column offset 3 throughout. Earlier six-type validation never sampled type 7 and was incomplete. Other shapes retain their previous measured mappings.",
           "shapes": {
             "1": [
               [[0, 0], [0, 1], [0, 2], [0, 3]],
@@ -653,6 +653,12 @@
               [[0, 0], [1, 0], [2, 0], [2, 1]],
               [[0, 2], [1, 0], [1, 1], [1, 2]],
               [[0, 0], [0, 1], [1, 1], [2, 1]]
+            ],
+            "7": [
+              [[0, 0], [0, 1], [1, 1], [1, 2]],
+              [[0, 1], [1, 0], [1, 1], [2, 0]],
+              [[0, 0], [0, 1], [1, 1], [1, 2]],
+              [[0, 1], [1, 0], [1, 1], [2, 0]]
             ],
             "6": [
               [[0, 1], [0, 2], [1, 0], [1, 1]],
@@ -687,7 +693,7 @@
           "tap_hold": 2,
           "tap_release": 2,
           "rotate_step": -1,
-          "valid_piece_types": [1, 2, 3, 4, 5, 6],
+          "valid_piece_types": [1, 2, 3, 4, 5, 6, 7],
           "spawn_wait_frames": 30,
           "rotate_step_why": "One tap of A moves piece_rot_p2 by -1, MEASURED: tapping A from a fresh piece ran the counter 0 -> 3 -> 2 -> 1 -> 0. The planner needs this because the taps to reach a target are (current - target) mod 4, not (target - current). A piece always spawns at rotation 0, so the old sign made the action index a fixed permutation of the real rotation that a policy could learn around, and it only became visible when a plan started from an already-rotated piece.",
           "measured": "col_offset 3 verified by driving P2: piece_col_p2 reads 7 at spawn and taps reach 3 (left wall) and 10 (right wall), so grid column = raw - 3 and spawn is column 4. Requested columns land where asked: (rot,col)=(2,0) put cells in grid columns 0-2, (0,7) in 7-9, (3,8) in 8-9. One macro placement runs 18-54 emulator frames, median 38.",
@@ -720,7 +726,7 @@
         "observation": {
           "kind": "grid",
           "grid": {
-            "piece_types": 7,
+            "piece_types": 8,
             "rotation_normalizer": 3,
             "row_normalizer": 24,
             "mask_rows": 5,

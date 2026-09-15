@@ -1,5 +1,13 @@
 # Afterstate RL — handoff brief for a code reviewer
 
+**Correction 2026-09-14:** the historical SIX-piece/no-Z claim below is false.
+RAM type7 is a playable Z, confirmed by frame traces and all4 rotation screenshots
+in checkpoints/experiment_loop/type7_rotations/. Windows games.json now includes
+type7 and uses8 one-hot slots. Excluding it dropped real pieces uncontrolled.
+Fixed-state value-disabled empty-board performance rose5->30 lines with this
+configuration correction alone. See TETRIS_EXPERIMENT_LOOP.md for evidence and
+active fresh learned training; learned convergence remains unproven.
+
 **Update 2026-09-13:** transition/macro correctness fixes and measured piece-origin
 corrections are documented in `AFTERSTATE_RL_FIXES.md`. The snapshot below is
 historical; long-run multi-state convergence remains to be evaluated.

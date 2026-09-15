@@ -51,6 +51,8 @@ class AfterstateReplayBuffer:
     """Experience replay for sampled afterstate TD policy evaluation."""
 
     def __init__(self, capacity: int = 50000):
+        if capacity <= 0:
+            raise ValueError("Replay capacity must be positive")
         self.capacity = capacity
         self.buffer: List[Tuple[np.ndarray, float, Optional[np.ndarray], bool]] = []
         self.pos = 0
@@ -526,6 +528,8 @@ def train_afterstate(args, spec, overrides):
 
     lr = args.lr if args.lr is not None else 2.5e-4
     gamma = args.gamma if args.gamma is not None else 0.99
+    if hasattr(simulator, "discount"):
+        simulator.discount = gamma
     batch_size = args.batch_size if args.batch_size is not None else 64
     device = args.device or ("cuda" if (HAS_TORCH and torch.cuda.is_available()) else "cpu")
     eps_start = args.ent_coef if args.ent_coef is not None else 0.20
@@ -541,6 +545,12 @@ def train_afterstate(args, spec, overrides):
     a_cfg = spec.afterstate_config or {}
     reward_scale = float(a_cfg.get("reward_scale", 1.0))
     terminal_penalty = float(a_cfg.get("terminal_penalty", 0.0)) * reward_scale
+    if "terminal_penalty" not in a_cfg:
+        raise ValueError("Declare afterstate.terminal_penalty explicitly (0 disables it)")
+    max_wait_steps = int(a_cfg.get("max_wait_steps", 10000))
+    max_wait_frames = int(a_cfg.get("max_wait_frames", 10000))
+    if max_wait_steps <= 0 or max_wait_frames <= 0:
+        raise ValueError("Afterstate wait limits must be positive")
 
     print(f"algorithm   : Afterstate Lookahead Value Network")
     print(f"simulator   : {sim_name} (feature dim: {simulator.feature_dim})")
@@ -562,7 +572,10 @@ def train_afterstate(args, spec, overrides):
         lr=lr,
         gamma=gamma
     )
-    replay = AfterstateReplayBuffer(capacity=50000)
+    replay_capacity = int(a_cfg.get("replay_capacity", 50000))
+    if replay_capacity < batch_size:
+        raise ValueError("afterstate.replay_capacity must be at least batch_size")
+    replay = AfterstateReplayBuffer(capacity=replay_capacity)
 
     if args.resume:
         print(f"resuming weights from {args.resume}")
@@ -589,6 +602,8 @@ def train_afterstate(args, spec, overrides):
         pending = None
         mismatches = 0
         wait_steps = 0
+        consecutive_waits = 0
+        waiting_frames = 0
         ep_loss = 0.0
         loss_updates = 0
         last_info = info
@@ -605,6 +620,21 @@ def train_afterstate(args, spec, overrides):
                 action, predicted, _imm_reward = agent.select_action(candidates, epsilon=epsilon)
                 pending = (np.array(obs, copy=True), dict(info), predicted)
             next_obs, reward, terminated, truncated, info = env.step(action)
+            if action is None:
+                consecutive_waits += 1
+                waiting_frames += max(0, int(info.get("frames", 0)) - int(last_info.get("frames", 0)))
+            else:
+                consecutive_waits = waiting_frames = 0
+            if (not (terminated or truncated) and
+                    (consecutive_waits >= max_wait_steps or waiting_frames >= max_wait_frames)):
+                # Abort a broken environment contract, without inventing a
+                # terminal transition or repeatedly resetting into the stall.
+                agent.save(os.path.join(save_dir, "wait_timeout.zip"))
+                env.close()
+                raise RuntimeError(
+                    f"Afterstate wait limit reached for {args.game}: "
+                    f"{consecutive_waits} neutral steps / {waiting_frames} frames; "
+                    "check spawn detection and afterstate_ready. Saved wait_timeout.zip.")
             done = terminated or truncated
             last_info = info
 

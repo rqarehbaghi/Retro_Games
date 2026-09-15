@@ -150,6 +150,13 @@ class TrainingSpec:
                 self.releases.append(None)
         self.observation = dict(t.get("observation") or {})
         self.grid = _for_player(self.observation.get("grid"), self.player)
+        if self.observation.get("kind") == "grid":
+            required = ["piece_types", "rotation_normalizer", "row_normalizer"]
+            if self.grid.get("mask_piece", False):
+                required += ["mask_rows", "mask_cols", "mask_row_margin", "row_offset", "col_offset"]
+            missing = [key for key in required if key not in self.grid]
+            if missing:
+                raise ValueError("Declare observation.grid settings explicitly: " + ", ".join(missing))
         # Board features are only meaningful once a piece has LANDED.
         # feature_gate names a variable whose DROP marks a new piece
         # (the previous one just locked).
@@ -417,7 +424,7 @@ class GenericRetroEnv(gym.Env):
         self._releases = s.releases
         self.action_space = gym.spaces.Discrete(len(self._combos))
         self.steps = self.frames = 0
-        self._rng = np.random.default_rng()
+        self._rng = np.random.default_rng(s.raw.get("seed"))
         self.observation_space = self.env.observation_space
 
         self.use_data_json = s.use_data_json

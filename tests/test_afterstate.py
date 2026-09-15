@@ -102,6 +102,18 @@ class SimulatorTests(unittest.TestCase):
                 obs[sim.rows * sim.cols + kind] = 1
                 self.assertTrue(sim.get_candidates(obs))
 
+    def test_tetris_reward_declares_tiered_lines_and_small_survival(self):
+        import json
+        from pathlib import Path
+        data = json.loads((Path(__file__).resolve().parents[1] / 'games.json').read_text())
+        cfg = data['games']['TetrisTime-Nes-v0']['training']['afterstate']
+        self.assertEqual(cfg['line_tiers'], [0, 1, 3, 6, 12])
+        self.assertGreater(cfg['survival_reward'], 0)
+        self.assertLess(cfg['survival_reward'], cfg['line_scale'])
+        sim = GridPlacementSimulator(cfg)
+        rewards = [sim._line_reward(lines) for lines in range(5)]
+        self.assertEqual(rewards, [0, 1, 3, 6, 12])
+
     def test_discounted_potential_preserves_task_return(self):
         config = {"board": {"rows": 2, "cols": 2}, "lines_var": "clears",
                   "hole_penalty": 4, "height_penalty": .4, "bump_penalty": .3,

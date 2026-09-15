@@ -606,13 +606,13 @@
             "rows": 20,
             "cols": 10
           },
-          "survival_reward": 0,
+          "survival_reward": 0.02,
           "model_type": "linear",
           "model_why": "A single linear value head over the same schema-derived afterstate vector is the sample-efficient production baseline. The prior four-layer MLP memorized deterministic trajectories and did not improve raw lines after 70k placements. This remains game-configured; other games may select mlp.",
           "piece_types": 8,
           "piece_names": {"1": "I", "2": "T", "3": "O", "4": "J", "5": "L", "6": "S", "7": "Z"},
           "hole_normalizer": 20,
-          "line_tiers": [0, 1, 2, 3, 4],
+          "line_tiers": [0, 1, 3, 6, 12],
           "lines_var": "lines_p{player}",
           "line_scale": 1,
           "hole_penalty": 4.0,
@@ -624,7 +624,7 @@
           "board_term_scale": 0.1,
           "discount": 0.99,
           "board_term_why": "Discount-consistent potential guidance gamma*Phi(after)-Phi(before), with the terminal correction in rl/afterstate.py. It accelerates credit assignment while preserving the optimal raw-lines policy; it is not an absolute recurring board cost.",
-          "reward_why": "The task objective is still new lines cleared: one point per line, including genuine clears at level boundaries. Discount-consistent board potential supplies dense learning guidance and telescopes to a policy-independent constant with terminal Phi=0. Score, drop points, survival, and terminal bonuses remain zero. Use a fresh checkpoint because this changes training targets and model architecture.",
+          "reward_why": "The task objective is new lines cleared, with multi-line clears deliberately worth more than repeated singles: [0,1,3,6,12] for 0..4 lines, including genuine clears at level boundaries. A small 0.02 placement-survival signal reduces sparse credit without dominating line rewards. Discount-consistent board potential charges newly created holes/height/bumpiness and credits recovery; it telescopes to a policy-independent constant with terminal Phi=0 rather than repeatedly charging inherited damage. Score, drop points, and terminal bonuses remain zero. Use a fresh checkpoint because this changes training targets and model architecture.",
           "shapes_note": "Seven playable types 1..7; type 0 is the lock transient. CORRECTION 2026-09-14: type 7 is Z, previously wrongly excluded. tools/trace_unknown_piece.py from level0_2p captured type 7 descending at center from frame 704 through 955 and beyond while the old trainer waited without controls. checkpoints/experiment_loop/type7_rotations/rotations.json and rotation PNGs measure all four RAM rotations: 0/2 horizontal Z, 1/3 vertical Z, column offset 3 throughout. Earlier six-type validation never sampled type 7 and was incomplete. Other shapes retain their previous measured mappings.",
           "shapes": {
             "1": [

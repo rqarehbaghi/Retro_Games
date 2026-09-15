@@ -88,6 +88,30 @@ specialization, not a player-dimension incompatibility. Do not use v51 as the
 two-player model. The next bounded test is fresh multi-state training on these
 16 states under the fixed intermission handling, with no v51 weight resume.
 
+### v52 fresh multi-state 10k gate
+
+The fresh run completed at `checkpoints/tetris_v52_multi_gate10k`. Deterministic
+per-state results are preserved in
+`checkpoints/experiment_loop/v52_10k_multistate_eval.json`:
+
+| Policy | total lines | mean | minimum | states >=100 | capped |
+|---|---:|---:|---:|---:|---:|
+| zero-value control | 901 | 56.31 | 0 | 3/16 | 0 |
+| v52 multi-state 10k | 1382 | 86.38 | 0 | 4/16 | 1 |
+
+This is a real mean improvement (+53%) and the empty `level0_2p` state improves
+34->109 lines. rs_03 reaches390 lines at the1000-placement cap and rs_10 reaches
+224. It is not robust completion: rs_09 remains0, rs_14 reaches1, and regressions
+remain on rs_02 (-78), rs_08 (-183), and rs_15 (-20).
+
+The completed training log shows why the next bounded hypothesis is state
+exposure balancing. Starts were uniform per episode, but replay is sampled per
+placement: accumulated placements ranged from238 on rs_09 to1039 on rs_02
+(4.4x), with only9-19 episodes per state. Easy/long states therefore dominate
+the replay even though start-state draws are uniform. Test a generic
+least-cumulative-steps start sampler next; keep its selection policy configured
+in games.json and compare at the same10k budget before extending training.
+
 ## Locations
 
 - Editable code: G:/GitHub/Retro_Games (WSL /mnt/g/GitHub/Retro_Games).

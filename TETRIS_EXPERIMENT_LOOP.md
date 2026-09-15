@@ -48,6 +48,18 @@ board progress toward 30+ lines and persistent execution/prediction mismatches.
 
 ## Active experiment
 
+LATEST 2026-09-15 02:37 UTC: candidate-control10k completed. Fixed16-state
+lines/placements: learned5k78/634,10k90/669; same-seed sampled10k43/512,
+small-replay10k54/538; control330/1134. Empty-board learned10k5lines, so not
+strong play and not promoted. There is an early comparative learning advantage.
+Next active manifest experiments/tetris_control_s17_extend20k.json; output
+checkpoints/experiment_loop/seven_piece_control_s17_extend20k/.
+20k additional placements with unchanged reward/backup, epsilon0.03, resume10k.
+This is approximate continuation: replay/target/RNG reset, not an uninterrupted
+30k comparison. Evaluate additional10k/20k (cumulative20k/30k), compare with prior
+sampled20k50lines/30k75lines and value-disabled330. If promising, next confirm
+with a fresh uninterrupted run and second seed before drawing robust conclusions.
+
 LATEST 2026-09-15: user stopped all jobs and explicitly reiterated that the
 objective is to MAKE THE NETWORK TRAIN BETTER. Confirmed no train processes.
 New experiment experiments/tetris_control_s17.json ->

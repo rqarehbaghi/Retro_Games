@@ -118,6 +118,30 @@ def board_feature_vector(board: np.ndarray, hole_normalizer=None) -> Tuple[np.nd
     return feat.astype(np.float32), holes
 
 
+def compact_board_feature_vector(board: np.ndarray, hole_normalizer=None
+                                 ) -> Tuple[np.ndarray, float]:
+    """Small state-only representation for sample-efficient value learning.
+
+    Transition properties such as lines cleared and feature deltas deliberately do
+    not belong here: candidate ranking already observes them immediately, whereas
+    V(afterstate) must be a function of the resulting state alone.
+    """
+    rows, cols = board.shape
+    holes, aggregate_height, bumpiness = board_stats(board)
+    heights = np.zeros(cols, dtype=np.float32)
+    for c in range(cols):
+        filled = np.nonzero(board[:, c])[0]
+        if filled.size:
+            heights[c] = float(rows - filled[0])
+    values = np.array([
+        holes / float(hole_normalizer or rows),
+        aggregate_height / float(max(1, rows * cols)),
+        bumpiness / float(max(1, rows * max(1, cols - 1))),
+        (float(np.max(heights)) / float(rows)) if cols else 0.0,
+    ], dtype=np.float32)
+    return values, holes
+
+
 class GridPlacementSimulator(BaseAfterstateSimulator):
     """Afterstate lookahead for any game whose pieces are declared in games.json."""
 
@@ -162,13 +186,17 @@ class GridPlacementSimulator(BaseAfterstateSimulator):
         self.line_tiers = cfg.get("line_tiers")
         self.lines_var = cfg.get("lines_var")
         self.hole_normalizer = float(cfg.get("hole_normalizer", self.rows))
+        self.feature_mode = str(cfg.get("feature_mode", "dense"))
+        if self.feature_mode not in ("dense", "compact"):
+            raise ValueError("afterstate.feature_mode must be 'dense' or 'compact'")
         # {piece_type: [shape_array per rotation]}, straight from games.json.
         self.shapes: Dict[int, List[np.ndarray]] = {}
         for t, rots in (cfg.get("shapes") or {}).items():
             self.shapes[int(t)] = [cells_to_array(r) for r in rots]
         self.piece_types = int(cfg.get("piece_types", max(self.shapes, default=0) + 1))
         # board cells + heights + neighbour diffs + holes + max height
-        self._feature_dim = (self.rows * self.cols + self.cols
+        self._feature_dim = (4 if self.feature_mode == "compact" else
+                             self.rows * self.cols + self.cols
                              + max(1, self.cols - 1) + 1 + 1)
 
     @property
@@ -190,7 +218,12 @@ class GridPlacementSimulator(BaseAfterstateSimulator):
 
     def encode_observation(self, obs, info=None):
         board = (np.asarray(obs)[:self.rows * self.cols].reshape(self.rows, self.cols) > 0.5).astype(np.uint8)
-        return board_feature_vector(board, self.hole_normalizer)[0]
+        return self._features(board)[0]
+
+    def _features(self, board):
+        if self.feature_mode == "compact":
+            return compact_board_feature_vector(board, self.hole_normalizer)
+        return board_feature_vector(board, self.hole_normalizer)
 
     def _phi(self, board):
         holes, height, bump = board_stats(board)
@@ -287,7 +320,7 @@ class GridPlacementSimulator(BaseAfterstateSimulator):
                 valid, after, lines = simulate_drop(board, shape, col)
                 if not valid or after is None:
                     continue
-                feat, _curr_holes = board_feature_vector(after, self.hole_normalizer)
+                feat, _curr_holes = self._features(after)
                 imm = (self.survival_reward
                        + self._line_reward(lines)
                        + self._board_term(after, board)) * self.reward_scale

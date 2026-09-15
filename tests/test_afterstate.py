@@ -102,17 +102,38 @@ class SimulatorTests(unittest.TestCase):
                 obs[sim.rows * sim.cols + kind] = 1
                 self.assertTrue(sim.get_candidates(obs))
 
-    def test_tetris_reward_declares_tiered_lines_and_small_survival(self):
+    def test_tetris_reward_is_tiered_lines_only_with_selection_damage(self):
         import json
         from pathlib import Path
         data = json.loads((Path(__file__).resolve().parents[1] / 'games.json').read_text())
         cfg = data['games']['TetrisTime-Nes-v0']['training']['afterstate']
         self.assertEqual(cfg['line_tiers'], [0, 1, 3, 6, 12])
-        self.assertGreater(cfg['survival_reward'], 0)
-        self.assertLess(cfg['survival_reward'], cfg['line_scale'])
+        self.assertEqual(cfg['survival_reward'], 0)
+        self.assertEqual(cfg['board_term_mode'], 'selection_delta')
         sim = GridPlacementSimulator(cfg)
         rewards = [sim._line_reward(lines) for lines in range(5)]
         self.assertEqual(rewards, [0, 1, 3, 6, 12])
+
+        empty = np.zeros(200, dtype=np.float32)
+        damaged = empty.copy()
+        damaged[0] = 1
+        self.assertEqual(sim.observed_reward(empty, damaged,
+                                             {'lines_p{player}': 0},
+                                             {'lines_p{player}': 0}), 0)
+
+    def test_selection_delta_guides_actions_but_not_td_reward(self):
+        cfg = {'board': {'rows': 4, 'cols': 4}, 'lines_var': 'clears',
+               'line_scale': 1, 'line_tiers': [0, 1, 3, 6, 12],
+               'hole_penalty': 4, 'height_penalty': .4, 'bump_penalty': .3,
+               'board_term_mode': 'selection_delta', 'board_term_scale': .1,
+               'survival_reward': 0, 'reward_scale': 1}
+        sim = GridPlacementSimulator(cfg)
+        before = np.zeros(16, dtype=np.float32)
+        after = before.copy()
+        after[0] = 1
+        self.assertNotEqual(sim._board_term(after.reshape(4, 4), before.reshape(4, 4)), 0)
+        self.assertEqual(sim.observed_reward(before, after,
+                                             {'clears': 0}, {'clears': 0}), 0)
 
     def test_discounted_potential_preserves_task_return(self):
         config = {"board": {"rows": 2, "cols": 2}, "lines_var": "clears",

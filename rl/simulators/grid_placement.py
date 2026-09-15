@@ -157,7 +157,7 @@ class GridPlacementSimulator(BaseAfterstateSimulator):
         # (1 - gamma) to keep the value targets in the range that converged.
         self.board_term_scale = float(cfg.get("board_term_scale", 1.0))
         self.discount = float(cfg.get("discount", 0.99))
-        if self.board_term_mode not in ("delta", "absolute", "potential"):
+        if self.board_term_mode not in ("delta", "absolute", "potential", "selection_delta"):
             raise ValueError("Unknown board_term_mode: " + self.board_term_mode)
         self.line_tiers = cfg.get("line_tiers")
         self.lines_var = cfg.get("lines_var")
@@ -204,6 +204,17 @@ class GridPlacementSimulator(BaseAfterstateSimulator):
             return (self.discount * self._phi(after) - self._phi(before)) * self.board_term_scale
         return (self._phi(after) - self._phi(before)) * self.board_term_scale
 
+    def _training_board_term(self, after, before):
+        """Board term used in TD targets.
+
+        selection_delta is deliberately excluded: it guides candidate choice using
+        damage caused by this move, while the value net learns only task return.
+        This prevents V from absorbing and cancelling the placement guidance.
+        """
+        if self.board_term_mode == "selection_delta":
+            return 0.0
+        return self._board_term(after, before)
+
     def _line_reward(self, lines):
         if self.line_tiers is None:
             return self.line_scale * lines
@@ -230,7 +241,7 @@ class GridPlacementSimulator(BaseAfterstateSimulator):
         n = self.rows * self.cols
         before = (np.asarray(obs)[:n].reshape(self.rows, self.cols) > 0.5).astype(np.uint8)
         after = (np.asarray(next_obs)[:n].reshape(self.rows, self.cols) > 0.5).astype(np.uint8)
-        return (self.survival_reward + bonus + self._board_term(after, before)) * self.reward_scale
+        return (self.survival_reward + bonus + self._training_board_term(after, before)) * self.reward_scale
 
     def _board_and_piece(self, obs, ram, vars, spec):
         """Read the settled board and the current piece type from the

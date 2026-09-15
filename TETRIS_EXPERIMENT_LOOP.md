@@ -3,6 +3,11 @@
 User authorization: run WSL training/evaluation, capture metrics, revise and repeat;
 resume after account cooldown. Hourly heartbeat: tetris-training-experiment-loop.
 Do not buy/redeem credits. No parallel GPU jobs. Keep unrelated edits/old models.
+Standing user instruction (2026-09-15): immediately commit and push repository
+changes to origin (https://github.com/rqarehbaghi/Retro_Games.git) as they are made.
+This includes future experiment/code changes, not just the initial check-in.
+Keep ROMs, checkpoints, generated outputs and unrelated private data out of Git.
+Do not leave completed source changes uncommitted/unpushed; report push failures.
 
 ## Locations
 

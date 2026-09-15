@@ -606,22 +606,22 @@
             "rows": 20,
             "cols": 10
           },
-          "survival_reward": 0.0,
+          "survival_reward": 0,
           "piece_types": 8,
           "piece_names": {"1": "I", "2": "T", "3": "O", "4": "J", "5": "L", "6": "S", "7": "Z"},
           "hole_normalizer": 20,
-          "line_tiers": [0, 1, 3, 6, 12],
+          "line_tiers": [0, 1, 2, 3, 4],
           "lines_var": "lines_p{player}",
-          "line_scale": 10.0,
-          "hole_penalty": 4.0,
-          "height_penalty": 0.4,
-          "bump_penalty": 0.3,
-          "reward_scale": 0.3,
-          "terminal_penalty": -20.0,
+          "line_scale": 1,
+          "hole_penalty": 0,
+          "height_penalty": 0,
+          "bump_penalty": 0,
+          "reward_scale": 1,
+          "terminal_penalty": 0,
           "board_term_mode": "absolute",
-          "board_term_scale": 0.02,
-          "board_term_why": "MEASURED root cause of training making play WORSE. With the previous \"delta\" board term (Phi(after)-Phi(before)) the reward telescopes, so the value net converges to V ~= C - Phi: over 11020 candidate evaluations corr(V,Phi) went -0.07 untrained -> -0.87 at 10k -> -0.91 at 20k, slope dV/dPhi -0.00 -> -0.33 -> -0.42. Because selection is argmax(imm + gamma*V), that CANCELS the board term: its effective weight 1 + gamma*dV/dPhi fell 1.00 -> 0.67 -> 0.59 and heads to 0.01. Greedy evaluation matched exactly: survival 42 untrained -> 23 at 10k -> 17 at 20k, i.e. training deleted the only signal making the agent play well. A potential DIFFERENCE is precisely what a value function learns to absorb. In \"absolute\" mode the candidate board pays Phi(after) once, in the immediate reward only; V(s') covers FUTURE boards, so it cannot cancel the candidate's own quality and instead reinforces it (dV/dPhi becomes positive). board_term_scale ~ (1 - gamma) = 0.01-0.02 because an absolute cost is paid every placement: without it the discounted return is ~100x larger and the value net diverges, which reward_scale 0.3 was introduced to prevent. 0.02 centres the discounted board cost near |V| ~28, the range where earlier runs converged; 0.01 halves it. Raise if board quality is under-weighted, lower if |V| grows past ~40.",
-          "reward_why": "Per placement: a TIERED line bonus (line_scale*[0,1,3,6,12] for 0..4 lines) plus the CHANGE in a board-quality potential Phi = -(hole_penalty*holes + height_penalty*aggregate_height + bump_penalty*bumpiness). Being a potential difference it telescopes -- damage (a hole, added height/bumpiness) is charged once when it appears and refunded once a line clear removes it, neutral while it persists, so a piece is never re-penalised for earlier pieces' damage. reward_scale keeps the whole signal small so the value net's targets converge; at scale 1.0 it diverged (mean|V| 9 -> 70, loss stuck ~5.2, the deadly triad), at 0.3 it settled and the real 80k run reached survival ~43 placements / 8 lines per episode with holes falling to ~20-30. This reward WON a measured 4-way search: a survival-only reward (survival_reward>0, board weights 0) collapsed to ~12 placements / 0 lines because with the board term off, selection for a non-clearing piece is a constant and the value net alone cannot steer placement; adding a survival term ON TOP of this board potential did not help (34/4.8 -> 32/4.0). survival_reward is kept as a generic knob (default 0) for other games. terminal_penalty and reward_scale live here, not hardcoded in rl/afterstate.py, so the framework stays generic.",
+          "board_term_scale": 0,
+          "board_term_why": "Disabled. User objective is new lines cleared only; board features remain network inputs, never rewards.",
+          "reward_why": "User-directed lines-only objective: reward equals the positive increase of lines_p{player}, including genuine clears at level boundaries. Zero score, drop, survival, board, and terminal bonuses/penalties. Four lines pay four, not twelve. Existing checkpoints were trained with different objectives; use a fresh run.",
           "shapes_note": "Seven playable types 1..7; type 0 is the lock transient. CORRECTION 2026-09-14: type 7 is Z, previously wrongly excluded. tools/trace_unknown_piece.py from level0_2p captured type 7 descending at center from frame 704 through 955 and beyond while the old trainer waited without controls. checkpoints/experiment_loop/type7_rotations/rotations.json and rotation PNGs measure all four RAM rotations: 0/2 horizontal Z, 1/3 vertical Z, column offset 3 throughout. Earlier six-type validation never sampled type 7 and was incomplete. Other shapes retain their previous measured mappings.",
           "shapes": {
             "1": [
@@ -779,57 +779,9 @@
         "release_frames_why": "One frame of every decision is spent with no buttons held, so each decision is a fresh PRESS. Without it two identical decisions in a row reach the game as one sustained press: measured, repeated LEFT presses moved the piece 7,6,6,5,5,4 -- half did not register -- and a long hold triggers auto-repeat and skips columns. With one release frame the same four frames give a clean 7,6,5,4,3, one column per decision. This is why the bot could only slide pieces to a wall and never nudge one over a gap."
       },
       "rewards": {
-        "_design": "LINES-ONLY target (owner's choice, option 1), reached from scratch by SIMULATED-ANNEALING the reward. The FINAL reward -- what the finished policy operates under, and what --play shows -- pays only for clearing lines and for the board the agent shapes: no landing bonus, no score, no per-step tick, because all three paid for pieces the game lands under gravity regardless of choice (a do-nothing policy banked +16.5 in landing reward). Every placement is then a small LOSS and the only way to go positive is to clear lines, which gives the owner's ranking (clean-flat loses least, clean-tower more, hole most). The problem this can't be trained from scratch -- a random policy never clears a line, so it sees only losses and tops out -- is solved by ANNEALING. Two terms carry an 'anneal' block: a landing scaffold that starts at +1.5 (dense survival reward so a random policy stays alive long enough to stumble into clears) and cools to 0 over the first 60% of training, and a holes penalty that starts gentle (-0.5, so early messy play is not catastrophic) and sharpens to -1.0. Pair with --ent-coef-final to cool exploration too. At the end (progress 1.0) both have annealed to the pure lines-only target above.",
+        "_design": "Lines only. Same task objective as training.afterstate; no score, landing, survival, board, or terminal shaping.",
         "terms": [
-          {
-            "kind": "delta_tiered",
-            "var": "lines_p{player}",
-            "tiers": [
-              0,
-              10,
-              30,
-              60,
-              120
-            ],
-            "note": "The one always-positive term, un-annealed. A Tetris of four lines is worth far more than four singles, which a flat per-line rate cannot express."
-          },
-          {
-            "kind": "decrease_event",
-            "var": "piece_row_p{player}",
-            "scale": 1.5,
-            "anneal": {
-              "to": 0.0,
-              "frac": 0.6
-            },
-            "note": "SURVIVAL SCAFFOLD, temporary. Pays for a piece landing, which keeps a random policy alive long enough to discover that clearing lines pays -- the thing that makes lines-only learnable from scratch. It is annealed to 0 over the first 60% of training, so the finished reward has no landing bonus at all. This is the 'heat' in the simulated annealing: on while the policy is random, gone once it can play."
-          },
-          {
-            "kind": "feature_delta",
-            "name": "holes",
-            "scale": -0.5,
-            "anneal": {
-              "to": -1.0,
-              "frac": 0.6
-            },
-            "note": "Starts gentle so early messy play is survivable while the scaffold is still up, then sharpens to -1.0 as the scaffold comes down, so the final reward makes a hole the worst non-terminal outcome. A hole is what makes a stack unrecoverable, so it is the heaviest board penalty at the end."
-          },
-          {
-            "kind": "feature_delta",
-            "name": "height",
-            "scale": -0.05,
-            "note": "Aggregate column height, un-annealed. Kept small because it rises ~7 per placement however well played -- mild pressure to keep the stack low. Telescopes to -0.05 * final height, so a game that clears lines pays little and one that stacks to the top pays a lot."
-          },
-          {
-            "kind": "feature_delta",
-            "name": "bumpiness",
-            "scale": -0.15,
-            "note": "Summed step between neighbouring columns, un-annealed. This is what encodes 'prefer a flat line to a tower': at -0.02 it did nothing (a clean tower scored the same as a clean flat placement), so it is -0.15 to make a jagged surface genuinely cost more than a level one."
-          },
-          {
-            "kind": "terminal",
-            "scale": -20.0,
-            "note": "Topping out is failure. It is the floor: no placement penalty is anywhere near this, so ending the game is always the worst thing that can happen."
-          }
+          {"kind": "delta", "var": "lines_p{player}", "scale": 1.0, "positive_only": true}
         ]
       }
     }

@@ -250,6 +250,11 @@ class GridPlacementSimulator(BaseAfterstateSimulator):
             return None, piece_type
         return None, None
 
+    def discontinuity_reward(self, obs, next_obs, info, next_info):
+        # Keep genuine clears, but never compare geometry across a level redraw.
+        lines = max(0, int(next_info[self.lines_var]) - int(info[self.lines_var]))
+        return self._line_reward(lines) * self.reward_scale
+
     def get_candidates(self, obs, ram=None, info=None, vars=None, spec=None
                        ) -> List[Dict[str, Any]]:
         board, piece_type = self._board_and_piece(obs, ram, vars, spec)

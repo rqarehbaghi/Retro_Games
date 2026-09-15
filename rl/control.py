@@ -23,12 +23,22 @@ class CandidateReplay:
             raise ValueError('An empty candidate set is not evidence of death')
         features = np.asarray([c['afterstate'] for c in candidates], dtype=np.float32) if candidates else None
         rewards = np.asarray([c.get('immediate_reward', 0.) for c in candidates], dtype=np.float32) if candidates else None
-        item = (np.array(state, copy=True), features, rewards, terminal_reward)
+        terminals = np.asarray([c.get('terminal', False) for c in candidates], dtype=bool) if candidates else None
+        item = (np.array(state, copy=True), features, rewards, terminal_reward, terminals)
         if len(self.buffer) < self.capacity:
             self.buffer.append(item)
         else:
             self.buffer[self.pos] = item
         self.pos = (self.pos + 1) % self.capacity
+        return item
+
+    @staticmethod
+    def correct(item, index, reward, observed=None, terminal=False):
+        """Replace the EXECUTED candidate's prediction with its measured outcome."""
+        item[2][index] = reward
+        item[4][index] = terminal
+        if observed is not None:
+            item[1][index] = observed
 
     def __len__(self):
         return len(self.buffer)
@@ -50,8 +60,11 @@ def candidate_targets(agent, batch):
                 values.append(float(row[3]))
                 continue
             rewards = torch.as_tensor(row[2], device=agent.device)
-            choice = torch.argmax(rewards + agent.gamma * online[offset:offset+count])
-            values.append(float(rewards[choice] + agent.gamma * target[offset+choice]))
+            live = torch.as_tensor(~row[4], device=agent.device)
+            online_values = online[offset:offset+count].masked_fill(~live, 0.)
+            target_values = target[offset:offset+count].masked_fill(~live, 0.)
+            choice = torch.argmax(rewards + agent.gamma * online_values)
+            values.append(float(rewards[choice] + agent.gamma * target_values[choice]))
             offset += count
     return torch.tensor(values, device=agent.device, dtype=torch.float32)
 

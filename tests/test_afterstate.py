@@ -60,6 +60,18 @@ class TrajectoryTests(unittest.TestCase):
 
 
 class SimulatorTests(unittest.TestCase):
+    def test_lines_only_rewards_ignore_drop_score_and_board(self):
+        sim = GridPlacementSimulator({'board': {'rows': 4, 'cols': 4},
+            'lines_var': 'clears', 'line_scale': 1, 'line_tiers': [0, 1, 2, 3, 4],
+            'hole_penalty': 0, 'height_penalty': 0, 'bump_penalty': 0,
+            'board_term_scale': 0, 'survival_reward': 0, 'reward_scale': 1})
+        for lines in range(5):
+            before = {'clears': 20, 'score': 0}
+            after = {'clears': 20 + lines, 'score': 99999}
+            self.assertEqual(sim.observed_reward(np.zeros(16), np.ones(16), before, after), lines)
+            self.assertEqual(sim.observed_reward(np.zeros(16), None, before, after, True), lines)
+            self.assertEqual(sim.discontinuity_reward(None, None, before, after), lines)
+
     def test_declared_grid_shapes_are_encodable_and_controllable(self):
         import json
         from pathlib import Path
@@ -162,6 +174,8 @@ class RunnerTests(unittest.TestCase):
                 return obs
             def observed_reward(self, *args, **kwargs):
                 return 2.
+            def discontinuity_reward(self, *args):
+                return 7.
         class Env:
             def reset(self):
                 self.i = 0
@@ -173,7 +187,8 @@ class RunnerTests(unittest.TestCase):
                 return (np.array([float(self.i)]), 888.,
                         self.i == end_at and ending in ("death", "missing"),
                         self.i == end_at and (ending == "truncation" or delayed),
-                        {"afterstate_ready": not ((delayed and self.i == 2) or
+                        {"afterstate_discontinuity": ending == "discontinuity" and self.i == 2,
+                         "afterstate_ready": not ((delayed and self.i == 2) or
                                                    (ending in ("stall", "frame_stall") and self.i >= 2)),
                          "frames": self.i * 100 if ending == "frame_stall" else 0})
             def close(self):
@@ -206,7 +221,20 @@ class RunnerTests(unittest.TestCase):
         rows, _ = self.run_case("budget", backup="greedy_candidates")
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0][0].tolist(), [1.])
-        self.assertEqual(rows[0][1].tolist(), [[999.]])
+        self.assertEqual(rows[0][1].tolist(), [[2.]])
+
+    def test_level_boundary_preserves_reward_and_bootstrap(self):
+        rows, actions = self.run_case("discontinuity")
+        self.assertEqual(actions, [5, 5, None])
+        self.assertEqual(rows[0][1], 7.)
+        self.assertEqual(rows[0][2].tolist(), [3.])
+        self.assertFalse(rows[0][3])
+
+    def test_control_executed_death_replaces_predicted_survival(self):
+        rows, _ = self.run_case("death", backup="greedy_candidates")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0][2].tolist(), [-4.])
+        self.assertEqual(rows[0][4].tolist(), [True])
 
     def test_control_missing_candidate_terminal_once(self):
         rows, _ = self.run_case("missing", backup="greedy_candidates")

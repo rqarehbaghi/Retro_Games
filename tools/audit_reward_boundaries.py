@@ -47,7 +47,7 @@ def main():
                     measured = sim.observed_reward(before, nxt, bi, ni, term)
                     row = dict(step=step, before_lines=bi[sim.lines_var], after_lines=ni[sim.lines_var],
                                predicted_lines=c['lines_cleared'], measured_reward=measured,
-                               replay_reward=0. if ni.get('afterstate_discontinuity') else measured,
+                               legacy_replay_reward=0. if ni.get('afterstate_discontinuity') else measured,
                                discontinuity=bool(ni.get('afterstate_discontinuity')), **boundary)
                     print(json.dumps(row), file=log)
                     if row['discontinuity']:

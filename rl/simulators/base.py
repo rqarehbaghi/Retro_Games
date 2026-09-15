@@ -30,6 +30,10 @@ class BaseAfterstateSimulator(ABC):
         """Score an executed transition, never a prediction or terminal pixels."""
         raise NotImplementedError("Simulator must score observed transitions for training")
 
+    def discontinuity_reward(self, obs, next_obs, info, next_info) -> float:
+        """Optional earned counter reward when gameplay redraws its state."""
+        return 0.0
+
     @abstractmethod
     def get_candidates(
         self,

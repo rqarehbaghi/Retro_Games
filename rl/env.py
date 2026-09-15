@@ -521,12 +521,14 @@ class GenericRetroEnv(gym.Env):
         # its own and redraws the board, and charging -- or crediting -- the
         # agent for a jump it did not cause is worse than paying nothing.
         if self._skipping(self._ram(), self._seen(info)):
+            boundary_info = self._info(self._ram(), self._seen(info))
             obs, info = self._skip(obs, info)
             ram = self._ram()
             self.reward_model.rebaseline(ram, self._seen(info), obs,
                                          self.spec_.grid, is_macro=True)
             out = self._info(ram, self._seen(info), self.reward_model.prev_feats)
             out["afterstate_discontinuity"] = True
+            out["afterstate_boundary_info"] = boundary_info
             return obs, 0.0, self._ended(ram, self._seen(info)), False, out
         if not (env_term or env_trunc):
             obs, info, env_term, env_trunc = self._settle_board(obs, info)

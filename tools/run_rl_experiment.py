@@ -147,7 +147,7 @@ def run(manifest_path):
             with open(output / 'evaluation.log', 'w', buffering=1) as log, contextlib.redirect_stdout(log):
                 for name, config, ck in policies:
                     results[name] = evaluate(manifest['game'], config, manifest['eval_states'], ck,
-                                             manifest.get('max_eval_placements', 200))
+                                             manifest.get('max_eval_placements', 1000))
                     dump(output / 'results.json', results)
             status.update(phase='complete', finished=time.time())
             dump(output / 'status.json', status)

@@ -7,6 +7,14 @@ from rl.control import CandidateReplay, candidate_targets
 
 
 class ControlTests(unittest.TestCase):
+    def test_terminal_candidate_never_bootstraps(self):
+        agent = SimpleNamespace(device='cpu', gamma=.99,
+                                val_net=lambda x: x[:, 0], target_net=lambda x: x[:, 0])
+        replay = CandidateReplay(2)
+        item = replay.push([0], [{'afterstate': [1000.], 'immediate_reward': 99.}])
+        replay.correct(item, 0, 0., terminal=True)
+        self.assertEqual(candidate_targets(agent, replay.buffer).tolist(), [0.])
+
     def test_selects_best_candidate_not_historical_move(self):
         agent = SimpleNamespace(device='cpu', gamma=.5,
                                 val_net=lambda x: x[:, 0],

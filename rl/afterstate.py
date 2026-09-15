@@ -609,6 +609,8 @@ def train_afterstate(args, spec, overrides):
         trajectory = AfterstateTrajectory(replay)
         pending = None
         mismatches = 0
+        pending_boundary = None
+        control_pending = None
         wait_steps = 0
         consecutive_waits = 0
         waiting_frames = 0
@@ -627,13 +629,15 @@ def train_afterstate(args, spec, overrides):
             action = None
             control_added = False
             if pending is None and candidates:
+                control_item = None
                 if control_replay is not None and control_previous is not None:
                     # Sample the real next piece, optimize its action choice.
                     # Do not turn missing candidates/transient frames into death.
-                    control_replay.push(control_previous, candidates=candidates)
+                    control_item = control_replay.push(control_previous, candidates=candidates)
                     control_previous = None
-                    control_added = True
                 action, predicted, _imm_reward = agent.select_action(candidates, epsilon=epsilon)
+                if control_item is not None:
+                    control_pending = (control_item, next(i for i, c in enumerate(candidates) if c['action'] == action))
                 pending = (np.array(obs, copy=True), dict(info), predicted)
             next_obs, reward, terminated, truncated, info = env.step(action)
             if action is None:
@@ -661,6 +665,10 @@ def train_afterstate(args, spec, overrides):
                     before, before_info, _predicted = pending
                     step_reward = simulator.observed_reward(before, next_obs, before_info, info, terminated=True)
                 step_reward += terminal_penalty
+                if control_pending is not None:
+                    control_replay.correct(*control_pending, step_reward, terminal=True)
+                    control_added = True
+                    control_pending = None
                 if control_replay is not None and control_previous is not None:
                     control_replay.push(control_previous, terminal_reward=step_reward)
                     control_added = True
@@ -668,14 +676,22 @@ def train_afterstate(args, spec, overrides):
                 new_transition = trajectory.record(step_reward, terminated=True)
                 pending = None
             elif info.get("afterstate_discontinuity", False):
-                control_previous = None
-                trajectory.previous = None
-                pending = None
+                # Keep the successful action and last real afterstate. Capture
+                # its counters before the redraw, then wait for a settled board.
+                pending_boundary = dict(info.get("afterstate_boundary_info", info))
             elif pending is not None and info.get("afterstate_ready", True):
                 before, before_info, predicted = pending
                 actual = simulator.encode_observation(next_obs, info)
                 control_previous = np.array(actual, copy=True)
-                step_reward = simulator.observed_reward(before, next_obs, before_info, info)
+                if pending_boundary is not None:
+                    step_reward = simulator.discontinuity_reward(before, next_obs, before_info, pending_boundary)
+                    pending_boundary = None
+                else:
+                    step_reward = simulator.observed_reward(before, next_obs, before_info, info)
+                if control_pending is not None:
+                    control_replay.correct(*control_pending, step_reward, observed=actual)
+                    control_added = True
+                    control_pending = None
                 new_transition = trajectory.record(step_reward, actual)
                 mismatches += int(not np.array_equal(predicted, actual))
                 pending = None

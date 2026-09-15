@@ -21,6 +21,13 @@ Do not leave completed source changes uncommitted/unpushed; report push failures
 
 ## Diagnosis and acceptance
 
+USER TARGET UPDATE2026-09-15:100+ NEW cleared lines PER GAME, i.e. at least1600
+across16 but require per-state results, minimum and count>=100 (total alone can
+hide failures). Earlier provisional relative-improvement gate is not completion.
+Read TRAINING_REWARD_AUDIT.md for the full reward/control audit and new fixes.
+Production games.json now lines-only, not the former absolute-cost objective.
+Default evaluation cap1000 placements, not200. Old snapshots remain immutable.
+
 Read TETRIS_V36_DIAGNOSIS.md. Repeated absolute board cost can reward early death.
 Existing tools/eval_afterstate.py is not a matched multi-state benchmark.
 Use an explicit per-state schedule, zero exploration, real lines gained and
@@ -47,6 +54,13 @@ board progress toward 30+ lines and persistent execution/prediction mismatches.
 7. Pause heartbeat only after robust improvement is verified or user stops work.
 
 ## Active experiment
+
+AUDIT UPDATE2026-09-15: preserved successful level-boundary clears and corrected
+the newly introduced experimental candidate-backup death feedback. These fixes
+are newer than the still-running old extension and do NOT affect its imported
+code/config. Let it finish; do not attribute its results to new fixes. Next run
+must be fresh lines-only. See TRAINING_REWARD_AUDIT.md for measured29->30 lost
+clear and test details. No recommendation for a long user-run yet.
 
 LATEST 2026-09-15 02:37 UTC: candidate-control10k completed. Fixed16-state
 lines/placements: learned5k78/634,10k90/669; same-seed sampled10k43/512,

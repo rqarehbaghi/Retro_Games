@@ -313,7 +313,14 @@ def _verify_simulator(env, simulator, vars, spec, samples: int = 6):
                 obs, info = env.reset()
             continue
         c = cands[len(cands) // 2]
-        predicted = (np.asarray(c["afterstate"])[:n] > 0.5).astype(np.uint8)
+        predicted_board = c.get("predicted_board")
+        if predicted_board is None:
+            raise ValueError(
+                "Grid-placement candidates must expose predicted_board for "
+                "simulator verification independently of learned features")
+        predicted = (np.asarray(predicted_board).reshape(-1) > 0.5).astype(np.uint8)
+        if predicted.size != n:
+            raise ValueError("Simulator predicted_board dimensions do not match its declared board")
         obs, _r, term, trunc, info = env.step(c["action"])
         actual = (np.asarray(obs)[:n] > 0.5).astype(np.uint8)
         diff = int(np.abs(predicted.astype(int) - actual.astype(int)).sum())

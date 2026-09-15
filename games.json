@@ -609,8 +609,6 @@
           "survival_reward": 0,
           "model_type": "linear",
           "model_why": "A single linear value head over the same schema-derived afterstate vector is the sample-efficient production baseline. The prior four-layer MLP memorized deterministic trajectories and did not improve raw lines after 70k placements. This remains game-configured; other games may select mlp.",
-          "feature_mode": "compact",
-          "feature_mode_why": "The value model receives four normalized state properties: holes, aggregate height, bumpiness and maximum height. Candidate line clears and before/after deltas stay in immediate candidate scoring because they are transition properties, not properties of the resulting state. Dense board-cell features remain available generically with feature_mode=dense.",
           "piece_types": 8,
           "piece_names": {"1": "I", "2": "T", "3": "O", "4": "J", "5": "L", "6": "S", "7": "Z"},
           "hole_normalizer": 20,

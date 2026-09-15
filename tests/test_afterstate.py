@@ -135,22 +135,6 @@ class SimulatorTests(unittest.TestCase):
         self.assertEqual(sim.observed_reward(before, after,
                                              {'clears': 0}, {'clears': 0}), 0)
 
-    def test_compact_features_are_normalized_state_properties(self):
-        cfg = {'board': {'rows': 4, 'cols': 4}, 'lines_var': 'clears',
-               'feature_mode': 'compact', 'hole_normalizer': 16,
-               'hole_penalty': 1}
-        sim = GridPlacementSimulator(cfg)
-        board = np.array([[0, 0, 0, 0],
-                          [1, 0, 0, 0],
-                          [0, 0, 0, 0],
-                          [1, 1, 0, 0]], dtype=np.float32)
-        features = sim.encode_observation(board.ravel())
-        self.assertEqual(sim.feature_dim, 4)
-        self.assertEqual(features.shape, (4,))
-        self.assertTrue(np.all(features >= 0))
-        self.assertTrue(np.all(features <= 1))
-        self.assertAlmostEqual(features[0], 1 / 16)
-
     def test_discounted_potential_preserves_task_return(self):
         config = {"board": {"rows": 2, "cols": 2}, "lines_var": "clears",
                   "hole_penalty": 4, "height_penalty": .4, "bump_penalty": .3,

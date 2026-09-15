@@ -71,6 +71,23 @@ policy. This is the first robust learned improvement after removing the
 intermission ceiling. It proves the single-state learner can improve; it does
 not yet prove transfer across the 16 two-player start states.
 
+### v51 two-player transfer check
+
+Deterministic evaluation on `level0_2p,rs_01..rs_15` is saved in
+`checkpoints/experiment_loop/v51_10k_transfer_eval.json`. Dimensions match, so
+the one-player checkpoint loads, but transfer is not a promotion:
+
+| Policy | total lines | mean | minimum | states >=100 |
+|---|---:|---:|---:|---:|
+| zero-value control | 901 | 56.31 | 0 | 3/16 |
+| v51 single-state 10k | 799 | 49.94 | 0 | 1/16 |
+
+The policy improves rs_03 +66, rs_10 +79, rs_11 +25, rs_12 +28 and rs_13
++183, but regresses rs_08 -226 and rs_15 -146. This is representation/data
+specialization, not a player-dimension incompatibility. Do not use v51 as the
+two-player model. The next bounded test is fresh multi-state training on these
+16 states under the fixed intermission handling, with no v51 weight resume.
+
 ## Locations
 
 - Editable code: G:/GitHub/Retro_Games (WSL /mnt/g/GitHub/Retro_Games).

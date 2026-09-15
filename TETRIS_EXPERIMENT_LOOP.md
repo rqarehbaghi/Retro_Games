@@ -44,6 +44,9 @@ This removes the artificial 30-line ceiling; it does not claim the value
 network already reaches 100 lines. The next clean experiment should train from
 the endless one-player state first, gate at 10k against the now-unbounded fixed
 control, then expand to multi-state/two-player only after learning improves.
+Manifest evaluation now also accepts `eval_overrides` (for example players=1,
+player=1), so it cannot silently evaluate a one-player model in the default
+two-player environment.
 
 ## Locations
 

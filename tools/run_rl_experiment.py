@@ -28,7 +28,7 @@ def dump(path, data):
     temporary.replace(path)
 
 
-def evaluate(game, config, states, checkpoint, max_placements):
+def evaluate(game, config, states, checkpoint, max_placements, overrides=None):
     import numpy as np
     from rl.vars import set_config_path
     from rl.env import TrainingSpec, make_env
@@ -37,7 +37,9 @@ def evaluate(game, config, states, checkpoint, max_placements):
     set_config_path(str(config))
     rows = []
     for state in states:
-        spec = TrainingSpec(game, {'state': state})
+        state_overrides = dict(overrides or {})
+        state_overrides['state'] = state
+        spec = TrainingSpec(game, state_overrides)
         sim = get_simulator(spec.afterstate_config['simulator'], config=spec.afterstate_config)
         agent = AfterstateAgent(sim.feature_dim, device='cpu',
                                 model_type=spec.afterstate_config.get('model_type', 'mlp'))
@@ -46,7 +48,7 @@ def evaluate(game, config, states, checkpoint, max_placements):
         else:
             for param in agent.val_net.parameters():
                 param.data.zero_()
-        env = make_env(game, {'state': state})
+        env = make_env(game, state_overrides)
         try:
             obs, info = env.reset(seed=17)
             initial_lines = info[sim.lines_var]
@@ -148,7 +150,8 @@ def run(manifest_path):
             with open(output / 'evaluation.log', 'w', buffering=1) as log, contextlib.redirect_stdout(log):
                 for name, config, ck in policies:
                     results[name] = evaluate(manifest['game'], config, manifest['eval_states'], ck,
-                                             manifest.get('max_eval_placements', 1000))
+                                             manifest.get('max_eval_placements', 1000),
+                                             manifest.get('eval_overrides'))
                     dump(output / 'results.json', results)
                     line_target = manifest.get('eval_line_target', 100)
                     dump(output / 'summary.json', {

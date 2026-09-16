@@ -737,8 +737,19 @@ def train_afterstate(args, spec, overrides):
             if terminated:
                 if pending is not None:
                     before, before_info, _predicted = pending
-                    step_reward = simulator.observed_reward(before, next_obs, before_info, info, terminated=True)
+                    # A clear that also crossed a level boundary must be credited
+                    # from the counters captured BEFORE the redraw, even when the
+                    # same placement ends the game. This branch runs before the
+                    # discontinuity branch, so without this those lines were lost.
+                    terminal_info = info
+                    if pending_boundary is not None:
+                        terminal_info = pending_boundary
+                    elif info.get("afterstate_discontinuity", False):
+                        terminal_info = dict(info.get("afterstate_boundary_info", info))
+                    step_reward = simulator.observed_reward(
+                        before, next_obs, before_info, terminal_info, terminated=True)
                 step_reward += terminal_penalty
+                pending_boundary = None
                 if control_pending is not None:
                     control_replay.correct(*control_pending, step_reward, terminal=True)
                     control_added = True
@@ -752,7 +763,11 @@ def train_afterstate(args, spec, overrides):
             elif info.get("afterstate_discontinuity", False):
                 # Keep the successful action and last real afterstate. Capture
                 # its counters before the redraw, then wait for a settled board.
-                pending_boundary = dict(info.get("afterstate_boundary_info", info))
+                # Keep the FIRST boundary: it is the one that bounds the clear the
+                # still-pending placement made. A later boundary arriving before
+                # the board settles must not overwrite and discard it.
+                if pending_boundary is None:
+                    pending_boundary = dict(info.get("afterstate_boundary_info", info))
             elif pending is not None and info.get("afterstate_ready", True):
                 before, before_info, predicted = pending
                 actual = simulator.encode_observation(next_obs, info)

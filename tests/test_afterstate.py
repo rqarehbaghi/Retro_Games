@@ -233,8 +233,10 @@ class RunnerTests(unittest.TestCase):
                 return [{"action": 5, "afterstate": np.array([999.]), "immediate_reward": 999.}]
             def encode_observation(self, obs, info):
                 return obs
-            def observed_reward(self, *args, **kwargs):
-                return 2.
+            def observed_reward(self, obs, next_obs, info, next_info, terminated=False):
+                # 11 marks "scored from the pre-redraw boundary counters"; the
+                # plain 2 marks "scored from ordinary post-step info".
+                return 11. if isinstance(next_info, dict) and next_info.get("boundary") else 2.
             def discontinuity_reward(self, *args):
                 return 7.
         class Env:
@@ -245,10 +247,12 @@ class RunnerTests(unittest.TestCase):
                 actions.append(action)
                 self.i += 1
                 end_at = 3 if delayed else 2
+                boundary = self.i == 2 and ending in ("discontinuity", "discontinuity_death")
                 return (np.array([float(self.i)]), 888.,
-                        self.i == end_at and ending in ("death", "missing"),
+                        self.i == end_at and ending in ("death", "missing", "discontinuity_death"),
                         self.i == end_at and (ending == "truncation" or delayed),
-                        {"afterstate_discontinuity": ending == "discontinuity" and self.i == 2,
+                        {"afterstate_discontinuity": boundary,
+                         "afterstate_boundary_info": {"boundary": True} if boundary else None,
                          "afterstate_ready": not ((delayed and self.i == 2) or
                                                    (ending in ("stall", "frame_stall") and self.i >= 2)),
                          "frames": self.i * 100 if ending == "frame_stall" else 0})
@@ -283,6 +287,16 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0][0].tolist(), [1.])
         self.assertEqual(rows[0][1].tolist(), [[2.]])
+
+    def test_level_boundary_credited_when_the_same_placement_also_dies(self):
+        # The terminal branch runs BEFORE the discontinuity branch, so a clear
+        # that crossed a level boundary and topped out used post-redraw counters
+        # and silently lost its lines. 11 (boundary) - 6 (terminal) = 5; the
+        # unfixed path scored 2 - 6 = -4.
+        rows, _ = self.run_case("discontinuity_death")
+        self.assertEqual(rows[-1][1], 5.)
+        self.assertIsNone(rows[-1][2])
+        self.assertTrue(rows[-1][3])
 
     def test_level_boundary_preserves_reward_and_bootstrap(self):
         rows, actions = self.run_case("discontinuity")

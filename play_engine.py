@@ -708,7 +708,7 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
     try:
         from rl.env import TrainingSpec, GameVars
         from rl.macro import MacroPlacementController
-        from rl.env import BoardSettleGate, TransitionGate, episode_ended
+        from rl.env import BoardSettleGate
         from rl import features as _feature_hooks
         spec = TrainingSpec(game, ai_overrides)
         ai_slot = max(0, spec.player - 1)
@@ -717,25 +717,11 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
         settle_gate = BoardSettleGate(getattr(spec, "raw", {}).get("settle_board"))
         settle_hook = _feature_hooks.get(getattr(spec, "features_name", None))
         game_vars = GameVars(game, entry=spec.entry)
-        episode_end_cfg = getattr(spec, "episode_end", None)
-        transition_gate = TransitionGate(getattr(spec, "skip_while", None), game_vars)
-    except Exception as exc:                                     # noqa: BLE001
-        # This used to swallow the reason silently, and every name it defines
-        # in the try was then missing or wrong for the rest of the run --
-        # is_macro False alone would feed a PLACEMENT index to
-        # discretize_ai_action as if it were a button combo. Say what broke.
-        print("Could not read this game's training setup from games.json (%s: %s)."
-              % (type(exc).__name__, exc))
-        print("Falling back to raw button-stream play; macro placement, the "
-              "settle gate and the declared episode end are all off.")
+    except Exception:                                            # noqa: BLE001
         spec = None
         is_macro = False
         macro_cfg = {}
         game_vars = None
-        settle_gate = None
-        settle_hook = None
-        episode_end_cfg = None
-        transition_gate = None
         ai_slot = 1 if num_players >= 2 else 0
     ai_p = ai_slot + 1
     if not p2_human:
@@ -753,21 +739,11 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
             print("AI: PLAYER %d (%s) | no human player" % (ai_p, who))
             pygame.display.set_caption("Retro AI Arena: AI (P%d) - [%s]" % (ai_p, game))
 
-    # PLAY_DEBUG=1 traces every placement decision and every button frame the
-    # shared controller emits. Live play has no unittest harness, so this is
-    # the only way to compare what play does against what training does.
-    _dbg = bool(os.environ.get("PLAY_DEBUG"))
-
     def _ai_buttons(btn_names):
         act = np.array([False] * len(buttons), dtype=bool)
-        dropped = []
         for b in btn_names:
             if b in buttons:
                 act[buttons.index(b)] = True
-            else:
-                dropped.append(b)
-        if dropped and _dbg:
-            print("[dbg] buttons not in this game's button list: %s" % dropped)
         return act
 
     macro_plan_queue = deque()
@@ -857,7 +833,6 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
     # Gamepad 1 ALWAYS defaults to the human player (Player 1)
     pad_target = human_p
     prev_toggle_down = False
-    announced_end = False
 
     if boot_screen and model is not None and not p2_human:
         print("\n===============================================================")
@@ -960,32 +935,10 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
                 except TypeError:
                     return settle_hook(game_vars, ram, info, ai_p) or {}
 
-            # A level intermission is not a board. Training has always skipped
-            # it (games.json `skip_while`); live play did not, and on the frame
-            # the level changed it read filled=69 / height=178 off the
-            # transition animation, placed a piece into that, and never
-            # recovered -- 110 placements live against 1552 in training from
-            # the identical state. Drop any placement in flight and hand the
-            # declared script the frames until the game says it is back.
-            if transition_gate is not None and transition_gate.update(ram, info):
-                if macro_ctrl is not None:
-                    macro_ctrl.abort()
-                macro_ctrl = None
-                macro_pending = None
-                settle_gate.reset()
-                if _dbg:
-                    print("[dbg] frame %d TRANSITION f=%d" % (step_count, transition_gate.frames))
-                p2_action = _ai_buttons(transition_gate.buttons())
-                skip_decision = True
-            else:
-                skip_decision = False
-
-            if not skip_decision and macro_ctrl is not None and macro_pending is not None:
+            if macro_ctrl is not None and macro_pending is not None:
                 macro_ctrl.observe()
 
-            if skip_decision:
-                pass
-            elif macro_pending is None:
+            if macro_pending is None:
                 # Decide only once the board has stopped animating. The next
                 # piece spawns BEFORE a line clear finishes collapsing the rows
                 # above it, so deciding immediately reads a half-collapsed
@@ -1012,14 +965,9 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
                         macro_cfg, _read_macro_var, ai_p)
                     macro_ctrl.begin(action_idx)
                     macro_pending = True
-                    if _dbg:
-                        print("[dbg] frame %d DECIDE action=%d feats=%s"
-                              % (step_count, action_idx, _board_features()))
                     p2_action = _ai_buttons(macro_ctrl.next_buttons() or [])
             else:
                 frame_buttons = macro_ctrl.next_buttons()
-                if _dbg:
-                    print("[dbg] frame %d buttons=%s" % (step_count, frame_buttons))
                 if frame_buttons is None:
                     macro_pending = None        # settle, then decide again
                     p2_action = _ai_buttons([])
@@ -1200,24 +1148,6 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
         pygame.display.flip()
         clock.tick(fps_cap)
 
-        # games.json's `episode_end` is REPORTED here, never acted on. Ending
-        # the round on it was tried and the owner rejected it: a live session
-        # is not a training episode, and restarting the game out from under
-        # the player is not wanted. Only retro's own done flag resets, exactly
-        # as it did before. The note still earns its place -- a dead board
-        # that keeps being played looks identical to a frozen engine, and not
-        # being able to tell those apart cost a whole session of debugging.
-        if episode_end_cfg and game_vars is not None and not announced_end:
-            try:
-                if episode_ended(episode_end_cfg, game_vars,
-                                 env.unwrapped.get_ram(), info):
-                    announced_end = True
-                    print("Game over for player %d at step %d (the game's own "
-                          "end condition). Play continues; not resetting."
-                          % (ai_p, step_count))
-            except Exception:                                    # noqa: BLE001
-                pass
-
         if terminated or truncated:
             resets += 1
             print(f"Round finished at step {step_count}! Resetting...")
@@ -1232,15 +1162,6 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
                 macro_plan_queue.clear()
                 prev_p2_row = None
                 initial_p2_type = None
-                # The gates carry per-round counters. Rounds only started
-                # resetting when episode_end was wired up, so before that
-                # these could never go stale; now they can, and a settle gate
-                # holding the previous round's frame count would let the first
-                # decision of a new round read a half-drawn board.
-                if settle_gate is not None:
-                    settle_gate.reset()
-                if transition_gate is not None:
-                    transition_gate.reset()
             if model is not None and is_image:
                 reset_frame = ai_frame(obs, env.unwrapped.get_ram())
                 frame_stack.clear()

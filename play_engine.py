@@ -1228,6 +1228,15 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
                 macro_plan_queue.clear()
                 prev_p2_row = None
                 initial_p2_type = None
+                # The gates carry per-round counters. Rounds only started
+                # resetting when episode_end was wired up, so before that
+                # these could never go stale; now they can, and a settle gate
+                # holding the previous round's frame count would let the first
+                # decision of a new round read a half-drawn board.
+                if settle_gate is not None:
+                    settle_gate.reset()
+                if transition_gate is not None:
+                    transition_gate.reset()
             if model is not None and is_image:
                 reset_frame = ai_frame(obs, env.unwrapped.get_ram())
                 frame_stack.clear()

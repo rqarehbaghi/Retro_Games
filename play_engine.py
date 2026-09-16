@@ -708,7 +708,7 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
     try:
         from rl.env import TrainingSpec, GameVars
         from rl.macro import MacroPlacementController
-        from rl.env import BoardSettleGate
+        from rl.env import BoardSettleGate, TransitionGate, episode_ended
         from rl import features as _feature_hooks
         spec = TrainingSpec(game, ai_overrides)
         ai_slot = max(0, spec.player - 1)
@@ -717,11 +717,25 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
         settle_gate = BoardSettleGate(getattr(spec, "raw", {}).get("settle_board"))
         settle_hook = _feature_hooks.get(getattr(spec, "features_name", None))
         game_vars = GameVars(game, entry=spec.entry)
-    except Exception:                                            # noqa: BLE001
+        episode_end_cfg = getattr(spec, "episode_end", None)
+        transition_gate = TransitionGate(getattr(spec, "skip_while", None), game_vars)
+    except Exception as exc:                                     # noqa: BLE001
+        # This used to swallow the reason silently, and every name it defines
+        # in the try was then missing or wrong for the rest of the run --
+        # is_macro False alone would feed a PLACEMENT index to
+        # discretize_ai_action as if it were a button combo. Say what broke.
+        print("Could not read this game's training setup from games.json (%s: %s)."
+              % (type(exc).__name__, exc))
+        print("Falling back to raw button-stream play; macro placement, the "
+              "settle gate and the declared episode end are all off.")
         spec = None
         is_macro = False
         macro_cfg = {}
         game_vars = None
+        settle_gate = None
+        settle_hook = None
+        episode_end_cfg = None
+        transition_gate = None
         ai_slot = 1 if num_players >= 2 else 0
     ai_p = ai_slot + 1
     if not p2_human:
@@ -945,10 +959,32 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
                 except TypeError:
                     return settle_hook(game_vars, ram, info, ai_p) or {}
 
-            if macro_ctrl is not None and macro_pending is not None:
+            # A level intermission is not a board. Training has always skipped
+            # it (games.json `skip_while`); live play did not, and on the frame
+            # the level changed it read filled=69 / height=178 off the
+            # transition animation, placed a piece into that, and never
+            # recovered -- 110 placements live against 1552 in training from
+            # the identical state. Drop any placement in flight and hand the
+            # declared script the frames until the game says it is back.
+            if transition_gate is not None and transition_gate.update(ram, info):
+                if macro_ctrl is not None:
+                    macro_ctrl.abort()
+                macro_ctrl = None
+                macro_pending = None
+                settle_gate.reset()
+                if _dbg:
+                    print("[dbg] frame %d TRANSITION f=%d" % (step_count, transition_gate.frames))
+                p2_action = _ai_buttons(transition_gate.buttons())
+                skip_decision = True
+            else:
+                skip_decision = False
+
+            if not skip_decision and macro_ctrl is not None and macro_pending is not None:
                 macro_ctrl.observe()
 
-            if macro_pending is None:
+            if skip_decision:
+                pass
+            elif macro_pending is None:
                 # Decide only once the board has stopped animating. The next
                 # piece spawns BEFORE a line clear finishes collapsing the rows
                 # above it, so deciding immediately reads a half-collapsed
@@ -1162,6 +1198,21 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
 
         pygame.display.flip()
         clock.tick(fps_cap)
+
+        # The integration's own done flag is not the whole story. games.json
+        # declares the real ending in `episode_end`, and training has always
+        # used it; play_engine only had retro's flag, which never fires when
+        # the AI's player tops out in TetrisTime. Measured: the agent played
+        # 110 real placements and then decided against a frozen game-over
+        # board for another ~50,000 frames, so the recording was mostly a
+        # still picture. Same declaration, same helper, both paths.
+        if not terminated and episode_end_cfg and game_vars is not None:
+            try:
+                if episode_ended(episode_end_cfg, game_vars,
+                                 env.unwrapped.get_ram(), info):
+                    terminated = True
+            except Exception:                                    # noqa: BLE001
+                pass
 
         if terminated or truncated:
             resets += 1

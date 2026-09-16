@@ -107,6 +107,100 @@ def _for_player(spec, player):
     return out
 
 
+def episode_ended(episode_end, vars, ram, info):
+    """Has the game declared this round over?
+
+    The integration's own done flag is not enough: for TetrisTime it never
+    fires when the AI's player tops out, so live play kept stepping a dead
+    board -- measured at 110 real placements followed by ~50,000 frames of
+    deciding against a frozen game-over screen. The recording was then mostly
+    a still picture, which is what "the model has no control" looked like.
+    games.json declares the real ending in `episode_end`; both the training
+    env and play_engine must read it from here so a fix lands in both.
+    """
+    return bool(episode_end) and vars.matches(
+        episode_end["var"], ram, info, episode_end.get("equals"))
+
+
+class TransitionGate:
+    """Frame-stepped `skip_while`: is the game in a stretch nobody can act on?
+
+    This is the same rule the training env has always applied around level
+    intermissions, expressed one frame at a time so a real-time loop can use
+    it too. Live play had no version of it at all, and the cost was measured:
+    replaying one checkpoint from `level0_2p_1`, live play matched training
+    exactly for 90 placements and then, on the level-change frame, read a
+    board of `filled 69, height 178` -- 69 is not even a multiple of four, so
+    it is the transition animation, not a board -- placed a piece into that
+    garbage, and went from 3 holes to 8 to 25 and topped out at 110. Training
+    from the identical state survives 1552.
+
+    The LATCH is the part that is easy to get wrong and was got wrong once:
+    the declared flag stays set for hundreds of frames AFTER play resumes, so
+    a gate that only tests the flag keeps driving the declared `input_script`
+    into the live game. Here `resume_on_change` latches the gate open the
+    moment the game shows it is running again, and the latch only clears when
+    the flag itself clears.
+    """
+
+    def __init__(self, config, vars, seen=None):
+        self.cfg = dict(config or {})
+        self.vars = vars
+        self._seen = seen or (lambda info: info or {})
+        self.reset()
+
+    @property
+    def enabled(self):
+        return bool(self.cfg) and self.vars is not None
+
+    def reset(self):
+        self.frames = 0
+        self.latched = False
+        self.resumed = False
+        self.timed_out = False
+        self._prev_resume = None
+        self._changes = 0
+
+    def update(self, ram, info):
+        """True while the transition should be skipped. Call once per frame."""
+        if not self.enabled:
+            return False
+        info = self._seen(info)
+        if not self.vars.matches(self.cfg["var"], ram, info,
+                                 self.cfg.get("equals")):
+            self.reset()                    # flag cleared: re-arm for next time
+            return False
+        if self.latched:
+            return False
+
+        resume = self.cfg.get("resume_on_change") or {}
+        resume_var = resume.get("var")
+        if resume_var:
+            current = self.vars.read(resume_var, ram, info)
+            if (current is not None and self._prev_resume is not None
+                    and current != self._prev_resume):
+                self._changes += 1
+            if current is not None:
+                self._prev_resume = current
+            if (self.frames >= max(0, int(resume.get("after", 0)))
+                    and self._changes >= max(1, int(resume.get("changes", 1)))):
+                self.latched = True
+                self.resumed = True
+                return False
+
+        if self.frames >= max(1, int(self.cfg.get("max_frames", 2000))):
+            self.latched = True
+            self.timed_out = True
+            return False
+
+        self.frames += 1
+        return True
+
+    def buttons(self):
+        """What games.json says to press on the frame just admitted."""
+        return _scripted_buttons(self.cfg, max(0, self.frames - 1))
+
+
 class BoardSettleGate:
     """Hold a decision until the game's own FEATURES stop moving.
 
@@ -525,6 +619,7 @@ class GenericRetroEnv(gym.Env):
         self.steps = self.frames = 0
         self._state_steps = {state: 0 for state in s.states}
         self._skip_resume_latched = False
+        self._transition_gate = TransitionGate(s.skip_while, self.vars, self._seen)
         self._rng = np.random.default_rng(s.raw.get("seed"))
         self.observation_space = self.env.observation_space
 
@@ -692,44 +787,26 @@ class GenericRetroEnv(gym.Env):
         return not self._skip_resume_latched
 
     def _ended(self, ram, info):
-        c = self.spec_.episode_end
-        return bool(c) and self.vars.matches(c["var"], ram, info, c.get("equals"))
+        return episode_ended(self.spec_.episode_end, self.vars, ram, info)
 
     def _skip(self, obs, info):
-        """Run past a stretch the agent cannot act on, paying nothing for it."""
-        config = self.spec_.skip_while or {}
-        limit = max(1, int(config.get("max_frames", 2000)))
-        resume = config.get("resume_on_change") or {}
-        resume_var = resume.get("var")
-        resume_after = max(0, int(resume.get("after", 0)))
-        resume_needed = max(1, int(resume.get("changes", 1)))
-        previous_resume = (self.vars.read(resume_var, self._ram(), self._seen(info))
-                           if resume_var else None)
-        resume_changes = 0
-        resumed = False
-        guard = 0
-        while self._skipping(self._ram(), self._seen(info)) and guard < limit:
-            buttons = _scripted_buttons(config, guard)
+        """Run past a stretch the agent cannot act on, paying nothing for it.
+
+        The rule itself lives in TransitionGate so that play_engine applies
+        exactly this one; here it is simply driven to completion because
+        training does not need to return between frames.
+        """
+        gate = self._transition_gate
+        gate.reset()
+        while gate.update(self._ram(), self._seen(info)):
+            buttons = gate.buttons()
             obs, _r, _t, _tr, info = self.env.step(
                 self.buttons_to_joint(buttons) if buttons else self.empty_joint())
             self.frames += 1
-            guard += 1
-            if resume_var:
-                current_resume = self.vars.read(
-                    resume_var, self._ram(), self._seen(info))
-                if (current_resume is not None and previous_resume is not None
-                        and current_resume != previous_resume):
-                    resume_changes += 1
-                if current_resume is not None:
-                    previous_resume = current_resume
-                if guard >= resume_after and resume_changes >= resume_needed:
-                    resumed = True
-                    self._skip_resume_latched = True
-                    break
-        self._last_skip_frames = guard
-        self._last_skip_resumed = resumed
-        self._last_skip_timeout = (not resumed and
-                                   self._skipping(self._ram(), self._seen(info)))
+        self._skip_resume_latched = gate.resumed
+        self._last_skip_frames = gate.frames
+        self._last_skip_resumed = gate.resumed
+        self._last_skip_timeout = gate.timed_out
         return obs, info
 
     def _mark_skip(self, info):

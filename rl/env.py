@@ -619,12 +619,12 @@ class GenericRetroEnv(gym.Env):
         self.steps = self.frames = 0
         self._state_steps = {state: 0 for state in s.states}
         self._skip_resume_latched = False
-        self._transition_gate = TransitionGate(s.skip_while, self.vars, self._seen)
         self._rng = np.random.default_rng(s.raw.get("seed"))
         self.observation_space = self.env.observation_space
 
         self.use_data_json = s.use_data_json
         self.vars = GameVars(game, entry=s.entry)
+        self._transition_gate = TransitionGate(s.skip_while, self.vars, self._seen)
         if not self.use_data_json:
             self._warn_data_json_off(s)
         self.reward_model = RewardModel(s.terms, self.vars,

@@ -857,6 +857,7 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
     # Gamepad 1 ALWAYS defaults to the human player (Player 1)
     pad_target = human_p
     prev_toggle_down = False
+    announced_end = False
 
     if boot_screen and model is not None and not p2_human:
         print("\n===============================================================")
@@ -1199,18 +1200,21 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
         pygame.display.flip()
         clock.tick(fps_cap)
 
-        # The integration's own done flag is not the whole story. games.json
-        # declares the real ending in `episode_end`, and training has always
-        # used it; play_engine only had retro's flag, which never fires when
-        # the AI's player tops out in TetrisTime. Measured: the agent played
-        # 110 real placements and then decided against a frozen game-over
-        # board for another ~50,000 frames, so the recording was mostly a
-        # still picture. Same declaration, same helper, both paths.
-        if not terminated and episode_end_cfg and game_vars is not None:
+        # games.json's `episode_end` is REPORTED here, never acted on. Ending
+        # the round on it was tried and the owner rejected it: a live session
+        # is not a training episode, and restarting the game out from under
+        # the player is not wanted. Only retro's own done flag resets, exactly
+        # as it did before. The note still earns its place -- a dead board
+        # that keeps being played looks identical to a frozen engine, and not
+        # being able to tell those apart cost a whole session of debugging.
+        if episode_end_cfg and game_vars is not None and not announced_end:
             try:
                 if episode_ended(episode_end_cfg, game_vars,
                                  env.unwrapped.get_ram(), info):
-                    terminated = True
+                    announced_end = True
+                    print("Game over for player %d at step %d (the game's own "
+                          "end condition). Play continues; not resetting."
+                          % (ai_p, step_count))
             except Exception:                                    # noqa: BLE001
                 pass
 

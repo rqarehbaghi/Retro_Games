@@ -110,7 +110,8 @@ def test_reward_terms():
 
 # --------------------------------------------------------- player plumbing ---
 def test_player_substitution():
-    from rl.env import _fill_player, _for_player, _scripted_buttons
+    from rl.env import (_choose_start_state, _fill_player, _for_player,
+                        _scripted_buttons)
     print("per-player config")
     check("{player} is replaced through nested structures",
           _fill_player({"a": "game_over_p{player}",
@@ -135,6 +136,25 @@ def test_player_substitution():
     check("transition input holds declared buttons", _scripted_buttons(script, 3), ["B"])
     check("transition input repeats on its period", _scripted_buttons(script, 9), ["RIGHT"])
     check("transition input releases between pulses", _scripted_buttons(script, 10), [])
+
+    class FirstChoice:
+        def choice(self, values):
+            return list(values)[0]
+
+    rng = FirstChoice()
+    states = ["short", "middle", "long"]
+    check("random state sampling keeps every state eligible",
+          _choose_start_state(states, "random",
+                              {"short": 2, "middle": 20, "long": 200}, rng),
+          "short")
+    check("balanced sampling chooses the least-exposed state",
+          _choose_start_state(states, "balanced_steps",
+                              {"short": 20, "middle": 5, "long": 200}, rng),
+          "middle")
+    check("balanced sampling breaks minimum-exposure ties through the RNG",
+          _choose_start_state(states, "balanced_steps",
+                              {"short": 5, "middle": 5, "long": 200}, rng),
+          "short")
 
 
 # ------------------------------------------------------- macro placement ---

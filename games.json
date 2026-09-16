@@ -569,6 +569,8 @@
         "WELL_HEIGHT_OPEN_QUESTION": "PARTLY RESOLVED. The two blocks at 0x0600 and 0x0700 are NOT mirrors of one board: each lock writes to exactly one of them, alternating, so taking whichever held more cells (the old behaviour) silently dropped every piece that landed in the other. read_well now unions them, which grows on every lock where either block alone stalls. STILL OPEN: the piece row counter reaches 21 while each block decodes 13 rows, and locks add only 2-3 cells rather than 4, so part of the board is still not being read -- most likely rows above the 13. Resolve before building a grid observation; the holes/height shaping is improved by the union but may still not see the very top of the stack."
       },
       "training": {
+        "state_sampling": "balanced_steps",
+        "state_sampling_why": "When several starts are supplied, choose among the least cumulative environment-step exposures. Uniform episodes made long/easy starts contribute 4.4x as many v52 replay placements as short/damaged starts, so the learned value was dominated by a few wells. This generic sampler balances replay opportunity without encoding any Tetris rule.",
         "preferred_state": {
           "1": "endless_1p",
           "2": "level8_2p"

@@ -126,6 +126,29 @@ def _scripted_buttons(config, frame):
     return []
 
 
+def _choose_start_state(states, mode, cumulative_steps, rng):
+    """Choose a configured start state for the next episode.
+
+    ``random`` preserves uniform-per-episode sampling. ``balanced_steps``
+    instead draws uniformly among the states with the least accumulated
+    environment steps. This prevents long-lived/easy states from dominating a
+    per-step replay buffer merely because their episodes contain more data.
+    The mechanism is game-agnostic; a game opts in through games.json.
+    """
+    states = list(states)
+    if not states:
+        return None
+    if mode == "random":
+        choices = states
+    elif mode == "balanced_steps":
+        least = min(int(cumulative_steps.get(state, 0)) for state in states)
+        choices = [state for state in states
+                   if int(cumulative_steps.get(state, 0)) == least]
+    else:
+        raise ValueError("training.state_sampling must be 'random' or 'balanced_steps'")
+    return str(rng.choice(choices))
+
+
 class TrainingSpec:
     """Everything games.json says about training one game."""
 
@@ -197,6 +220,9 @@ class TrainingSpec:
         # file instead -- RAM variables for values, episode_end for the ending.
         self.use_data_json = bool(t.get("use_data_json", True))
         self.ppo = dict(t.get("ppo") or {})
+        self.state_sampling = str(t.get("state_sampling", "random"))
+        if self.state_sampling not in ("random", "balanced_steps"):
+            raise ValueError("training.state_sampling must be 'random' or 'balanced_steps'")
         self.state = t.get("state") or self._default_state(t)
         # --state may be a comma-separated LIST of save states, in which case one
         # is drawn per episode. A single save state seeds the piece sequence, so
@@ -443,6 +469,7 @@ class GenericRetroEnv(gym.Env):
         self._releases = s.releases
         self.action_space = gym.spaces.Discrete(len(self._combos))
         self.steps = self.frames = 0
+        self._state_steps = {state: 0 for state in s.states}
         self._skip_resume_latched = False
         self._rng = np.random.default_rng(s.raw.get("seed"))
         self.observation_space = self.env.observation_space
@@ -493,7 +520,8 @@ class GenericRetroEnv(gym.Env):
                     print("Available: %s" % (", ".join(have) if have else "(none)"))
                     sys.exit("Pick one with --state.")
             if len(s.states) > 1:
-                print("start states: %d, one drawn per episode" % len(s.states))
+                print("start states: %d, sampling=%s" %
+                      (len(s.states), s.state_sampling))
             return s.states[0]      # the env is created on the first; reset draws
         if have:
             return have[0]
@@ -686,7 +714,12 @@ class GenericRetroEnv(gym.Env):
             self._rng = np.random.default_rng(kwargs["seed"])
         selected_state = self.spec_.state
         if len(self.spec_.states) > 1:
-            selected_state = str(self._rng.choice(self.spec_.states))
+            previous_state = getattr(self, "start_state", None)
+            if previous_state in self._state_steps:
+                self._state_steps[previous_state] += self.steps
+            selected_state = _choose_start_state(
+                self.spec_.states, self.spec_.state_sampling,
+                self._state_steps, self._rng)
             self.env.unwrapped.load_state(selected_state)
         self.start_state = selected_state
         obs, info = self.env.reset(**kwargs)

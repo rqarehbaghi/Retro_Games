@@ -708,10 +708,14 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
     try:
         from rl.env import TrainingSpec, GameVars
         from rl.macro import MacroPlacementController
+        from rl.env import BoardSettleGate
+        from rl import features as _feature_hooks
         spec = TrainingSpec(game, ai_overrides)
         ai_slot = max(0, spec.player - 1)
         is_macro = getattr(spec, "action_mode", "button_stream") == "macro_placement"
         macro_cfg = getattr(spec, "macro_config", {}) if is_macro else {}
+        settle_gate = BoardSettleGate(getattr(spec, "raw", {}).get("settle_board"))
+        settle_hook = _feature_hooks.get(getattr(spec, "features_name", None))
         game_vars = GameVars(game, entry=spec.entry)
     except Exception:                                            # noqa: BLE001
         spec = None
@@ -914,43 +918,61 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
             ram = env.unwrapped.get_ram()
 
             # One placement at a time, driven by the SHARED controller in
-            # rl.macro -- the same object training uses. play_engine used to
-            # keep its own copy of this state machine, which silently drifted
-            # from the fixed one (the rotation-specific column re-read landed
-            # only in the wrapper), so the same checkpoint scored 605 lines in
-            # training and 1 line here. Do not reintroduce a local copy.
+            # rl.macro -- the same object training uses. Do not reintroduce a
+            # local copy; the last one drifted and cost 604 lines a game.
             def _read_macro_var(name, default=0):
                 if not name or game_vars is None:
                     return default
                 v = game_vars.read(name, env.unwrapped.get_ram(), {}, default)
                 return default if v is None else int(v)
 
-            if macro_ctrl is not None and not macro_ctrl.aborted:
+            def _board_features():
+                if settle_hook is None or game_vars is None:
+                    return {}
+                try:
+                    return settle_hook(game_vars, ram, info, ai_p,
+                                       frame=obs, spec=getattr(spec, "grid", None)) or {}
+                except TypeError:
+                    return settle_hook(game_vars, ram, info, ai_p) or {}
+
+            if macro_ctrl is not None and macro_pending is not None:
                 macro_ctrl.observe()
 
-            if macro_ctrl is None or macro_pending is None:
-                # Decide the next placement from the settled board.
-                curr_obs = ai_frame(obs, ram)
-                if model is not None:
-                    if getattr(model, "is_afterstate", False):
-                        action_idx, _ = model.predict(curr_obs, deterministic=deterministic,
-                                                      ram=ram, info=info)
-                    else:
-                        action_idx, _ = model.predict(curr_obs, deterministic=deterministic)
-                    action_idx = int(action_idx)
+            if macro_pending is None:
+                # Decide only once the board has stopped animating. The next
+                # piece spawns BEFORE a line clear finishes collapsing the rows
+                # above it, so deciding immediately reads a half-collapsed
+                # board. Training has always waited (GenericRetroEnv uses the
+                # same gate); live play did not, and measuring that difference
+                # gave 34.5% wrong placements overall and 53.5% for the
+                # placement right after a clear, versus 0.0% with the wait.
+                if not settle_gate.update(_board_features()):
+                    p2_action = _ai_buttons([])
                 else:
-                    action_idx = np.random.randint(len(ai_combos))
-                macro_ctrl = MacroPlacementController(macro_cfg, _read_macro_var, ai_p)
-                macro_ctrl.begin(action_idx)
-                macro_pending = True
-
-            frame_buttons = macro_ctrl.next_buttons()
-            if frame_buttons is None:
-                # Placement finished; decide again on the next frame.
-                macro_pending = None
-                p2_action = _ai_buttons([])
+                    settle_gate.reset()
+                    curr_obs = ai_frame(obs, ram)
+                    if model is not None:
+                        if getattr(model, "is_afterstate", False):
+                            action_idx, _ = model.predict(
+                                curr_obs, deterministic=deterministic, ram=ram, info=info)
+                        else:
+                            action_idx, _ = model.predict(
+                                curr_obs, deterministic=deterministic)
+                        action_idx = int(action_idx)
+                    else:
+                        action_idx = np.random.randint(len(ai_combos))
+                    macro_ctrl = MacroPlacementController(
+                        macro_cfg, _read_macro_var, ai_p)
+                    macro_ctrl.begin(action_idx)
+                    macro_pending = True
+                    p2_action = _ai_buttons(macro_ctrl.next_buttons() or [])
             else:
-                p2_action = _ai_buttons(frame_buttons)
+                frame_buttons = macro_ctrl.next_buttons()
+                if frame_buttons is None:
+                    macro_pending = None        # settle, then decide again
+                    p2_action = _ai_buttons([])
+                else:
+                    p2_action = _ai_buttons(frame_buttons)
 
         elif model is not None:
             if is_image:

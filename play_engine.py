@@ -707,7 +707,7 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
 
     try:
         from rl.env import TrainingSpec, GameVars
-        from rl.macro import MacroPlanGenerator
+        from rl.macro import MacroPlacementController
         spec = TrainingSpec(game, ai_overrides)
         ai_slot = max(0, spec.player - 1)
         is_macro = getattr(spec, "action_mode", "button_stream") == "macro_placement"
@@ -744,6 +744,9 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
 
     macro_plan_queue = deque()
     macro_state = "IDLE"
+    # One shared placement controller (rl.macro), re-created per placement.
+    macro_ctrl = None
+    macro_pending = None
     # games.json declares this as col_offset. Reading "column_offset" here meant
     # live play defaulted to 0 while training used 3, so every placement the
     # model asked for landed three columns left of where it was trained.
@@ -909,52 +912,46 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
             p2_action = make_p2_action(buttons, combined, ai_manual_pad)
         elif is_macro:
             ram = env.unwrapped.get_ram()
-            curr_p2_row = game_vars.read(row_var, ram, {}, default=None) if game_vars else None
-            curr_p2_type = game_vars.read(piece_type_var, ram, {}, default=None) if game_vars else None
-            curr_p2_rot = game_vars.read(rot_var, ram, {}, default=0) if game_vars else 0
-            col_raw = game_vars.read(col_var, ram, {}, default=None) if game_vars else None
-            curr_p2_col = (col_raw - col_offset) if col_raw is not None else int(macro_cfg.get("spawn_col", 4))
 
-            # Detect if previous piece has locked/settled
-            if macro_state in ("TAPPING", "SOFT_DROP"):
-                settled = False
-                if curr_p2_type is not None and initial_p2_type is not None and curr_p2_type != initial_p2_type:
-                    settled = True
-                elif curr_p2_row is not None and prev_p2_row is not None:
-                    if curr_p2_row < prev_p2_row and prev_p2_row >= int(macro_cfg.get("settle_detect", {}).get("min_previous", 0)):
-                        settled = True
-                if settled:
-                    macro_state = "IDLE"
-                    macro_plan_queue.clear()
+            # One placement at a time, driven by the SHARED controller in
+            # rl.macro -- the same object training uses. play_engine used to
+            # keep its own copy of this state machine, which silently drifted
+            # from the fixed one (the rotation-specific column re-read landed
+            # only in the wrapper), so the same checkpoint scored 605 lines in
+            # training and 1 line here. Do not reintroduce a local copy.
+            def _read_macro_var(name, default=0):
+                if not name or game_vars is None:
+                    return default
+                v = game_vars.read(name, env.unwrapped.get_ram(), {}, default)
+                return default if v is None else int(v)
 
-            # If IDLE, plan the placement for the currently active piece
-            if macro_state == "IDLE":
+            if macro_ctrl is not None and not macro_ctrl.aborted:
+                macro_ctrl.observe()
+
+            if macro_ctrl is None or macro_pending is None:
+                # Decide the next placement from the settled board.
                 curr_obs = ai_frame(obs, ram)
                 if model is not None:
                     if getattr(model, "is_afterstate", False):
-                        action_idx, _ = model.predict(curr_obs, deterministic=deterministic, ram=ram, info=info)
+                        action_idx, _ = model.predict(curr_obs, deterministic=deterministic,
+                                                      ram=ram, info=info)
                     else:
                         action_idx, _ = model.predict(curr_obs, deterministic=deterministic)
                     action_idx = int(action_idx)
                 else:
                     action_idx = np.random.randint(len(ai_combos))
+                macro_ctrl = MacroPlacementController(macro_cfg, _read_macro_var, ai_p)
+                macro_ctrl.begin(action_idx)
+                macro_pending = True
 
-                plan = MacroPlanGenerator.plan(action_idx, macro_cfg, current_rot=curr_p2_rot,
-                                               current_col=curr_p2_col, piece_type=curr_p2_type)
-                macro_plan_queue = deque(plan["frames"])
-                macro_plan_queue.append([])  # Neutral frame for fresh DOWN press
-                macro_state = "TAPPING"
-                initial_p2_type = curr_p2_type
-
-            # Execute next frame
-            if macro_plan_queue:
-                frame_buttons = macro_plan_queue.popleft()
-                p2_action = _ai_buttons(frame_buttons)
+            frame_buttons = macro_ctrl.next_buttons()
+            if frame_buttons is None:
+                # Placement finished; decide again on the next frame.
+                macro_pending = None
+                p2_action = _ai_buttons([])
             else:
-                macro_state = "SOFT_DROP"
-                p2_action = _ai_buttons([commit_button])
+                p2_action = _ai_buttons(frame_buttons)
 
-            prev_p2_row = curr_p2_row
         elif model is not None:
             if is_image:
                 stacked_obs = np.array(frame_stack)
@@ -1138,6 +1135,8 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
             # keep reacting to stale frames from the round that just ended.
             if is_macro:
                 macro_state = "IDLE"
+                macro_ctrl = None
+                macro_pending = None
                 macro_plan_queue.clear()
                 prev_p2_row = None
                 initial_p2_type = None

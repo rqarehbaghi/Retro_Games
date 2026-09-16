@@ -124,12 +124,12 @@ class SimulatorTests(unittest.TestCase):
         from pathlib import Path
         data = json.loads((Path(__file__).resolve().parents[1] / 'games.json').read_text())
         cfg = data['games']['TetrisTime-Nes-v0']['training']['afterstate']
-        self.assertEqual(cfg['line_tiers'], [0, 1, 4, 8, 16])
+        self.assertEqual(cfg['line_tiers'], [0, 4, 8, 16, 32])
         self.assertEqual(cfg['survival_reward'], 0)
         self.assertEqual(cfg['board_term_mode'], 'selection_delta')
         sim = GridPlacementSimulator(cfg)
         rewards = [sim._line_reward(lines) for lines in range(5)]
-        self.assertEqual(rewards, [0, 1, 4, 8, 16])
+        self.assertEqual(rewards, [0, 4, 8, 16, 32])
 
         empty = np.zeros(200, dtype=np.float32)
         damaged = empty.copy()

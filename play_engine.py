@@ -739,11 +739,21 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
             print("AI: PLAYER %d (%s) | no human player" % (ai_p, who))
             pygame.display.set_caption("Retro AI Arena: AI (P%d) - [%s]" % (ai_p, game))
 
+    # PLAY_DEBUG=1 traces every placement decision and every button frame the
+    # shared controller emits. Live play has no unittest harness, so this is
+    # the only way to compare what play does against what training does.
+    _dbg = bool(os.environ.get("PLAY_DEBUG"))
+
     def _ai_buttons(btn_names):
         act = np.array([False] * len(buttons), dtype=bool)
+        dropped = []
         for b in btn_names:
             if b in buttons:
                 act[buttons.index(b)] = True
+            else:
+                dropped.append(b)
+        if dropped and _dbg:
+            print("[dbg] buttons not in this game's button list: %s" % dropped)
         return act
 
     macro_plan_queue = deque()
@@ -965,9 +975,14 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
                         macro_cfg, _read_macro_var, ai_p)
                     macro_ctrl.begin(action_idx)
                     macro_pending = True
+                    if _dbg:
+                        print("[dbg] frame %d DECIDE action=%d feats=%s"
+                              % (step_count, action_idx, _board_features()))
                     p2_action = _ai_buttons(macro_ctrl.next_buttons() or [])
             else:
                 frame_buttons = macro_ctrl.next_buttons()
+                if _dbg:
+                    print("[dbg] frame %d buttons=%s" % (step_count, frame_buttons))
                 if frame_buttons is None:
                     macro_pending = None        # settle, then decide again
                     p2_action = _ai_buttons([])

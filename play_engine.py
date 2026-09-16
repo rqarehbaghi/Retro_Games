@@ -708,10 +708,12 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
     try:
         from rl.env import TrainingSpec, GameVars
         from rl.macro import MacroPlacementController
+        from rl.env import _scripted_buttons
         spec = TrainingSpec(game, ai_overrides)
         ai_slot = max(0, spec.player - 1)
         is_macro = getattr(spec, "action_mode", "button_stream") == "macro_placement"
         macro_cfg = getattr(spec, "macro_config", {}) if is_macro else {}
+        skip_cfg = dict(getattr(spec, "skip_while", None) or {})
         game_vars = GameVars(game, entry=spec.entry)
     except Exception:                                            # noqa: BLE001
         spec = None
@@ -742,11 +744,10 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
                 act[buttons.index(b)] = True
         return act
 
-    macro_plan_queue = deque()
-    macro_state = "IDLE"
     # One shared placement controller (rl.macro), re-created per placement.
     macro_ctrl = None
     macro_pending = None
+    skip_frames = 0
     # games.json declares this as col_offset. Reading "column_offset" here meant
     # live play defaulted to 0 while training used 3, so every placement the
     # model asked for landed three columns left of where it was trained.
@@ -757,8 +758,6 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
     col_var = macro_cfg.get("col_var", "piece_col_p%d" % ai_p)
     row_var = macro_cfg.get("row_var", "piece_row_p%d" % ai_p)
     piece_type_var = macro_cfg.get("piece_type_var", "piece_type_p%d" % ai_p)
-    prev_p2_row = None
-    initial_p2_type = None
 
     # 3. Setup Frame Stack buffer (4 frames of 84x84 grayscale) ONLY if AI needs it (pixels)
     is_image = len(ai_expected_shape) > 1
@@ -916,8 +915,7 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
             # One placement at a time, driven by the SHARED controller in
             # rl.macro -- the same object training uses. play_engine used to
             # keep its own copy of this state machine, which silently drifted
-            # from the fixed one (the rotation-specific column re-read landed
-            # only in the wrapper), so the same checkpoint scored 605 lines in
+            # from the fixed one, so the same checkpoint scored 605 lines in
             # training and 1 line here. Do not reintroduce a local copy.
             def _read_macro_var(name, default=0):
                 if not name or game_vars is None:
@@ -925,32 +923,59 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
                 v = game_vars.read(name, env.unwrapped.get_ram(), {}, default)
                 return default if v is None else int(v)
 
-            if macro_ctrl is not None and not macro_ctrl.aborted:
-                macro_ctrl.observe()
+            # A level change is a stretch the agent cannot act on, and it is
+            # DECLARED in games.json as skip_while. Training runs past it while
+            # driving the declared input_script; live play knew nothing about
+            # it, so the controller kept issuing placements against an animating
+            # board and the first placement AFTER the change was uncontrolled or
+            # very late. Same declared signal, same behaviour, no game rules here.
+            skipping = bool(skip_cfg) and game_vars is not None and game_vars.matches(
+                skip_cfg["var"], ram, info, skip_cfg.get("equals"))
 
-            if macro_ctrl is None or macro_pending is None:
-                # Decide the next placement from the settled board.
-                curr_obs = ai_frame(obs, ram)
-                if model is not None:
-                    if getattr(model, "is_afterstate", False):
-                        action_idx, _ = model.predict(curr_obs, deterministic=deterministic,
-                                                      ram=ram, info=info)
-                    else:
-                        action_idx, _ = model.predict(curr_obs, deterministic=deterministic)
-                    action_idx = int(action_idx)
-                else:
-                    action_idx = np.random.randint(len(ai_combos))
-                macro_ctrl = MacroPlacementController(macro_cfg, _read_macro_var, ai_p)
-                macro_ctrl.begin(action_idx)
-                macro_pending = True
-
-            frame_buttons = macro_ctrl.next_buttons()
-            if frame_buttons is None:
-                # Placement finished; decide again on the next frame.
+            if skipping:
+                macro_ctrl = None
                 macro_pending = None
-                p2_action = _ai_buttons([])
+                p2_action = _ai_buttons(_scripted_buttons(skip_cfg, skip_frames))
+                skip_frames += 1
             else:
-                p2_action = _ai_buttons(frame_buttons)
+                skip_frames = 0
+                if macro_ctrl is not None and macro_pending is not None:
+                    macro_ctrl.observe()
+
+                if macro_pending is None:
+                    # Do not decide until a real playable piece exists. Straight
+                    # after a transition the piece slot holds a transient value,
+                    # and planning against it wastes the first placement.
+                    valid = macro_cfg.get("valid_piece_types")
+                    kind = _read_macro_var(
+                        macro_cfg.get("piece_type_var", piece_type_var), None)
+                    if kind is None or (valid is not None and kind not in valid):
+                        p2_action = _ai_buttons([])
+                        macro_ctrl = None
+                    else:
+                        curr_obs = ai_frame(obs, ram)
+                        if model is not None:
+                            if getattr(model, "is_afterstate", False):
+                                action_idx, _ = model.predict(
+                                    curr_obs, deterministic=deterministic, ram=ram, info=info)
+                            else:
+                                action_idx, _ = model.predict(
+                                    curr_obs, deterministic=deterministic)
+                            action_idx = int(action_idx)
+                        else:
+                            action_idx = np.random.randint(len(ai_combos))
+                        macro_ctrl = MacroPlacementController(
+                            macro_cfg, _read_macro_var, ai_p)
+                        macro_ctrl.begin(action_idx)
+                        macro_pending = True
+                        p2_action = _ai_buttons(macro_ctrl.next_buttons() or [])
+                else:
+                    frame_buttons = macro_ctrl.next_buttons()
+                    if frame_buttons is None:
+                        macro_pending = None          # decide again next frame
+                        p2_action = _ai_buttons([])
+                    else:
+                        p2_action = _ai_buttons(frame_buttons)
 
         elif model is not None:
             if is_image:
@@ -1134,12 +1159,9 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
             # Refill the AI's frame-stack from the fresh round so it doesn't
             # keep reacting to stale frames from the round that just ended.
             if is_macro:
-                macro_state = "IDLE"
                 macro_ctrl = None
                 macro_pending = None
-                macro_plan_queue.clear()
-                prev_p2_row = None
-                initial_p2_type = None
+                skip_frames = 0
             if model is not None and is_image:
                 reset_frame = ai_frame(obs, env.unwrapped.get_ram())
                 frame_stack.clear()

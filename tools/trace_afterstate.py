@@ -44,7 +44,7 @@ def main():
     agent.load(a.model)
     gvars = GameVars(spec.game, entry=spec.entry)
 
-    env = make_env(spec)
+    env = make_env(a.game, overrides)
     obs, info = env.reset()
     pending, n, frame = False, 0, 0
     while n < a.max_placements:

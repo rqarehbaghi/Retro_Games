@@ -227,6 +227,31 @@ class MacroPlacementController:
         return ((self.action is None or (self.completed and self.respawned))
                 and self.active_type())
 
+    def _replacement_present(self):
+        """Is the NEXT piece really on the board?
+
+        Either the row counter reset, or a different valid piece type is now
+        current. Requiring the row reset ALONE left the controller emitting
+        neutral input while the replacement was already falling: measured over
+        400 placements, every one completed by type change rather than row
+        reset, and the tail after completion averaged 7.9 frames and reached the
+        full spawn_wait_frames. At high gravity that is several rows of
+        uncontrolled fall -- the first piece after a level change was the worst
+        case, because the row reset that normally releases the wait a frame or
+        two later does not arrive cleanly there.
+
+        The wait itself is still needed: handing back before the replacement
+        exists made downstream readers see the LOCKED piece's row/column, which
+        erased part of the just-placed piece from the masked board.
+        """
+        if not self.active_type():
+            return False
+        if self.respawned:
+            return True
+        kind = self.read(self.piece_type_var, None)
+        return (kind is not None and self.initial_type is not None
+                and kind != self.initial_type)
+
     def _stop(self):
         return self.completed or self.aborted
 
@@ -277,7 +302,7 @@ class MacroPlacementController:
             # is actually there; do not wait for a SECOND row reset.
             for _ in range(self.spawn_wait_frames):
                 yield []
-                if self.aborted or (self.respawned and self.active_type()):
+                if self.aborted or self._replacement_present():
                     return
         else:
             # A timeout is not a completed placement, and must not be reported

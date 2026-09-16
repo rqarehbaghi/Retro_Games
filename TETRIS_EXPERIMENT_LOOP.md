@@ -112,6 +112,30 @@ the replay even though start-state draws are uniform. Test a generic
 least-cumulative-steps start sampler next; keep its selection policy configured
 in games.json and compare at the same10k budget before extending training.
 
+### v53 interrupted; v54 balanced-state gate active
+
+Commit `8f388b8` adds generic, JSON-configurable `balanced_steps` start-state
+sampling and selects it for Tetris. At each episode boundary it accumulates the
+environment steps contributed by the prior start, then draws randomly among the
+least-exposed starts. Random per-episode sampling remains the framework default.
+The core suite and41 unittest cases pass; Windows, WSL and origin/main were clean
+and synchronized after the push.
+
+The first balanced run, `checkpoints/tetris_v53_balanced_gate10k`, was interrupted
+by the task-owned foreground process session ending after its5k checkpoint. It
+left valid2.5k and5k checkpoints but no traceback (buffered log remained empty).
+Preserve it as an orchestration failure; do not interpret it as a learning result
+or resume it as an exact run because replay/RNG/target state are not checkpointed.
+
+A fresh non-overwriting replacement is active at
+`checkpoints/tetris_v54_balanced_gate10k`, launched as persistent systemd user
+unit `tetris-v54-balanced.service` with unbuffered logging. It uses the same16
+states,10k placements, epsilon0.20->0.03 over5k, CUDA, and snapshots every2.5k.
+Startup verified all6 simulator placements and printed
+`start states: 16, sampling=balanced_steps`. On completion evaluate all16 states
+against the same zero-value control and report lines/placements, mean, minimum,
+count>=100, and caps. Do not extend blindly if balance does not improve robustness.
+
 ## Locations
 
 - Editable code: G:/GitHub/Retro_Games (WSL /mnt/g/GitHub/Retro_Games).

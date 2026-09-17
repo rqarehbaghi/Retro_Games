@@ -44,15 +44,21 @@ class EncoderTests(unittest.TestCase):
     def tearDown(self):
         overlays._NVENC = self._saved
 
+    def test_default_is_x264_even_when_nvenc_works(self):
+        # NVENC measured slower and failed 3 of 18 encodes under WSL2.
+        overlays._NVENC = (True, "ok")
+        args, _ = overlays.video_codec_args(overlays.merge_style({}))
+        self.assertEqual(args, ["-c:v", "libx264", "-preset", "veryfast", "-crf", "18"])
+
     def test_auto_uses_nvenc_when_the_test_encode_worked(self):
         overlays._NVENC = (True, "ok")
-        args, name = overlays.video_codec_args(overlays.merge_style({}))
+        args, name = overlays.video_codec_args(overlays.merge_style({"encoder": "auto"}))
         self.assertEqual(args[:2], ["-c:v", "h264_nvenc"])
         self.assertIn("NVENC", name)
 
     def test_auto_falls_back_to_x264_veryfast(self):
         overlays._NVENC = (False, "cuInit(0) failed")
-        args, name = overlays.video_codec_args(overlays.merge_style({}))
+        args, name = overlays.video_codec_args(overlays.merge_style({"encoder": "auto"}))
         self.assertEqual(args, ["-c:v", "libx264", "-preset", "veryfast", "-crf", "18"])
 
     def test_pinned_nvenc_fails_loudly_instead_of_silently_using_cpu(self):

@@ -43,12 +43,14 @@ sudo apt install -y python3 python3-venv python3-pip build-essential cmake ffmpe
     libglu1-mesa libgl1 freeglut3-dev mesa-utils
 ```
 
-`ffmpeg` is what actually encodes the final video. With an NVIDIA GPU it
-encodes on the GPU (NVENC), which needs nothing installed inside Ubuntu --
+`ffmpeg` is what actually encodes the final video, on the CPU (libx264) by
+default. It can also encode on an NVIDIA GPU (NVENC, style `encoder`), which
+needs nothing installed inside Ubuntu --
 the driver on Windows provides it to WSL. `setup.sh` runs
 `bash tools/check_nvenc.sh`, which proves it with a test encode and says what
 to fix if it fails (a laptop GPU switched to integrated-only mode is invisible
-to WSL). Without it, rendering falls back to the CPU. The `libglu1-mesa` /
+to WSL). Rendering uses the CPU (libx264) by default all the same -- on WSL2
+NVENC measured slower and less reliable; see `encoder` in `overlays.py`. The `libglu1-mesa` /
 `libgl1` / `freeglut3-dev` / `mesa-utils` group is OpenGL support --
 `--human` needs it to open its play window (agent play without `--human`
 or `--render` doesn't). Confirm ffmpeg is there:

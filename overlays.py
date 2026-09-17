@@ -45,18 +45,25 @@ DEFAULT_STYLE = {
     "transition_seconds": 0.25,
     "blur": 20,
     "crf": 18,
-    # Encoding. "auto" uses NVIDIA NVENC when a test encode succeeds and
-    # otherwise libx264; "nvenc" or "x264" pins one. Measured on 2 minutes of
-    # a 1080p clean render: x264 "slow" 1.62x real time, "veryfast" 1.81x at
-    # the same file size and no visible difference on pixel art -- so the
-    # preset was never the cost (the blur was, see build_filter).
-    "encoder": "auto",
+    # Encoding: "x264" (default), "nvenc", or "auto" (NVENC when a test encode
+    # succeeds, else x264). Measured on 2 minutes of a 1080p clean render:
+    # x264 "slow" 1.62x real time, "veryfast" 1.81x at the same file size and
+    # no visible difference on pixel art -- so the preset was never the cost
+    # (the blur was, see build_filter).
+    #
+    # x264 is the default because NVENC LOST on the owner's machine (RTX 4090
+    # laptop, WSL2), measured with x264 and NVENC alternating over 3 rounds of
+    # the full filter+encode pipeline: x264 1.28-1.50x real time, NVENC
+    # 0.66-0.79x. Worse, 3 of 18 NVENC encodes FAILED ("Conversion failed!",
+    # "Failed unlocking input buffer") -- unacceptable for a render that runs
+    # for hours. Matching quality also costs more space: NVENC cq 28 scores
+    # SSIM 23.9 dB against x264 crf 18's 23.6 dB, at 453 vs 318 MB/hour.
+    "encoder": "x264",
     "x264_preset": "veryfast",
     "nvenc_preset": "p5",
-    # Constant-quality target for NVENC, the analogue of crf. PROVISIONAL:
-    # not yet compared against crf 18 on this footage, because the GPU was not
-    # visible to WSL when this was written. Tune it once a test encode runs.
-    "nvenc_cq": 19,
+    # NVENC constant-quality target, set to MATCH x264 crf 18 on this footage
+    # (cq 28: SSIM 23.86 dB vs 23.62 dB; cq 25 25.0 dB, cq 31 23.0 dB).
+    "nvenc_cq": 28,
     # Encode every output at the same time. The filter graph is mostly
     # single-threaded, so separate processes use the other cores.
     "parallel_outputs": True,

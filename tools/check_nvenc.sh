@@ -37,7 +37,7 @@ ok "ffmpeg has h264_nvenc"
 err=$(ffmpeg -nostdin -v error -f lavfi -i color=black:s=256x256:d=1 \
       -c:v h264_nvenc -f null - 2>&1)
 if [ $? -eq 0 ]; then
-    ok "test encode on the GPU succeeded -- studio renders will use NVENC"
+    ok "test encode on the GPU succeeded -- NVENC is available (set style \"encoder\": \"nvenc\" or \"auto\" to use it)"
     exit 0
 fi
 bad "test encode failed: $(printf '%s' "$err" | tail -n 1)"
@@ -99,5 +99,5 @@ case "$cuda" in
     bad "could not query CUDA: $cuda"
     ;;
 esac
-note "Renders will fall back to libx264 (slower, same quality) until this passes."
+note "Renders use libx264 by default anyway; this only matters if style encoder is nvenc or auto."
 exit 0

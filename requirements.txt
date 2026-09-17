@@ -9,7 +9,8 @@ opencv-python-headless
 
 # GPU video encoding (NVENC) is NOT a pip package -- it comes from the NVIDIA
 # driver and ffmpeg. `bash tools/check_nvenc.sh` (run by setup.sh) tests it and
-# explains any fix; without it renders fall back to libx264.
+# explains any fix. Renders use libx264 by default: on a WSL2 laptop NVENC
+# measured slower than x264 and failed 3 of 18 encodes (see overlays.py).
 
 # Optional -- only for `studio.py --writer claude`, which has the Anthropic
 # API write the captions, commentary and descriptions. The `ollama` backend

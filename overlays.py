@@ -82,6 +82,12 @@ DEFAULT_STYLE = {
         "border_color": "white",
         "y_frac": 0.045,
         "case": "sentence",
+        # On 16:9 the picture fills the height, so the title plate sits on the
+        # game itself -- on Tetris it covered both players' scores for the
+        # whole video. It shows for this many seconds at the start and then
+        # goes. On 9:16 it sits in the blurred band and stays up. null keeps it
+        # up on 16:9 too.
+        "wide_seconds": 5.0,
         "box": True,
         "box_color": "white",
         "box_pad": 12,
@@ -469,6 +475,8 @@ def build_filter(spec, width, height, src_label="[0:v]", overlays=True):
         parts.append(draw(stage, "[v1]", text, style["title_font"], size,
                           int(height * cfg["y_frac"]), cfg["color"],
                           cfg["border_color"], border_w=cfg.get("border_w"),
+                          enable=(None if vertical or cfg.get("wide_seconds") is None
+                                  else "lt(t,%.2f)" % float(cfg["wide_seconds"])),
                           box=cfg.get("box", False),
                           box_color=cfg.get("box_color", "black@0.5"),
                           box_pad=cfg.get("box_pad", 12),

@@ -79,6 +79,28 @@ class EncoderTests(unittest.TestCase):
         self.assertIn("20", args)
 
 
+class TitleTests(unittest.TestCase):
+    def title_stage(self, w, h, style=None):
+        spec = {"title": "Tetris Time", "style": style or {}}
+        return [p for p in overlays.build_filter(spec, w, h).split(";")
+                if "Tetris Time" in p][0]
+
+    def test_title_leaves_after_five_seconds_on_wide_only(self):
+        self.assertIn("enable='lt(t,5.00)'", self.title_stage(1920, 1080))
+        self.assertNotIn("enable=", self.title_stage(1080, 1920))
+
+    def test_wide_seconds_null_keeps_it_up(self):
+        stage = self.title_stage(1920, 1080, {"title": {"wide_seconds": None}})
+        self.assertNotIn("enable=", stage)
+
+    def test_all_text_is_on_an_opaque_plate_without_outline(self):
+        stage = self.title_stage(1920, 1080)
+        self.assertIn("box=1", stage)
+        self.assertIn("boxcolor=white:", stage)
+        self.assertIn("borderw=0", stage)
+        self.assertNotIn("shadowcolor", stage)
+
+
 class BlurTests(unittest.TestCase):
     def test_fill_is_blurred_small_with_matching_sigma(self):
         spec = {"style": {"blur": 20}}

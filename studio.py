@@ -1239,7 +1239,13 @@ def main():
         "claude": "%s, effort %s" % (args.claude_model, args.claude_effort),
         "claude-code": "%s via subscription" % args.claude_model,
     }.get(args.writer, args.writer_model)
-    print(f"Writing with {in_use} (seed {seed}) ...")
+    # Name what is being written: with --no-captions only the upload copy is,
+    # and a bare "Writing with ..." read as if captions were being made.
+    writing = [] if args.no_captions else ["captions"]
+    writing.append("the title/description/tags")
+    if args.voice:
+        writing.append("the commentary")
+    print("Writing %s with %s (seed %d) ..." % (" + ".join(writing), in_use, seed))
 
     # Same resolution the play branch uses: --players is None unless given, and
     # a model or a second human implies two.
@@ -1370,9 +1376,10 @@ def main():
             print(f"  WARNING: voice failed ({exc.__class__.__name__}: {exc})")
             print( "           the videos and narration.txt are unaffected.")
 
-    with open(os.path.join(folder, "captions.txt"), "w") as handle:
-        for at, text in lines:
-            handle.write("%s  %s\n" % (stamp(int(at * FPS)), text))
+    if not args.no_captions:
+        with open(os.path.join(folder, "captions.txt"), "w") as handle:
+            for at, text in lines:
+                handle.write("%s  %s\n" % (stamp(int(at * FPS)), text))
     written_copy = writer.copy(**ctx, watermark=args.watermark, **ai) or {}
     if not written_copy:
         print("  WARNING: no description came back -- paste.txt will be EMPTY.")

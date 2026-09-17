@@ -37,7 +37,7 @@ everything it used to dump on the terminal is in the folder:
 | `narration.wav` | only with `--voice` — the spoken track on its own |
 | `UPLOAD_BRIEF.md` | paste into Claude and it walks the upload -- the copy, the rules, and Windows-side paths for the files to attach |
 | `paste.txt` | the same copy as three upload forms, to retype by hand |
-| `metadata.json` `narration.txt` `events.csv` | `captions.txt` too with `--text` |
+| `metadata.json` `captions.txt` `narration.txt` `events.csv` | captions are written unless `--no-captions`, with or without `--text` |
 
 Retry the writing without replaying — it renders **into the same folder**:
 

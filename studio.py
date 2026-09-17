@@ -23,12 +23,15 @@ the brief. Nothing else is printed, because everything else is IN the folder:
     paste.txt            the same copy as three upload forms, to retype by hand
     overlays.json        every word and style rule -- edit, then restyle.py
     metadata.json        title, description and per-platform hashtags
+    captions.txt         the caption text with timecodes
     events.csv           the raw event timeline the writing was built from
 
 With --text (or "text": true in studio.json) it ALSO renders the titled and
-captioned cuts, <slug>_16x9.mp4 and <slug>_9x16.mp4, and writes captions.txt.
-Off by default: text goes on in an editor, a long run then costs two encodes
-instead of four, and no caption-writing model call is made.
+captioned cuts, <slug>_16x9.mp4 and <slug>_9x16.mp4. Off by default: text goes
+on in an editor, and a long run then costs two encodes instead of four.
+--text only decides which videos are RENDERED. Captions are still written
+(into overlays.json and captions.txt) unless --no-captions, so a text cut can
+be rendered later with restyle.py without asking the model again.
 
 With --voice it also writes narration.txt, narration.wav and _narrated cuts.
 
@@ -904,9 +907,9 @@ def main():
     parser.add_argument("--clip-lead", type=float, default=0.0, help="Seconds of run-up kept before each event when the short is a highlight cut, so a moment has a little context before it. (default: %(default)s)")
     parser.add_argument("--transition", choices=TRANSITIONS, default=cfg.get("transition", "fade"), help="How cuts are joined in the short. fade goes through black and is the safest; dissolve and pixelize cross-fade the pair and cost overlap at every join; none hard-cuts. (default: %(default)s)")
     parser.add_argument("--transition-seconds", type=float, default=0.25, help="Length of each transition in seconds. (default: %(default)s)")
-    parser.add_argument("--text", action="store_true", help="Also render the titled and captioned cuts (_16x9.mp4 and _9x16.mp4) beside the clean ones, and write their captions. OFF by default -- only the clean 16:9 and 9:16 masters are rendered and no caption model call is made. Set \"text\": true in studio.json to make it the default.")
+    parser.add_argument("--text", action="store_true", help="Also render the titled and captioned cuts (_16x9.mp4 and _9x16.mp4) beside the clean ones. OFF by default -- only the clean 16:9 and 9:16 masters are rendered. This only controls rendering: captions are still written unless --no-captions. Set \"text\": true in studio.json to make it the default.")
     parser.add_argument("--no-text", action="store_true", help="Force the text cuts off even when studio.json turns them on.")
-    parser.add_argument("--no-captions", action="store_true", help="With --text: render the title and watermark but no timed commentary captions. They are written from the event log, so they land on the thing they are about.")
+    parser.add_argument("--no-captions", action="store_true", help="Turn off the timed commentary captions. They are written from the event log, so they land on the thing they are about.")
     parser.add_argument("--level", default=cfg.get("level"), help="Where in the game this run is, e.g. World 1-1. Shown after the game name in the title. Set it once as the level key in studio.json.")
     parser.add_argument("--writer", choices=writer.BACKENDS, default=cfg.get("writer", writer.DEFAULT_BACKEND), help="Who writes the captions, commentary and descriptions. 'auto' cascades: Claude Code -> Anthropic API -> Gemini -> Ollama. 'gemini' calls Google Gemini (GEMINI_API_KEY); 'claude' calls Anthropic API; 'ollama' runs locally. (default: %(default)s)")
     parser.add_argument("--writer-cli", default=cfg.get("writer_cli", writer.DEFAULT_CLI), help="Path to the Claude Code binary for --writer claude-code, if it is not on PATH. Also looked for at ~/.local/bin/claude and ~/.claude/local/claude. (default: %(default)s)")
@@ -1244,10 +1247,7 @@ def main():
                two_human=args.two_human)
 
     lines, written_caps = [], []
-    # Captions only exist to be burnt into the text cuts, so without them the
-    # model is not asked -- which also keeps a multi-hour event timeline out
-    # of that prompt.
-    if args.text and not args.no_captions:
+    if not args.no_captions:
         written_caps = writer.captions(**ctx, **ai)
         if written_caps is None:
             sys.exit(
@@ -1367,10 +1367,9 @@ def main():
             print(f"  WARNING: voice failed ({exc.__class__.__name__}: {exc})")
             print( "           the videos and narration.txt are unaffected.")
 
-    if args.text:
-        with open(os.path.join(folder, "captions.txt"), "w") as handle:
-            for at, text in lines:
-                handle.write("%s  %s\n" % (stamp(int(at * FPS)), text))
+    with open(os.path.join(folder, "captions.txt"), "w") as handle:
+        for at, text in lines:
+            handle.write("%s  %s\n" % (stamp(int(at * FPS)), text))
     written_copy = writer.copy(**ctx, watermark=args.watermark, **ai) or {}
     if not written_copy:
         print("  WARNING: no description came back -- paste.txt will be EMPTY.")

@@ -21,7 +21,7 @@
       "cps": 10.0,
       "min_hold": 3.0,
       "max_hold": 7.0,
-      "box_color": "white@0.88",
+      "box_color": "white",
       "box_pad": 14,
       "border_w": 0
     }

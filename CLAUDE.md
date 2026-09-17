@@ -138,11 +138,11 @@ reintroduce:**
 - A power drop to tier 0 is not the same as raccoon → big. `shrink` vs
   `powerdown`.
 
-**Captions are a solid white plate, not a white drop shadow.** A white shadow
+**All on-screen text -- captions, title, watermark -- is black on an OPAQUE white plate, not a drop shadow or outline.** A white shadow
 was tried and failed on this exact game: World 1-1's sky is near-white, the
 shadow vanished into it, and black glyphs were left with nothing separating
 them from the background. The plate (`box` on, `box_color` white, `borderw` 0)
-is legible over any frame. Change it in `overlays.py` `DEFAULT_STYLE`.
+is legible over any frame. The title and watermark were left on outline + faint shadow when captions moved to the plate; a rendered 16:9 frame showed the title merging into the game's SCORE row. The plate is fully opaque (`white`, not `white@0.88`): at 0.88 the score still ghosted through. Change it in `overlays.py` `DEFAULT_STYLE`.
 
 **The closing ASK lands on the moment the course is cleared**, held ~2.5s
 longer than a joke (`CLOSING_BONUS`), and is written to be plain and literally

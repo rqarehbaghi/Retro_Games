@@ -71,22 +71,25 @@ DEFAULT_STYLE = {
     # setting renders the same size in both outputs. A LARGER number still
     # means SMALLER text -- these are 10% smaller than the previous values.
     #
-    # Black text on a white outline and a white shadow. The polarity has to be
-    # consistent: black glyphs with a black outline would disappear against
-    # dark footage, so the outline and shadow carry the contrast.
+    # Title and watermark use the same solid white plate as captions. They
+    # were left on black text + white outline + faint white shadow when the
+    # captions moved to a plate, and a rendered 16:9 frame of the Tetris run
+    # showed the title merging into the game's SCORE row -- unreadable -- and
+    # the watermark barely visible over the blurred band.
     "title": {
         "size_div": 40,
         "color": "black",
-        "border_color": "white@0.9",
+        "border_color": "white",
         "y_frac": 0.045,
         "case": "sentence",
-        "shadow": True,
+        "box": True,
+        "box_color": "white",
+        "box_pad": 12,
+        "border_w": 0,
+        "shadow": False,
         "shadow_color": "white@0.75",
         "shadow_x": 3,
         "shadow_y": 3,
-        "box": False,
-        "box_color": "black@0.5",
-        "box_pad": 12,
     },
     "caption": {
         "size_div": 29,
@@ -118,7 +121,7 @@ DEFAULT_STYLE = {
         # any frame, which is the whole job. borderw goes to 0 because a white
         # outline on a white plate only eats into the glyphs.
         "box": True,
-        "box_color": "white@0.88",
+        "box_color": "white",
         "box_pad": 14,
         "border_w": 0,
         "shadow": False,
@@ -128,18 +131,19 @@ DEFAULT_STYLE = {
     },
     "watermark": {
         "size_div": 58,
-        "color": "black@0.7",
-        "border_color": "white@0.7",
+        "color": "black",
+        "border_color": "white",
         "y_frac_vertical": 0.925,
         "y_frac_wide": 0.94,
         "case": "none",
-        "shadow": True,
+        "box": True,
+        "box_color": "white",
+        "box_pad": 8,
+        "border_w": 0,
+        "shadow": False,
         "shadow_color": "white@0.6",
         "shadow_x": 2,
         "shadow_y": 2,
-        "box": False,
-        "box_color": "black@0.35",
-        "box_pad": 8,
     },
 }
 
@@ -464,7 +468,8 @@ def build_filter(spec, width, height, src_label="[0:v]", overlays=True):
                         int(width * 0.9), ratio)
         parts.append(draw(stage, "[v1]", text, style["title_font"], size,
                           int(height * cfg["y_frac"]), cfg["color"],
-                          cfg["border_color"], box=cfg.get("box", False),
+                          cfg["border_color"], border_w=cfg.get("border_w"),
+                          box=cfg.get("box", False),
                           box_color=cfg.get("box_color", "black@0.5"),
                           box_pad=cfg.get("box_pad", 12),
                           shadow=cfg.get("shadow", True),
@@ -483,7 +488,7 @@ def build_filter(spec, width, height, src_label="[0:v]", overlays=True):
         y = cfg["y_frac_vertical"] if vertical else cfg["y_frac_wide"]
         parts.append(draw(stage, "[v2]", apply_case(mark, cfg.get("case", "none")),
                           style["font"], size, int(height * y), cfg["color"],
-                          cfg["border_color"], border_w=2, x=x,
+                          cfg["border_color"], border_w=cfg.get("border_w", 2), x=x,
                           box=cfg.get("box", False),
                           box_color=cfg.get("box_color", "black@0.35"),
                           box_pad=cfg.get("box_pad", 8),

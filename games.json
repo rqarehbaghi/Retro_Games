@@ -784,6 +784,8 @@
           "var": "game_mode",
           "not_equals": 0,
           "max_frames": 2000,
+          "resume_hold_frames": {"3": 10},
+          "resume_hold_why": "game_mode returns to 0 BEFORE a level-up animation has actually finished. Measured at all 3 bot level-ups of studio_out/20260917-005838, by restoring the emulator at the resume frame: the animation image stays on screen for 3 more frames, the board is redrawn by frame 7, and LEFT first moves the piece when pressed 7, 7 and 8 frames after resume. Before this hold the bot decided on the animation image and its first taps were dropped -- in that run and in 20260917-003543 and -003123 the first placement after every one of the 7 level-ups was not the model's choice (a legal drop at the spawn column). 10 = the measured worst case 8 plus 2 frames of margin. Only after value 3: a START pause (value 1) accepts input on the first frame after resume, measured the same way, so it gets no hold.",
           "why": "game_mode 0x0029 is 0 exactly while the game runs and non-zero for level animations, the 1-player intermission, START pauses and menus -- see its evidence. It replaced level_transition, which lingers after play resumes and fires for the other player's level-up in 2-player; that took control from the bot while its pieces were falling. With a variable that clears exactly when play resumes, the old resume_on_change latch (after 300 frames, 2 piece-row changes) is not needed. max_frames guards training only; live play waits out a pause of any length.",
           "input_script": [
             {"start": 0, "hold": 5, "repeat_every": 80, "buttons": ["B"]},

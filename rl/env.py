@@ -172,6 +172,30 @@ class TransitionGate:
         self.timed_out = False
         self._prev_resume = None
         self._changes = 0
+        self._last_value = None      # the variable's value while the skip ran
+        self._held = 0               # frames already held after it cleared
+
+    def _hold_after(self):
+        """Frames to keep holding after the condition clears, per games.json
+        `resume_hold_frames`, keyed by the value the variable had.
+
+        A game can report "running" before it is: TetrisTime's game_mode goes
+        to 0 while the level-up animation is still on screen, the board is only
+        redrawn 7 frames later, and input is ignored until then -- so the bot's
+        first placement after every level-up was decided on the animation and
+        its first taps were dropped. A START pause resumes with neither
+        problem, which is why this is keyed by value rather than one number."""
+        table = self.cfg.get("resume_hold_frames") or {}
+        if self._last_value is None:
+            return 0
+        return max(0, int(table.get(str(int(self._last_value)), 0)))
+
+    def _in_hold(self, ram, info):
+        """The condition has cleared but a declared post-resume hold is not
+        used up yet."""
+        return (self.frames > 0 and not self.latched
+                and not episode_ended(self.episode_end, self.vars, ram, info)
+                and self._held < self._hold_after())
 
     def active(self, ram, info):
         """Would this frame be skipped? The ONE place the condition is judged.
@@ -186,6 +210,8 @@ class TransitionGate:
         info = self._seen(info)
         if (not self.vars.matches_config(self.cfg, ram, info)
                 or episode_ended(self.episode_end, self.vars, ram, info)):
+            if self._in_hold(ram, info):
+                return True                 # cleared, but not safe to act yet
             self.reset()                    # condition cleared: re-arm for next time
             return False
         return not self.latched
@@ -195,6 +221,12 @@ class TransitionGate:
         if not self.active(ram, info):
             return False
         info = self._seen(info)
+        if not self.vars.matches_config(self.cfg, ram, info):
+            self._held += 1                 # post-resume hold: no script input
+            return True
+        value = self.vars.read(self.cfg["var"], ram, info)
+        if value is not None:
+            self._last_value = value
 
         resume = self.cfg.get("resume_on_change") or {}
         resume_var = resume.get("var")
@@ -220,7 +252,11 @@ class TransitionGate:
         return True
 
     def buttons(self):
-        """What games.json says to press on the frame just admitted."""
+        """What games.json says to press on the frame just admitted. Nothing
+        during a post-resume hold: the game is running again and a scripted
+        button there would land on the live piece."""
+        if self._held:
+            return []
         return _scripted_buttons(self.cfg, max(0, self.frames - 1))
 
 

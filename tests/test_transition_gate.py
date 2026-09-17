@@ -83,6 +83,36 @@ class GateTests(unittest.TestCase):
         self.assertFalse(train.update(ram(0), {}))
         self.assertTrue(train.update(ram(1), {}))
 
+    def test_holds_after_resume_only_for_the_declared_value(self):
+        cfg = dict(SKIP, resume_hold_frames={"3": 2}, max_frames=100)
+        gate = TransitionGate(cfg, self.vars, episode_end=END, time_limit=False)
+        # animation (3) then running: held 2 extra frames, no script input
+        seq = [3, 3, 0, 0, 0, 0]
+        out = []
+        for m in seq:
+            held = gate.update(ram(m), {})
+            out.append((held, tuple(gate.buttons()) if held else None))
+        self.assertEqual([h for h, _ in out], [True, True, True, True, False, False])
+        self.assertEqual(out[2][1], ())
+        self.assertEqual(out[3][1], ())
+        # pause (1) then running: no hold
+        held = [gate.update(ram(m), {}) for m in (1, 1, 0, 0)]
+        self.assertEqual(held, [True, True, False, False])
+
+    def test_hold_stands_down_if_the_game_ends(self):
+        cfg = dict(SKIP, resume_hold_frames={"3": 5})
+        gate = TransitionGate(cfg, self.vars, episode_end=END, time_limit=False)
+        gate.update(ram(3), {})
+        self.assertFalse(gate.update(ram(0, alive=0), {}))
+
+    def test_training_asks_active_and_sees_the_hold_too(self):
+        cfg = dict(SKIP, resume_hold_frames={"3": 1})
+        gate = TransitionGate(cfg, self.vars, time_limit=False)
+        gate.update(ram(3), {})
+        self.assertTrue(gate.active(ram(0), {}))
+        self.assertTrue(gate.update(ram(0), {}))
+        self.assertFalse(gate.active(ram(0), {}))
+
     def test_active_and_update_agree(self):
         # The training env asks active(), live play calls update(); they must
         # never disagree about a frame.

@@ -16,16 +16,19 @@ It produces one self-contained folder, and prints two paths: the folder, and
 the brief. Nothing else is printed, because everything else is IN the folder:
 
     UPLOAD_BRIEF.md      paste it into Claude and it can walk the upload
-    <slug>_16x9.mp4      1920x1080 master, captioned (YouTube)
-    <slug>_9x16.mp4      1080x1920, captioned (Shorts / Reels / TikTok)
-    <slug>_16x9_clean.mp4  the same master with no text, for thumbnails
+    <slug>_16x9_clean.mp4  1920x1080 master, no text (YouTube)
+    <slug>_9x16_clean.mp4  1080x1920, no text (Shorts / Reels / TikTok)
     <slug>_source.mp4    the capture everything above is rendered from
     <slug>.bk2           the replay, which is what makes the folder standalone
     paste.txt            the same copy as three upload forms, to retype by hand
     overlays.json        every word and style rule -- edit, then restyle.py
     metadata.json        title, description and per-platform hashtags
-    captions.txt         the on-screen text with timecodes
     events.csv           the raw event timeline the writing was built from
+
+With --text (or "text": true in studio.json) it ALSO renders the titled and
+captioned cuts, <slug>_16x9.mp4 and <slug>_9x16.mp4, and writes captions.txt.
+Off by default: text goes on in an editor, a long run then costs two encodes
+instead of four, and no caption-writing model call is made.
 
 With --voice it also writes narration.txt, narration.wav and _narrated cuts.
 
@@ -641,7 +644,7 @@ def paste_block(meta):
     rule = lambda label: ("-- " + label + " ").ljust(70, "-")
     out = [
         bar,
-        "YOUTUBE  --  studio.youtube.com, upload the _16x9.mp4",
+        "YOUTUBE  --  studio.youtube.com, upload the 16x9 video (_16x9.mp4, or _16x9_clean.mp4 without --text)",
         bar,
         "\n" + rule("Title"),
         title,
@@ -652,12 +655,12 @@ def paste_block(meta):
         "\n" + rule("Visibility"),
         "Private, or Schedule -- then review it and make it public.",
         "\n" + bar,
-        "TIKTOK  --  tiktok.com/upload, upload the _9x16.mp4",
+        "TIKTOK  --  tiktok.com/upload, upload the 9x16 video (_9x16.mp4, or _9x16_clean.mp4 without --text)",
         bar,
         "\n" + rule("Caption (%d chars)" % len(tt)),
         tt,
         "\n" + bar,
-        "INSTAGRAM  --  Reels, upload the _9x16.mp4",
+        "INSTAGRAM  --  Reels, upload the 9x16 video (_9x16.mp4, or _9x16_clean.mp4 without --text)",
         bar,
         "\n" + rule("Caption (%d chars)" % len(ig)),
         ig,
@@ -700,13 +703,34 @@ def staged_videos(folder):
     Found rather than passed, so a brief can be rebuilt for a folder made by
     an earlier run. The suffixes are the ones render_spec writes."""
     found = []
-    for suffix, role in (("_16x9.mp4", "YouTube"),
-                         ("_9x16.mp4", "TikTok / Reels / Shorts")):
-        hits = [f for f in sorted(glob.glob(os.path.join(folder, "*" + suffix)))
-                if "_clean" not in f and "_narrated" not in f]
+    for aspect, role in (("16x9", "YouTube"), ("9x16", "TikTok / Reels / Shorts")):
+        texted = [f for f in sorted(glob.glob(os.path.join(folder, "*_%s.mp4" % aspect)))
+                  if "_narrated" not in f]
+        clean = sorted(glob.glob(os.path.join(folder, "*_%s_clean.mp4" % aspect)))
+        hits = texted or clean
         if hits:
             found.append((role, hits[0]))
     return found
+
+
+def studio_outputs(slug, text):
+    """The cuts a run renders. Clean 16:9 and 9:16 always; the titled and
+    captioned pair only with --text.
+
+    Clean is the default because the owner adds text in an editor, and on a
+    multi-hour run every extra full-length 1080p encode costs real hours."""
+    outputs = [
+        {"file": f"{slug}_16x9_clean.mp4", "width": 1920, "height": 1080,
+         "overlays": False},
+        {"file": f"{slug}_9x16_clean.mp4", "width": 1080, "height": 1920,
+         "overlays": False},
+    ]
+    if text:
+        outputs += [
+            {"file": f"{slug}_16x9.mp4", "width": 1920, "height": 1080},
+            {"file": f"{slug}_9x16.mp4", "width": 1080, "height": 1920},
+        ]
+    return outputs
 
 
 def upload_brief(meta, folder, files):
@@ -826,7 +850,7 @@ YouTube     DO NOT AUTOMATE YET. Uploads via videos.insert from an unverified
             privacyStatus=private -- per Google's help pages the lock cannot be
             appealed, and the fix is to re-upload via a verified project or by
             hand. Automating now permanently burns every video you upload.
-            Upload <slug>_16x9.mp4 through the website until the API audit
+            Upload the 16x9 video through the website until the API audit
             passes.
 
 Instagram   CANNOT DO THIS FLOW AT ALL. The publishing API has no draft or
@@ -834,7 +858,7 @@ Instagram   CANNOT DO THIS FLOW AT ALL. The publishing API has no draft or
             Business/Creator account, App Review for instagram_content_publish,
             and a PUBLIC URL for the file, because Meta fetches the media
             rather than accepting bytes -- so it drags in hosting too. Post
-            <slug>_9x16.mp4 from the phone until that is in place.
+            the 9x16 video from the phone until that is in place.
 """
 
 
@@ -880,7 +904,9 @@ def main():
     parser.add_argument("--clip-lead", type=float, default=0.0, help="Seconds of run-up kept before each event when the short is a highlight cut, so a moment has a little context before it. (default: %(default)s)")
     parser.add_argument("--transition", choices=TRANSITIONS, default=cfg.get("transition", "fade"), help="How cuts are joined in the short. fade goes through black and is the safest; dissolve and pixelize cross-fade the pair and cost overlap at every join; none hard-cuts. (default: %(default)s)")
     parser.add_argument("--transition-seconds", type=float, default=0.25, help="Length of each transition in seconds. (default: %(default)s)")
-    parser.add_argument("--no-captions", action="store_true", help="Turn off the timed commentary captions. They are written from the event log, so they land on the thing they are about.")
+    parser.add_argument("--text", action="store_true", help="Also render the titled and captioned cuts (_16x9.mp4 and _9x16.mp4) beside the clean ones, and write their captions. OFF by default -- only the clean 16:9 and 9:16 masters are rendered and no caption model call is made. Set \"text\": true in studio.json to make it the default.")
+    parser.add_argument("--no-text", action="store_true", help="Force the text cuts off even when studio.json turns them on.")
+    parser.add_argument("--no-captions", action="store_true", help="With --text: render the title and watermark but no timed commentary captions. They are written from the event log, so they land on the thing they are about.")
     parser.add_argument("--level", default=cfg.get("level"), help="Where in the game this run is, e.g. World 1-1. Shown after the game name in the title. Set it once as the level key in studio.json.")
     parser.add_argument("--writer", choices=writer.BACKENDS, default=cfg.get("writer", writer.DEFAULT_BACKEND), help="Who writes the captions, commentary and descriptions. 'auto' cascades: Claude Code -> Anthropic API -> Gemini -> Ollama. 'gemini' calls Google Gemini (GEMINI_API_KEY); 'claude' calls Anthropic API; 'ollama' runs locally. (default: %(default)s)")
     parser.add_argument("--writer-cli", default=cfg.get("writer_cli", writer.DEFAULT_CLI), help="Path to the Claude Code binary for --writer claude-code, if it is not on PATH. Also looked for at ~/.local/bin/claude and ~/.claude/local/claude. (default: %(default)s)")
@@ -1029,6 +1055,7 @@ def main():
     # every run for output that is not being used. --voice turns it on;
     # "voice": true in studio.json makes that the default again.
     args.voice = (args.voice or cfg.get("voice", False)) and not args.no_voice
+    args.text = (args.text or cfg.get("text", False)) and not args.no_text
     if args.voice and not tts.available():
         sys.exit("--voice needs Qwen3-TTS:\n"
                  "  pip install -U qwen-tts soundfile\n"
@@ -1217,7 +1244,10 @@ def main():
                two_human=args.two_human)
 
     lines, written_caps = [], []
-    if not args.no_captions:
+    # Captions only exist to be burnt into the text cuts, so without them the
+    # model is not asked -- which also keeps a multi-hour event timeline out
+    # of that prompt.
+    if args.text and not args.no_captions:
         written_caps = writer.captions(**ctx, **ai)
         if written_caps is None:
             sys.exit(
@@ -1265,15 +1295,7 @@ def main():
         # Relative, so the whole folder can be moved or copied and still
         # re-render. overlays.render_spec resolves it against the folder.
         "source": os.path.basename(native),
-        "outputs": [
-            {"file": f"{slug}_16x9.mp4", "width": 1920, "height": 1080},
-            {"file": f"{slug}_9x16.mp4", "width": 1080, "height": 1920},
-            # Clean master: HD, correctly framed, nothing burnt in. The source
-            # mp4 is native NES resolution and unusable as delivery footage, so
-            # without this there was no full-size copy free of text.
-            {"file": f"{slug}_16x9_clean.mp4", "width": 1920, "height": 1080,
-             "overlays": False},
-        ],
+        "outputs": studio_outputs(slug, args.text),
         "title": title,
         "watermark": args.watermark,
         "captions": spec_captions(written_caps, lines),
@@ -1284,7 +1306,11 @@ def main():
     save_spec(spec, os.path.join(folder, "overlays.json"))
 
     written = render_spec(spec, out_dir=folder)
-    wide, tall, clean = written[0], written[1], written[2]
+    # By name, not position: which cuts exist depends on --text. The voice is
+    # laid over, and the brief points at, the text cuts when there are any.
+    by_name = {os.path.basename(p): p for p in written}
+    wide = by_name.get(f"{slug}_16x9.mp4") or by_name[f"{slug}_16x9_clean.mp4"]
+    tall = by_name.get(f"{slug}_9x16.mp4") or by_name[f"{slug}_9x16_clean.mp4"]
 
     # Only asked for when it is going to be used -- this is one of the three
     # model calls a run makes, and writing a script nobody hears is waste.
@@ -1341,9 +1367,10 @@ def main():
             print(f"  WARNING: voice failed ({exc.__class__.__name__}: {exc})")
             print( "           the videos and narration.txt are unaffected.")
 
-    with open(os.path.join(folder, "captions.txt"), "w") as handle:
-        for at, text in lines:
-            handle.write("%s  %s\n" % (stamp(int(at * FPS)), text))
+    if args.text:
+        with open(os.path.join(folder, "captions.txt"), "w") as handle:
+            for at, text in lines:
+                handle.write("%s  %s\n" % (stamp(int(at * FPS)), text))
     written_copy = writer.copy(**ctx, watermark=args.watermark, **ai) or {}
     if not written_copy:
         print("  WARNING: no description came back -- paste.txt will be EMPTY.")

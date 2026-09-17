@@ -17,11 +17,14 @@ and the two cannot drift.
 import json
 import os
 import subprocess
+import tempfile
+import time
 
 DEFAULT_FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 
 TRANSITIONS = ("none", "fade", "dissolve", "pixelize")
 OUT_FPS = 60
+BLUR_DOWNSCALE = 8
 
 # The console draws its status bar across the bottom of the picture -- roughly
 # the last fifth on an NES. Text dropped on top of it makes both unreadable.
@@ -42,6 +45,21 @@ DEFAULT_STYLE = {
     "transition_seconds": 0.25,
     "blur": 20,
     "crf": 18,
+    # Encoding. "auto" uses NVIDIA NVENC when a test encode succeeds and
+    # otherwise libx264; "nvenc" or "x264" pins one. Measured on 2 minutes of
+    # a 1080p clean render: x264 "slow" 1.62x real time, "veryfast" 1.81x at
+    # the same file size and no visible difference on pixel art -- so the
+    # preset was never the cost (the blur was, see build_filter).
+    "encoder": "auto",
+    "x264_preset": "veryfast",
+    "nvenc_preset": "p5",
+    # Constant-quality target for NVENC, the analogue of crf. PROVISIONAL:
+    # not yet compared against crf 18 on this footage, because the GPU was not
+    # visible to WSL when this was written. Tune it once a test encode runs.
+    "nvenc_cq": 19,
+    # Encode every output at the same time. The filter graph is mostly
+    # single-threaded, so separate processes use the other cores.
+    "parallel_outputs": True,
     # size_div divides the SHORT EDGE of the frame (see text_size), so one
     # setting renders the same size in both outputs. A LARGER number still
     # means SMALLER text -- these are 10% smaller than the previous values.
@@ -408,10 +426,18 @@ def build_filter(spec, width, height, src_label="[0:v]", overlays=True):
     style = merge_style(spec.get("style"))
     ratio = style["char_width_ratio"]
     vertical = height > width
+    # The fill is blurred at 1/BLUR_DOWNSCALE size and scaled back up, with
+    # the sigma scaled down to match. A full-size gblur was most of the render
+    # cost: 2 minutes of a 1080p clean render filtered at 2.05x real time with
+    # it and 3.93x without it, and stills of the two fills look the same.
+    small_w = max(2, width // BLUR_DOWNSCALE)
+    small_h = max(2, height // BLUR_DOWNSCALE)
     parts = [
         "%ssplit=2[bg][fg]" % src_label,
         "[bg]scale=%d:%d:force_original_aspect_ratio=increase,crop=%d:%d,"
-        "gblur=sigma=%s[bgb]" % (width, height, width, height, style["blur"]),
+        "gblur=sigma=%s,scale=%d:%d:flags=bicubic[bgb]"
+        % (small_w, small_h, small_w, small_h,
+           float(style["blur"]) / BLUR_DOWNSCALE, width, height),
         "[fg]scale=%d:%d:force_original_aspect_ratio=decrease:flags=neighbor[fgs]"
         % (width, height),
         "[bgb][fgs]overlay=(W-w)/2:(H-h)/2[v0]",
@@ -524,6 +550,52 @@ def has_audio_stream(path):
         return True
 
 
+_NVENC = None
+
+
+def nvenc_status():
+    """(usable, reason) for NVIDIA NVENC, decided once by a real test encode.
+
+    Checking for the encoder NAME is not enough: Ubuntu's ffmpeg always lists
+    h264_nvenc, and it still fails with `cuInit(0) failed` when the GPU is not
+    visible -- which is exactly what happened in WSL while the laptop's
+    discrete GPU was powered off."""
+    global _NVENC
+    if _NVENC is None:
+        try:
+            p = subprocess.run(
+                ["ffmpeg", "-nostdin", "-v", "error", "-f", "lavfi",
+                 "-i", "color=black:s=256x256:d=0.2", "-c:v", "h264_nvenc",
+                 "-f", "null", "-"],
+                capture_output=True, text=True, timeout=60)
+            lines = [l for l in p.stderr.splitlines() if l.strip()]
+            _NVENC = (p.returncode == 0,
+                      "ok" if p.returncode == 0 else (lines[-1] if lines else "failed"))
+        except Exception as exc:                                  # noqa: BLE001
+            _NVENC = (False, "%s: %s" % (type(exc).__name__, exc))
+    return _NVENC
+
+
+def video_codec_args(style):
+    """ffmpeg video-codec arguments for the configured encoder, and its name."""
+    choice = str(style.get("encoder", "auto")).lower()
+    if choice not in ("auto", "nvenc", "x264"):
+        raise SystemExit("style encoder must be auto, nvenc or x264, got %r" % choice)
+    if choice in ("auto", "nvenc"):
+        ok, reason = nvenc_status()
+        if ok:
+            return (["-c:v", "h264_nvenc", "-preset", str(style["nvenc_preset"]),
+                     "-rc", "vbr", "-cq", str(style["nvenc_cq"]), "-b:v", "0"],
+                    "NVENC %s cq %s" % (style["nvenc_preset"], style["nvenc_cq"]))
+        if choice == "nvenc":
+            raise SystemExit(
+                "encoder is pinned to nvenc but NVENC cannot encode here:\n  %s\n"
+                "Run tools/check_nvenc.sh for the fix, or set encoder to auto." % reason)
+    return (["-c:v", "libx264", "-preset", str(style["x264_preset"]),
+             "-crf", str(style["crf"])],
+            "x264 %s crf %s" % (style["x264_preset"], style["crf"]))
+
+
 def render_spec(spec, out_dir=None, only=None, verbose=True):
     """Render every output the spec lists. Returns the paths written."""
     style = merge_style(spec.get("style"))
@@ -540,8 +612,12 @@ def render_spec(spec, out_dir=None, only=None, verbose=True):
             % (source, spec["source"]))
     with_audio = has_audio_stream(source)
     segments = spec.get("segments")
-    written = []
+    codec, codec_name = video_codec_args(style)
+    if verbose and str(style.get("encoder", "auto")).lower() == "auto" \
+            and codec[1] != "h264_nvenc":
+        print("Encoder: %s (NVENC not usable: %s)" % (codec_name, nvenc_status()[1]))
 
+    jobs = []
     for out in spec["outputs"]:
         if only and out["file"] != only:
             continue
@@ -556,18 +632,45 @@ def render_spec(spec, out_dir=None, only=None, verbose=True):
             graph = cut + ";" + graph
         audio_map = ["-map", alabel] if alabel else []
         if verbose:
-            print("Rendering %s (%dx%d)%s ..."
+            print("Rendering %s (%dx%d)%s with %s ..."
                   % (out["file"], width, height,
-                     "" if out.get("overlays", True) else "  [clean, no text]"))
-        subprocess.run(
-            ["ffmpeg", "-nostdin", "-y", "-i", source,
-             "-filter_complex", graph, "-map", "[vout]", *audio_map,
-             "-r", str(OUT_FPS), "-c:v", "libx264", "-preset", "slow",
-             "-crf", str(style["crf"]), "-pix_fmt", "yuv420p",
-             "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", path],
-            check=True)
-        written.append(path)
-    return written
+                     "" if out.get("overlays", True) else "  [clean, no text]",
+                     codec_name))
+        cmd = ["ffmpeg", "-nostdin", "-y", "-i", source,
+               "-filter_complex", graph, "-map", "[vout]", *audio_map,
+               "-r", str(OUT_FPS), *codec, "-pix_fmt", "yuv420p",
+               "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", path]
+        jobs.append((cmd, path))
+
+    started = time.time()
+    if style.get("parallel_outputs", True) and len(jobs) > 1:
+        # Output goes to a log per job: several ffmpeg progress lines on one
+        # terminal are unreadable, and an unread pipe can fill and stall ffmpeg.
+        running = []
+        for cmd, path in jobs:
+            log = tempfile.NamedTemporaryFile("w+", suffix=".ffmpeg.log", delete=False)
+            running.append((subprocess.Popen(cmd, stdout=log, stderr=log), path, log))
+        failed = []
+        for proc, path, log in running:
+            code = proc.wait()
+            log.flush()
+            log.seek(0)
+            tail = [l for l in log.read().splitlines() if l.strip()][-8:]
+            log.close()
+            os.unlink(log.name)
+            if code != 0:
+                failed.append("%s (exit %d):\n    %s" % (os.path.basename(path), code,
+                                                       "\n    ".join(tail)))
+        if failed:
+            print("Render failed for\n  " + "\n  ".join(failed))
+            raise subprocess.CalledProcessError(1, "ffmpeg")
+    else:
+        for cmd, _path in jobs:
+            subprocess.run(cmd, check=True)
+    if verbose and jobs:
+        print("Rendered %d output%s in %.0fs"
+              % (len(jobs), "" if len(jobs) == 1 else "s", time.time() - started))
+    return [path for _cmd, path in jobs]
 
 
 def load_spec(path):

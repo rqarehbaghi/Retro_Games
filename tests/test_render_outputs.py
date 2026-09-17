@@ -1,0 +1,87 @@
+"""What a studio run renders, which encoder it uses, and how the blur is built.
+
+No ffmpeg run and no GPU needed: the NVENC probe result is injected.
+"""
+import os
+import sys
+import tempfile
+import unittest
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import overlays   # noqa: E402
+import studio     # noqa: E402
+
+
+class OutputTests(unittest.TestCase):
+    def test_clean_pair_by_default_text_pair_only_on_request(self):
+        plain = studio.studio_outputs("run", False)
+        self.assertEqual([o["file"] for o in plain],
+                         ["run_16x9_clean.mp4", "run_9x16_clean.mp4"])
+        self.assertTrue(all(o["overlays"] is False for o in plain))
+        texted = studio.studio_outputs("run", True)
+        self.assertEqual([o["file"] for o in texted],
+                         ["run_16x9_clean.mp4", "run_9x16_clean.mp4",
+                          "run_16x9.mp4", "run_9x16.mp4"])
+        self.assertEqual([(o["width"], o["height"]) for o in texted],
+                         [(1920, 1080), (1080, 1920), (1920, 1080), (1080, 1920)])
+
+    def test_brief_prefers_text_cuts_and_falls_back_to_clean(self):
+        with tempfile.TemporaryDirectory() as d:
+            for name in ("run_16x9_clean.mp4", "run_9x16_clean.mp4"):
+                open(os.path.join(d, name), "w").close()
+            self.assertEqual([os.path.basename(p) for _r, p in studio.staged_videos(d)],
+                             ["run_16x9_clean.mp4", "run_9x16_clean.mp4"])
+            for name in ("run_16x9.mp4", "run_9x16.mp4", "run_16x9_narrated.mp4"):
+                open(os.path.join(d, name), "w").close()
+            self.assertEqual([os.path.basename(p) for _r, p in studio.staged_videos(d)],
+                             ["run_16x9.mp4", "run_9x16.mp4"])
+
+
+class EncoderTests(unittest.TestCase):
+    def setUp(self):
+        self._saved = overlays._NVENC
+
+    def tearDown(self):
+        overlays._NVENC = self._saved
+
+    def test_auto_uses_nvenc_when_the_test_encode_worked(self):
+        overlays._NVENC = (True, "ok")
+        args, name = overlays.video_codec_args(overlays.merge_style({}))
+        self.assertEqual(args[:2], ["-c:v", "h264_nvenc"])
+        self.assertIn("NVENC", name)
+
+    def test_auto_falls_back_to_x264_veryfast(self):
+        overlays._NVENC = (False, "cuInit(0) failed")
+        args, name = overlays.video_codec_args(overlays.merge_style({}))
+        self.assertEqual(args, ["-c:v", "libx264", "-preset", "veryfast", "-crf", "18"])
+
+    def test_pinned_nvenc_fails_loudly_instead_of_silently_using_cpu(self):
+        overlays._NVENC = (False, "cuInit(0) failed")
+        with self.assertRaises(SystemExit):
+            overlays.video_codec_args(overlays.merge_style({"encoder": "nvenc"}))
+
+    def test_pinned_x264_never_probes(self):
+        overlays._NVENC = (True, "ok")
+        args, _ = overlays.video_codec_args(overlays.merge_style({"encoder": "x264"}))
+        self.assertEqual(args[1], "libx264")
+
+    def test_old_overlays_json_still_renders(self):
+        # A folder staged before these settings existed has only crf in style.
+        style = overlays.merge_style({"crf": 20, "blur": 20})
+        overlays._NVENC = (False, "no gpu")
+        args, _ = overlays.video_codec_args(style)
+        self.assertIn("20", args)
+
+
+class BlurTests(unittest.TestCase):
+    def test_fill_is_blurred_small_with_matching_sigma(self):
+        spec = {"style": {"blur": 20}}
+        wide = overlays.build_filter(spec, 1920, 1080, overlays=False)
+        self.assertIn("crop=240:135,gblur=sigma=2.5,scale=1920:1080", wide)
+        tall = overlays.build_filter(spec, 1080, 1920, overlays=False)
+        self.assertIn("crop=135:240,gblur=sigma=2.5,scale=1080:1920", tall)
+        self.assertTrue(wide.endswith("[v0]null[vout]"))
+
+
+if __name__ == "__main__":
+    unittest.main()

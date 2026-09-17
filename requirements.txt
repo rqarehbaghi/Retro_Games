@@ -7,6 +7,10 @@ stable-baselines3[extra]
 # build -- no GUI libs needed, matches the rest of this headless setup.
 opencv-python-headless
 
+# GPU video encoding (NVENC) is NOT a pip package -- it comes from the NVIDIA
+# driver and ffmpeg. `bash tools/check_nvenc.sh` (run by setup.sh) tests it and
+# explains any fix; without it renders fall back to libx264.
+
 # Optional -- only for `studio.py --writer claude`, which has the Anthropic
 # API write the captions, commentary and descriptions. The `ollama` backend
 # needs nothing beyond the standard library.

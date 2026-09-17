@@ -14,6 +14,11 @@ echo "Installing Python requirements..."
 ./venv/bin/pip install -r requirements.txt
 
 echo ""
+# Video encoding on the GPU. Not a pip package: it comes from the NVIDIA driver
+# plus ffmpeg. This only checks and explains; it never fails setup.
+bash tools/check_nvenc.sh || true
+
+echo ""
 echo "Done. Activate the environment with:"
 echo "    source venv/bin/activate"
 echo ""

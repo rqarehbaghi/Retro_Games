@@ -27,17 +27,17 @@ everything it used to dump on the terminal is in the folder:
 
 | File | What |
 |---|---|
-| `*_16x9.mp4` | 1920×1080 with captions — YouTube |
-| `*_9x16.mp4` | 1080×1920 with captions — TikTok / Reels / Shorts |
-| `*_16x9_clean.mp4` | HD, no text, for thumbnails and re-edits |
-| `*_narrated.mp4` | only with `--voice` — the captioned cuts with commentary over them |
+| `*_16x9_clean.mp4` | 1920×1080, no text — YouTube |
+| `*_9x16_clean.mp4` | 1080×1920, no text — TikTok / Reels / Shorts |
+| `*_16x9.mp4` `*_9x16.mp4` | only with `--text` (or `"text": true` in `studio.json`) — the same two with title and captions burnt in |
+| `*_narrated.mp4` | only with `--voice` — commentary over the text cuts, or over the clean ones without `--text` |
 | `*_source.mp4` | the raw capture everything is rendered from |
 | `*.bk2` | the replay — the folder is self-contained because of this |
 | `overlays.json` | every word and style rule, editable, re-renderable |
 | `narration.wav` | only with `--voice` — the spoken track on its own |
 | `UPLOAD_BRIEF.md` | paste into Claude and it walks the upload -- the copy, the rules, and Windows-side paths for the files to attach |
 | `paste.txt` | the same copy as three upload forms, to retype by hand |
-| `metadata.json` `captions.txt` `narration.txt` `events.csv` | |
+| `metadata.json` `narration.txt` `events.csv` | `captions.txt` too with `--text` |
 
 Retry the writing without replaying — it renders **into the same folder**:
 

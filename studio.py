@@ -26,10 +26,10 @@ the brief. Nothing else is printed, because everything else is IN the folder:
     captions.txt         the caption text with timecodes
     events.csv           the raw event timeline the writing was built from
 
-With --text (or "text": true in studio.json) it ALSO renders the titled and
+With --overlay-videos (or "overlay_videos": true in studio.json) it ALSO renders the titled and
 captioned cuts, <slug>_16x9.mp4 and <slug>_9x16.mp4. Off by default: text goes
 on in an editor, and a long run then costs two encodes instead of four.
---text only decides which videos are RENDERED. Captions are still written
+--overlay-videos only decides which videos are RENDERED. Captions are still written
 (into overlays.json and captions.txt) unless --no-captions, so a text cut can
 be rendered later with restyle.py without asking the model again.
 
@@ -647,7 +647,7 @@ def paste_block(meta):
     rule = lambda label: ("-- " + label + " ").ljust(70, "-")
     out = [
         bar,
-        "YOUTUBE  --  studio.youtube.com, upload the 16x9 video (_16x9.mp4, or _16x9_clean.mp4 without --text)",
+        "YOUTUBE  --  studio.youtube.com, upload the 16x9 video (_16x9.mp4, or _16x9_clean.mp4 without --overlay-videos)",
         bar,
         "\n" + rule("Title"),
         title,
@@ -658,12 +658,12 @@ def paste_block(meta):
         "\n" + rule("Visibility"),
         "Private, or Schedule -- then review it and make it public.",
         "\n" + bar,
-        "TIKTOK  --  tiktok.com/upload, upload the 9x16 video (_9x16.mp4, or _9x16_clean.mp4 without --text)",
+        "TIKTOK  --  tiktok.com/upload, upload the 9x16 video (_9x16.mp4, or _9x16_clean.mp4 without --overlay-videos)",
         bar,
         "\n" + rule("Caption (%d chars)" % len(tt)),
         tt,
         "\n" + bar,
-        "INSTAGRAM  --  Reels, upload the 9x16 video (_9x16.mp4, or _9x16_clean.mp4 without --text)",
+        "INSTAGRAM  --  Reels, upload the 9x16 video (_9x16.mp4, or _9x16_clean.mp4 without --overlay-videos)",
         bar,
         "\n" + rule("Caption (%d chars)" % len(ig)),
         ig,
@@ -716,9 +716,9 @@ def staged_videos(folder):
     return found
 
 
-def studio_outputs(slug, text):
+def studio_outputs(slug, overlay_videos):
     """The cuts a run renders. Clean 16:9 and 9:16 always; the titled and
-    captioned pair only with --text.
+    captioned pair only with --overlay-videos.
 
     Clean is the default because the owner adds text in an editor, and on a
     multi-hour run every extra full-length 1080p encode costs real hours."""
@@ -728,7 +728,7 @@ def studio_outputs(slug, text):
         {"file": f"{slug}_9x16_clean.mp4", "width": 1080, "height": 1920,
          "overlays": False},
     ]
-    if text:
+    if overlay_videos:
         outputs += [
             {"file": f"{slug}_16x9.mp4", "width": 1920, "height": 1080},
             {"file": f"{slug}_9x16.mp4", "width": 1080, "height": 1920},
@@ -907,8 +907,8 @@ def main():
     parser.add_argument("--clip-lead", type=float, default=0.0, help="Seconds of run-up kept before each event when the short is a highlight cut, so a moment has a little context before it. (default: %(default)s)")
     parser.add_argument("--transition", choices=TRANSITIONS, default=cfg.get("transition", "fade"), help="How cuts are joined in the short. fade goes through black and is the safest; dissolve and pixelize cross-fade the pair and cost overlap at every join; none hard-cuts. (default: %(default)s)")
     parser.add_argument("--transition-seconds", type=float, default=0.25, help="Length of each transition in seconds. (default: %(default)s)")
-    parser.add_argument("--text", action="store_true", help="Also render the titled and captioned cuts (_16x9.mp4 and _9x16.mp4) beside the clean ones. OFF by default -- only the clean 16:9 and 9:16 masters are rendered. This only controls rendering: captions are still written unless --no-captions. Set \"text\": true in studio.json to make it the default.")
-    parser.add_argument("--no-text", action="store_true", help="Force the text cuts off even when studio.json turns them on.")
+    parser.add_argument("--overlay-videos", action="store_true", help="Also render the videos with the overlay burnt in -- title, watermark and captions -- as _16x9.mp4 and _9x16.mp4 beside the clean ones. OFF by default: only the clean 16:9 and 9:16 masters are rendered. This only controls rendering; captions are still written unless --no-captions. Set \"overlay_videos\": true in studio.json to make it the default.")
+    parser.add_argument("--no-overlay-videos", action="store_true", help="Force the overlay videos off even when studio.json turns them on.")
     parser.add_argument("--no-captions", action="store_true", help="Turn off the timed commentary captions. They are written from the event log, so they land on the thing they are about.")
     parser.add_argument("--level", default=cfg.get("level"), help="Where in the game this run is, e.g. World 1-1. Shown after the game name in the title. Set it once as the level key in studio.json.")
     parser.add_argument("--writer", choices=writer.BACKENDS, default=cfg.get("writer", writer.DEFAULT_BACKEND), help="Who writes the captions, commentary and descriptions. 'auto' cascades: Claude Code -> Anthropic API -> Gemini -> Ollama. 'gemini' calls Google Gemini (GEMINI_API_KEY); 'claude' calls Anthropic API; 'ollama' runs locally. (default: %(default)s)")
@@ -1058,7 +1058,7 @@ def main():
     # every run for output that is not being used. --voice turns it on;
     # "voice": true in studio.json makes that the default again.
     args.voice = (args.voice or cfg.get("voice", False)) and not args.no_voice
-    args.text = (args.text or cfg.get("text", False)) and not args.no_text
+    args.overlay_videos = (args.overlay_videos or cfg.get("overlay_videos", False)) and not args.no_overlay_videos
     if args.voice and not tts.available():
         sys.exit("--voice needs Qwen3-TTS:\n"
                  "  pip install -U qwen-tts soundfile\n"
@@ -1295,7 +1295,7 @@ def main():
         # Relative, so the whole folder can be moved or copied and still
         # re-render. overlays.render_spec resolves it against the folder.
         "source": os.path.basename(native),
-        "outputs": studio_outputs(slug, args.text),
+        "outputs": studio_outputs(slug, args.overlay_videos),
         "title": title,
         "watermark": args.watermark,
         "captions": spec_captions(written_caps, lines),
@@ -1306,7 +1306,7 @@ def main():
     save_spec(spec, os.path.join(folder, "overlays.json"))
 
     written = render_spec(spec, out_dir=folder)
-    # By name, not position: which cuts exist depends on --text. The voice is
+    # By name, not position: which cuts exist depends on --overlay-videos. The voice is
     # laid over, and the brief points at, the text cuts when there are any.
     by_name = {os.path.basename(p): p for p in written}
     wide = by_name.get(f"{slug}_16x9.mp4") or by_name[f"{slug}_16x9_clean.mp4"]

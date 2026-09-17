@@ -13,19 +13,19 @@ import studio     # noqa: E402
 
 
 class OutputTests(unittest.TestCase):
-    def test_clean_pair_by_default_text_pair_only_on_request(self):
+    def test_clean_pair_by_default_overlay_pair_only_on_request(self):
         plain = studio.studio_outputs("run", False)
         self.assertEqual([o["file"] for o in plain],
                          ["run_16x9_clean.mp4", "run_9x16_clean.mp4"])
         self.assertTrue(all(o["overlays"] is False for o in plain))
-        texted = studio.studio_outputs("run", True)
-        self.assertEqual([o["file"] for o in texted],
+        overlaid = studio.studio_outputs("run", True)
+        self.assertEqual([o["file"] for o in overlaid],
                          ["run_16x9_clean.mp4", "run_9x16_clean.mp4",
                           "run_16x9.mp4", "run_9x16.mp4"])
-        self.assertEqual([(o["width"], o["height"]) for o in texted],
+        self.assertEqual([(o["width"], o["height"]) for o in overlaid],
                          [(1920, 1080), (1080, 1920), (1920, 1080), (1080, 1920)])
 
-    def test_brief_prefers_text_cuts_and_falls_back_to_clean(self):
+    def test_brief_prefers_overlay_videos_and_falls_back_to_clean(self):
         with tempfile.TemporaryDirectory() as d:
             for name in ("run_16x9_clean.mp4", "run_9x16_clean.mp4"):
                 open(os.path.join(d, name), "w").close()

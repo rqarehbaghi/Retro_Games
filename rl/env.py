@@ -118,8 +118,7 @@ def episode_ended(episode_end, vars, ram, info):
     games.json declares the real ending in `episode_end`; both the training
     env and play_engine must read it from here so a fix lands in both.
     """
-    return bool(episode_end) and vars.matches(
-        episode_end["var"], ram, info, episode_end.get("equals"))
+    return vars.matches_config(episode_end, ram, info)
 
 
 class TransitionGate:
@@ -135,18 +134,31 @@ class TransitionGate:
     garbage, and went from 3 holes to 8 to 25 and topped out at 110. Training
     from the identical state survives 1552.
 
-    The LATCH is the part that is easy to get wrong and was got wrong once:
-    the declared flag stays set for hundreds of frames AFTER play resumes, so
-    a gate that only tests the flag keeps driving the declared `input_script`
-    into the live game. Here `resume_on_change` latches the gate open the
-    moment the game shows it is running again, and the latch only clears when
-    the flag itself clears.
+    Which variable to trust is the whole game. A flag that stays set after
+    play resumes, or that fires for the OTHER player's event, takes control
+    away while the agent's own game is live -- TetrisTime's `level_transition`
+    did both, and pieces fell uncontrolled. Declare the variable that means
+    "this game is not running" (e.g. a game-mode byte with `not_equals`), and
+    the gate needs no latch. `resume_on_change` stays available for games
+    whose only flag lingers.
+
+    `episode_end`: once the agent's own game has ended there is nothing to
+    wait out, and some games' mode byte goes non-zero on the game-over screen.
+    Without this the declared `input_script` would be driven into that screen
+    -- and training checks skip_while before episode end.
+
+    `time_limit`: training keeps `max_frames` as a guard against a stretch that
+    never clears. Live play turns it off, because a player's pause is
+    legitimately as long as they like.
     """
 
-    def __init__(self, config, vars, seen=None):
+    def __init__(self, config, vars, seen=None, episode_end=None,
+                 time_limit=True):
         self.cfg = dict(config or {})
         self.vars = vars
         self._seen = seen or (lambda info: info or {})
+        self.episode_end = episode_end
+        self.time_limit = time_limit
         self.reset()
 
     @property
@@ -161,17 +173,28 @@ class TransitionGate:
         self._prev_resume = None
         self._changes = 0
 
-    def update(self, ram, info):
-        """True while the transition should be skipped. Call once per frame."""
+    def active(self, ram, info):
+        """Would this frame be skipped? The ONE place the condition is judged.
+
+        Pure apart from re-arming: when the declared condition clears (or the
+        agent's game has ended) the gate resets, so a latch from a timeout or
+        a resume only lasts as long as the stretch it was for. Counts nothing
+        -- `update` is what advances a skip by a frame.
+        """
         if not self.enabled:
             return False
         info = self._seen(info)
-        if not self.vars.matches(self.cfg["var"], ram, info,
-                                 self.cfg.get("equals")):
-            self.reset()                    # flag cleared: re-arm for next time
+        if (not self.vars.matches_config(self.cfg, ram, info)
+                or episode_ended(self.episode_end, self.vars, ram, info)):
+            self.reset()                    # condition cleared: re-arm for next time
             return False
-        if self.latched:
+        return not self.latched
+
+    def update(self, ram, info):
+        """True while the transition should be skipped. Call once per frame."""
+        if not self.active(ram, info):
             return False
+        info = self._seen(info)
 
         resume = self.cfg.get("resume_on_change") or {}
         resume_var = resume.get("var")
@@ -188,7 +211,7 @@ class TransitionGate:
                 self.resumed = True
                 return False
 
-        if self.frames >= max(1, int(self.cfg.get("max_frames", 2000))):
+        if self.time_limit and self.frames >= max(1, int(self.cfg.get("max_frames", 2000))):
             self.latched = True
             self.timed_out = True
             return False
@@ -618,13 +641,13 @@ class GenericRetroEnv(gym.Env):
         self.action_space = gym.spaces.Discrete(len(self._combos))
         self.steps = self.frames = 0
         self._state_steps = {state: 0 for state in s.states}
-        self._skip_resume_latched = False
         self._rng = np.random.default_rng(s.raw.get("seed"))
         self.observation_space = self.env.observation_space
 
         self.use_data_json = s.use_data_json
         self.vars = GameVars(game, entry=s.entry)
-        self._transition_gate = TransitionGate(s.skip_while, self.vars, self._seen)
+        self._transition_gate = TransitionGate(s.skip_while, self.vars, self._seen,
+                                               episode_end=s.episode_end)
         if not self.use_data_json:
             self._warn_data_json_off(s)
         self.reward_model = RewardModel(s.terms, self.vars,
@@ -779,12 +802,10 @@ class GenericRetroEnv(gym.Env):
         return info if self.use_data_json else {}
 
     def _skipping(self, ram, info):
-        c = self.spec_.skip_while
-        matches = bool(c) and self.vars.matches(c["var"], ram, info, c.get("equals"))
-        if not matches:
-            self._skip_resume_latched = False
-            return False
-        return not self._skip_resume_latched
+        # No condition here on purpose: TransitionGate is the single judge of
+        # skip_while for training, reset and live play alike. A second copy of
+        # the condition in this class is how play and training drifted apart.
+        return self._transition_gate.active(ram, self._seen(info))
 
     def _ended(self, ram, info):
         return episode_ended(self.spec_.episode_end, self.vars, ram, info)
@@ -792,19 +813,19 @@ class GenericRetroEnv(gym.Env):
     def _skip(self, obs, info):
         """Run past a stretch the agent cannot act on, paying nothing for it.
 
-        The rule itself lives in TransitionGate so that play_engine applies
-        exactly this one; here it is simply driven to completion because
-        training does not need to return between frames.
+        Drives the shared TransitionGate to completion, because training does
+        not need to return between frames; play_engine drives the same object
+        one frame at a time.
         """
         gate = self._transition_gate
-        gate.reset()
+        frames = 0
         while gate.update(self._ram(), self._seen(info)):
             buttons = gate.buttons()
             obs, _r, _t, _tr, info = self.env.step(
                 self.buttons_to_joint(buttons) if buttons else self.empty_joint())
             self.frames += 1
-        self._skip_resume_latched = gate.resumed
-        self._last_skip_frames = gate.frames
+            frames += 1
+        self._last_skip_frames = frames
         self._last_skip_resumed = gate.resumed
         self._last_skip_timeout = gate.timed_out
         return obs, info
@@ -847,6 +868,7 @@ class GenericRetroEnv(gym.Env):
             self.env.unwrapped.load_state(selected_state)
         self.start_state = selected_state
         obs, info = self.env.reset(**kwargs)
+        self._transition_gate.reset()          # a new episode starts un-latched
         obs, info = self._skip(obs, info)
         if self._last_skip_timeout:
             raise RuntimeError(

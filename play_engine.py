@@ -718,7 +718,10 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
         settle_hook = _feature_hooks.get(getattr(spec, "features_name", None))
         game_vars = GameVars(game, entry=spec.entry)
         episode_end_cfg = getattr(spec, "episode_end", None)
-        transition_gate = TransitionGate(getattr(spec, "skip_while", None), game_vars)
+        # No time limit in live play: a player's pause lasts as long as they
+        # like, and timing out would hand the bot a paused game.
+        transition_gate = TransitionGate(getattr(spec, "skip_while", None), game_vars,
+                                         episode_end=episode_end_cfg, time_limit=False)
     except Exception as exc:                                     # noqa: BLE001
         # This used to swallow the reason silently, and every name it defines
         # in the try was then missing or wrong for the rest of the run --

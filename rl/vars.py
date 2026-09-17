@@ -131,10 +131,26 @@ class GameVars:
 
         return default
 
-    def matches(self, name, ram=None, info=None, equals=None, default=False):
+    def matches(self, name, ram=None, info=None, equals=None, default=False,
+                not_equals=None):
         """Whether a variable currently equals a value -- the shape used for
-        'is this player alive' and 'is an animation playing'."""
+        'is this player alive' and 'is an animation playing'.
+
+        `not_equals` is the inverse, for a state byte where ONE value means
+        "playing" and every other value means some kind of stop (pause,
+        animation, menu) that should be treated alike."""
         value = self.read(name, ram, info, default=None)
         if value is None:
             return default
+        if not_equals is not None:
+            return int(value) != int(not_equals)
         return int(value) == int(equals)
+
+    def matches_config(self, cfg, ram=None, info=None, default=False):
+        """`matches` driven by a games.json block: {"var", "equals"} or
+        {"var", "not_equals"}. Every declared condition goes through here so
+        the training env and live play cannot read the same block differently."""
+        if not cfg:
+            return default
+        return self.matches(cfg["var"], ram, info, cfg.get("equals"),
+                            default=default, not_equals=cfg.get("not_equals"))

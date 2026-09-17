@@ -26,13 +26,12 @@ the brief. Nothing else is printed, because everything else is IN the folder:
     captions.txt         the caption text with timecodes
     events.csv           the raw event timeline the writing was built from
 
-With --overlay-videos (or "overlay_videos": true in studio.json) it ALSO renders the titled and
+With --overlay-videos it ALSO renders the titled and
 captioned cuts, <slug>_16x9.mp4 and <slug>_9x16.mp4. Off by default: text goes
 on in an editor, and a long run then costs two encodes instead of four.
 --overlay-videos only decides which videos are RENDERED. Captions are still written
 (into overlays.json and captions.txt) unless --no-captions, so a text cut can
-be rendered later with restyle.py without asking the model again. --no-captions
-turns the overlay videos off too, even with --overlay-videos.
+be rendered later with restyle.py without asking the model again.
 
 With --voice it also writes narration.txt, narration.wav and _narrated cuts.
 
@@ -908,9 +907,8 @@ def main():
     parser.add_argument("--clip-lead", type=float, default=0.0, help="Seconds of run-up kept before each event when the short is a highlight cut, so a moment has a little context before it. (default: %(default)s)")
     parser.add_argument("--transition", choices=TRANSITIONS, default=cfg.get("transition", "fade"), help="How cuts are joined in the short. fade goes through black and is the safest; dissolve and pixelize cross-fade the pair and cost overlap at every join; none hard-cuts. (default: %(default)s)")
     parser.add_argument("--transition-seconds", type=float, default=0.25, help="Length of each transition in seconds. (default: %(default)s)")
-    parser.add_argument("--overlay-videos", action="store_true", help="Also render the videos with the overlay burnt in -- title, watermark and captions -- as _16x9.mp4 and _9x16.mp4 beside the clean ones. OFF by default: only the clean 16:9 and 9:16 masters are rendered. This only controls rendering; captions are still written unless --no-captions, which also turns these videos off. Set \"overlay_videos\": true in studio.json to make it the default.")
-    parser.add_argument("--no-overlay-videos", action="store_true", help="Force the overlay videos off even when studio.json turns them on.")
-    parser.add_argument("--no-captions", action="store_true", help="Turn off the timed commentary captions, and with them the overlay videos (--overlay-videos is ignored). Only the clean videos are rendered.")
+    parser.add_argument("--overlay-videos", action="store_true", help="Also render the videos with the overlay burnt in -- title, watermark and captions -- as _16x9.mp4 and _9x16.mp4 beside the clean ones. OFF by default: only the clean 16:9 and 9:16 masters are rendered. This only controls rendering; captions are written either way. Cannot be combined with --no-captions.")
+    parser.add_argument("--no-captions", action="store_true", help="Turn off the timed commentary captions. Cannot be combined with --overlay-videos, which needs them.")
     parser.add_argument("--level", default=cfg.get("level"), help="Where in the game this run is, e.g. World 1-1. Shown after the game name in the title. Set it once as the level key in studio.json.")
     parser.add_argument("--writer", choices=writer.BACKENDS, default=cfg.get("writer", writer.DEFAULT_BACKEND), help="Who writes the captions, commentary and descriptions. 'auto' cascades: Claude Code -> Anthropic API -> Gemini -> Ollama. 'gemini' calls Google Gemini (GEMINI_API_KEY); 'claude' calls Anthropic API; 'ollama' runs locally. (default: %(default)s)")
     parser.add_argument("--writer-cli", default=cfg.get("writer_cli", writer.DEFAULT_CLI), help="Path to the Claude Code binary for --writer claude-code, if it is not on PATH. Also looked for at ~/.local/bin/claude and ~/.claude/local/claude. (default: %(default)s)")
@@ -932,6 +930,11 @@ def main():
     parser.add_argument("--paste-block", metavar="DIR", default=None, help="Print the copy-paste block for an already staged folder (or a metadata.json) and exit. A normal run also writes it to paste.txt.")
     parser.add_argument("--print-upload-plan", action="store_true", help="Explain what can and cannot be automated per platform, then exit")
     args = parser.parse_args()
+    # Checked here, before anything is played, so a bad combination never
+    # costs a recording.
+    if args.overlay_videos and args.no_captions:
+        parser.error("--overlay-videos and --no-captions cannot be used together: "
+                     "the overlay videos are the videos with the captions burnt in.")
 
     if args.print_upload_plan:
         print(UPLOAD_PLAN)
@@ -1059,9 +1062,6 @@ def main():
     # every run for output that is not being used. --voice turns it on;
     # "voice": true in studio.json makes that the default again.
     args.voice = (args.voice or cfg.get("voice", False)) and not args.no_voice
-    # No captions means no overlay videos: --no-captions wins over --overlay-videos.
-    args.overlay_videos = ((args.overlay_videos or cfg.get("overlay_videos", False))
-                           and not args.no_overlay_videos and not args.no_captions)
     if args.voice and not tts.available():
         sys.exit("--voice needs Qwen3-TTS:\n"
                  "  pip install -U qwen-tts soundfile\n"

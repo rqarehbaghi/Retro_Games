@@ -29,7 +29,7 @@ everything it used to dump on the terminal is in the folder:
 |---|---|
 | `*_16x9_clean.mp4` | 1920×1080, no text — YouTube |
 | `*_9x16_clean.mp4` | 1080×1920, no text — TikTok / Reels / Shorts |
-| `*_16x9.mp4` `*_9x16.mp4` | only with `--overlay-videos` (or `"overlay_videos": true` in `studio.json`) — the same two with title, watermark and captions burnt in |
+| `*_16x9.mp4` `*_9x16.mp4` | only with `--overlay-videos` (cannot be combined with `--no-captions`) — the same two with title, watermark and captions burnt in |
 | `*_narrated.mp4` | only with `--voice` — commentary over the overlay videos, or over the clean ones without `--overlay-videos` |
 | `*_source.mp4` | the raw capture everything is rendered from |
 | `*.bk2` | the replay — the folder is self-contained because of this |
@@ -37,7 +37,7 @@ everything it used to dump on the terminal is in the folder:
 | `narration.wav` | only with `--voice` — the spoken track on its own |
 | `UPLOAD_BRIEF.md` | paste into Claude and it walks the upload -- the copy, the rules, and Windows-side paths for the files to attach |
 | `paste.txt` | the same copy as three upload forms, to retype by hand |
-| `metadata.json` `captions.txt` `narration.txt` `events.csv` | captions are written unless `--no-captions`, with or without `--overlay-videos`; `--no-captions` also turns the overlay videos off |
+| `metadata.json` `captions.txt` `narration.txt` `events.csv` | captions are written unless `--no-captions`, with or without `--overlay-videos` |
 
 Retry the writing without replaying — it renders **into the same folder**:
 

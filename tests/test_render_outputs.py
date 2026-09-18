@@ -111,5 +111,17 @@ class BlurTests(unittest.TestCase):
         self.assertTrue(wide.endswith("[v0]null[vout]"))
 
 
+class OversampleTests(unittest.TestCase):
+    def test_sharp_oversampling_is_used_by_default(self):
+        spec = {}
+        wide = overlays.build_filter(spec, 1920, 1080, overlays=False)
+        self.assertIn("scale=iw*8:ih*8:flags=neighbor,scale=1920:1080:force_original_aspect_ratio=decrease:flags=area", wide)
+
+    def test_oversampling_disabled_when_one_or_less(self):
+        spec = {"style": {"oversample": 1}}
+        wide = overlays.build_filter(spec, 1920, 1080, overlays=False)
+        self.assertIn("scale=1920:1080:force_original_aspect_ratio=decrease:flags=neighbor", wide)
+
+
 if __name__ == "__main__":
     unittest.main()

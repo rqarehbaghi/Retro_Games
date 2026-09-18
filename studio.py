@@ -1259,31 +1259,26 @@ def main():
     if not args.no_captions:
         written_caps = writer.captions(**ctx, **ai)
         if written_caps is None:
-            sys.exit(
-                "The model returned nothing usable for the captions.\n\n"
-                "  Nothing is lost -- the recording and the replay are in\n"
-                f"  {folder}\n"
-                "  Fix the cause above, then retry the WRITING only (no replaying,\n"
-                "  and the event timeline is picked up from the .bk2 beside it):\n\n"
-                f"    python studio.py --game {args.game} \\\n"
-                f"      --from-mp4 {os.path.join(folder, os.path.basename(native))}\n\n"
-                "  If it was an auth error, note that a set ANTHROPIC_API_KEY\n"
-                "  overrides any profile from 'ant auth login' -- unset it first.")
-        lines = [(max(0.0, c["at"] + args.caption_offset), c["text"])
-                 for c in written_caps]
-        # Print what each caption was pinned to, so a wrong-moment caption can
-        # be told from a wrong-event one without guessing at the video.
-        print("Captions (anchored to the event log):")
-        for cap, (at, text) in zip(written_caps, lines):
-            if cap.get("closing"):
-                print("    %s  [the ask]        %s" % (stamp(int(at * FPS)), text))
-            elif cap.get("event") is None:
-                print("    %s  [opening]        %s" % (stamp(int(at * FPS)), text))
-            else:
-                logged = events[cap["event"]][0] / FPS
-                print("    %s  [%d] %-9s logged %s  %s"
-                      % (stamp(int(at * FPS)), cap["event"], cap["kind"],
-                         stamp(int(logged * FPS)), text))
+            print("\n  [studio] Notice: No caption backend returned usable text.")
+            print("           Continuing to render HD videos so the match recording is preserved.\n")
+            written_caps = []
+            lines = []
+        else:
+            lines = [(max(0.0, c["at"] + args.caption_offset), c["text"])
+                     for c in written_caps]
+            # Print what each caption was pinned to, so a wrong-moment caption can
+            # be told from a wrong-event one without guessing at the video.
+            print("Captions (anchored to the event log):")
+            for cap, (at, text) in zip(written_caps, lines):
+                if cap.get("closing"):
+                    print("    %s  [the ask]        %s" % (stamp(int(at * FPS)), text))
+                elif cap.get("event") is None:
+                    print("    %s  [opening]        %s" % (stamp(int(at * FPS)), text))
+                else:
+                    logged = events[cap["event"]][0] / FPS
+                    print("    %s  [%d] %-9s logged %s  %s"
+                          % (stamp(int(at * FPS)), cap["event"], cap["kind"],
+                             stamp(int(logged * FPS)), text))
     if not args.title:
         print("Title: %s" % title)
 

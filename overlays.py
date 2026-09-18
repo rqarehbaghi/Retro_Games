@@ -67,6 +67,7 @@ DEFAULT_STYLE = {
     # Encode every output at the same time. The filter graph is mostly
     # single-threaded, so separate processes use the other cores.
     "parallel_outputs": True,
+    "oversample": 8,
     # size_div divides the SHORT EDGE of the frame (see text_size), so one
     # setting renders the same size in both outputs. A LARGER number still
     # means SMALLER text -- these are 10% smaller than the previous values.
@@ -449,14 +450,25 @@ def build_filter(spec, width, height, src_label="[0:v]", overlays=True):
     # it and 3.93x without it, and stills of the two fills look the same.
     small_w = max(2, width // BLUR_DOWNSCALE)
     small_h = max(2, height // BLUR_DOWNSCALE)
+    oversample = int(style.get("oversample", 8))
+    if oversample > 1:
+        fg_filter = (
+            "[fg]scale=iw*%d:ih*%d:flags=neighbor,"
+            "scale=%d:%d:force_original_aspect_ratio=decrease:flags=area[fgs]"
+            % (oversample, oversample, width, height)
+        )
+    else:
+        fg_filter = (
+            "[fg]scale=%d:%d:force_original_aspect_ratio=decrease:flags=neighbor[fgs]"
+            % (width, height)
+        )
     parts = [
         "%ssplit=2[bg][fg]" % src_label,
         "[bg]scale=%d:%d:force_original_aspect_ratio=increase,crop=%d:%d,"
         "gblur=sigma=%s,scale=%d:%d:flags=bicubic[bgb]"
         % (small_w, small_h, small_w, small_h,
            float(style["blur"]) / BLUR_DOWNSCALE, width, height),
-        "[fg]scale=%d:%d:force_original_aspect_ratio=decrease:flags=neighbor[fgs]"
-        % (width, height),
+        fg_filter,
         "[bgb][fgs]overlay=(W-w)/2:(H-h)/2[v0]",
     ]
 

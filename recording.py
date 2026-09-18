@@ -82,3 +82,46 @@ def render_to_mp4(bk2_path, mp4_path=None, check=True):
     subprocess.run([sys.executable, os.path.join(HERE, "render_bk2.py"),
                     bk2_path, mp4_path], check=check)
     return mp4_path if os.path.exists(mp4_path) else None
+
+
+def upscale_mp4(mp4_path, out_path=None, factor=4, mode="sharp", oversample=True,
+                crf=17, preset="slow"):
+    """Upscale native retro mp4 to a sharp, oversampled HD video suitable for social media.
+
+    Using integer oversampling (8x nearest-neighbor pre-scale) and area downsampling
+    guarantees sharp, perfectly solid pixel art with anti-aliased subpixel boundaries,
+    eliminating shimmering and compression blur on social platforms.
+    """
+    if not mp4_path or not os.path.exists(mp4_path):
+        return None
+    if out_path is None:
+        base, ext = os.path.splitext(mp4_path)
+        out_path = f"{base}_HD{ext}"
+
+    if oversample and mode == "sharp":
+        vf = f"scale=iw*8:ih*8:flags=neighbor,scale=iw*{factor}/8:ih*{factor}/8:flags=area"
+    elif mode == "sharp":
+        vf = f"scale=iw*{factor}:ih*{factor}:flags=neighbor"
+    else:
+        vf = f"scale=iw*{factor}:ih*{factor}:flags=lanczos"
+
+    cmd = [
+        "ffmpeg", "-y", "-i", mp4_path,
+        "-vf", vf,
+        "-c:v", "libx264", "-preset", preset, "-crf", str(crf),
+        "-pix_fmt", "yuv420p",
+        "-c:a", "copy",
+        out_path
+    ]
+    res = subprocess.run(cmd, capture_output=True)
+    return out_path if res.returncode == 0 and os.path.exists(out_path) else None
+
+
+def render_to_hd_mp4(bk2_path, hd_path=None, factor=4, mode="sharp", oversample=True,
+                     check=True, crf=17, preset="slow"):
+    """Replay a .bk2 and produce a sharp oversampled HD MP4."""
+    native_mp4 = render_to_mp4(bk2_path, check=check)
+    if not native_mp4 or not os.path.exists(native_mp4):
+        return None
+    return upscale_mp4(native_mp4, out_path=hd_path, factor=factor, mode=mode,
+                       oversample=oversample, crf=crf, preset=preset)

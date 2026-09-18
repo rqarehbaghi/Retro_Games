@@ -1281,9 +1281,16 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
         # found") and it crashes on any 2-player movie whose scenario returns a
         # scalar reward. render_bk2.py exists precisely to fix both, and a
         # fallback that quietly reintroduces them is worse than an error.
-        mp4_path = recording.render_to_mp4(bk2_path, check=False)
-        if mp4_path and os.path.exists(mp4_path):
-            print(f"Exported HD Match Video: {mp4_path}")
+        # Replay the movie through the emulator and upscale to sharp oversampled HD
+        hd_path = recording.render_to_hd_mp4(bk2_path, factor=4, mode="sharp",
+                                            oversample=True, check=False)
+        if hd_path and os.path.exists(hd_path):
+            print(f"Exported HD Match Video: {hd_path}")
+            return hd_path
+        # Fallback to native MP4 if upscale failed
+        mp4_path = os.path.splitext(bk2_path)[0] + ".mp4"
+        if os.path.exists(mp4_path):
+            print(f"Exported Match Video (native): {mp4_path}")
             return mp4_path
         return bk2_path
     return None

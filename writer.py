@@ -63,7 +63,8 @@ DEFAULT_BACKEND = "auto"
 DEFAULT_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
 DEFAULT_MODEL = "qwen3:30b-a3b"
 CLAUDE_MODEL = "claude-opus-4-8"
-GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_MODEL = "gemini-3.6-flash"
+DEFAULT_GEMINI_MODELS = ("gemini-3.6-flash", "gemini-flash-latest", "gemini-2.5-flash-lite")
 
 # Effort sets how much the model spends thinking and answering. The API
 # default is "high"; "medium" is a deliberate step down, because writing
@@ -357,15 +358,13 @@ def _gemini_schema(node):
     return out
 
 
-def generate_gemini(prompt, schema, model=GEMINI_MODEL, verbose=True, timeout=120, **_kw):
-    """One generation through Google Gemini via the google-genai or google-generativeai SDK,
-    or direct REST API if GEMINI_API_KEY is present in environment."""
-    api_key = os.environ.get("GEMINI_API_KEY")
-    if not api_key:
-        if verbose:
-            print("  (writer: GEMINI_API_KEY environment variable is not set)")
-        return None
+def gemini_available():
+    """Is a Google Gemini API key configured in the environment?"""
+    return bool(os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"))
 
+
+def _call_gemini_model(prompt, schema, model, api_key, verbose=True, timeout=120):
+    """Attempt a single Gemini model generation using SDKs or REST."""
     # 1. Try google-genai SDK
     try:
         from google import genai
@@ -386,7 +385,7 @@ def generate_gemini(prompt, schema, model=GEMINI_MODEL, verbose=True, timeout=12
         pass
     except Exception as exc:
         if verbose:
-            print(f"  (writer: google-genai failed: {exc})")
+            print(f"  (writer: google-genai ({model}) failed: {exc})")
 
     # 2. Try google.generativeai (legacy) SDK
     try:
@@ -403,7 +402,7 @@ def generate_gemini(prompt, schema, model=GEMINI_MODEL, verbose=True, timeout=12
         pass
     except Exception as exc:
         if verbose:
-            print(f"  (writer: google-generativeai failed: {exc})")
+            print(f"  (writer: google-generativeai ({model}) failed: {exc})")
 
     # 3. Direct REST API fallback (no pip dependencies required)
     try:
@@ -426,7 +425,31 @@ def generate_gemini(prompt, schema, model=GEMINI_MODEL, verbose=True, timeout=12
             return json.loads(_strip_thinking(text))
     except Exception as exc:
         if verbose:
-            print(f"  (writer: gemini REST failed: {exc})")
+            print(f"  (writer: gemini REST ({model}) failed: {exc})")
+
+    return None
+
+
+def generate_gemini(prompt, schema, model=None, verbose=True, timeout=120, **_kw):
+    """One generation through Google Gemini via SDK or REST.
+
+    Supports GEMINI_API_KEY and GOOGLE_API_KEY, with automatic fallback
+    across modern Gemini models if the primary model is deprecated or busy."""
+    api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+    if not api_key:
+        if verbose:
+            print("  (writer: neither GEMINI_API_KEY nor GOOGLE_API_KEY is set in environment)")
+        return None
+
+    models_to_try = [model] if model else []
+    for m in DEFAULT_GEMINI_MODELS:
+        if m not in models_to_try:
+            models_to_try.append(m)
+
+    for m in models_to_try:
+        res = _call_gemini_model(prompt, schema, m, api_key, verbose=verbose, timeout=timeout)
+        if res is not None:
+            return res
 
     return None
 
@@ -434,9 +457,10 @@ def generate_gemini(prompt, schema, model=GEMINI_MODEL, verbose=True, timeout=12
 def write(prompt, schema, backend=DEFAULT_BACKEND, **kw):
     """Dispatch to whichever backend was asked for, with automatic cascade support."""
     verbose = kw.get("verbose", True)
+    cascade = backend == "auto" or kw.get("cascade", True)
 
-    if backend == "auto":
-        # Hierarchy: 1. Claude Code (subscription) -> 2. Claude API -> 3. Gemini -> 4. Ollama (local)
+    # 1. Claude Code CLI
+    if backend in ("auto", "claude-code"):
         if claude_code_available(kw.get("cli", DEFAULT_CLI)):
             res = generate_claude_code(prompt, schema, verbose=False,
                                        cli=kw.get("cli", DEFAULT_CLI),
@@ -445,7 +469,16 @@ def write(prompt, schema, backend=DEFAULT_BACKEND, **kw):
                 if verbose:
                     print("  [writer] generated successfully using Claude Code")
                 return res
+            elif verbose and backend == "claude-code":
+                print("  [writer] Claude Code failed or returned empty output.")
+        elif verbose and backend == "claude-code":
+            print("  [writer] Claude Code CLI is not available.")
 
+        if not cascade and backend == "claude-code":
+            return None
+
+    # 2. Anthropic Claude API
+    if backend in ("auto", "claude-code", "claude"):
         if os.environ.get("ANTHROPIC_API_KEY"):
             res = generate_claude(prompt, schema,
                                   model=kw.get("claude_model", CLAUDE_MODEL),
@@ -455,48 +488,52 @@ def write(prompt, schema, backend=DEFAULT_BACKEND, **kw):
                 if verbose:
                     print("  [writer] generated successfully using Anthropic API")
                 return res
+            elif verbose:
+                print("  [writer] Anthropic API failed or credits exhausted.")
+        elif verbose and backend == "claude":
+            print("  [writer] ANTHROPIC_API_KEY is not set.")
 
-        if os.environ.get("GEMINI_API_KEY"):
+        if not cascade and backend == "claude":
+            return None
+
+    # 3. Google Gemini (Google Cloud / AI Studio)
+    if backend in ("auto", "claude-code", "claude", "gemini"):
+        if gemini_available():
+            if verbose and backend in ("claude-code", "claude"):
+                print("  [writer] Falling back to Google Gemini...")
             res = generate_gemini(prompt, schema,
-                                  model=kw.get("gemini_model", GEMINI_MODEL),
-                                  verbose=False)
+                                  model=kw.get("gemini_model"),
+                                  verbose=verbose)
             if res:
                 if verbose:
                     print("  [writer] generated successfully using Google Gemini")
                 return res
+            elif verbose:
+                print("  [writer] Google Gemini generation failed.")
+        elif verbose and backend == "gemini":
+            print("  [writer] Neither GEMINI_API_KEY nor GOOGLE_API_KEY is set.")
 
-        # Finally fallback to local Ollama
-        res = generate(prompt, schema,
-                       model=kw.get("model", DEFAULT_MODEL),
-                       host=kw.get("host", DEFAULT_HOST),
-                       seed=kw.get("seed"),
-                       think=kw.get("think", True),
-                       verbose=verbose)
-        if res:
-            if verbose:
-                print("  [writer] generated successfully using Ollama")
-            return res
-        return None
+        if not cascade and backend == "gemini":
+            return None
 
-    if backend == "claude-code":
-        return generate_claude_code(prompt, schema, verbose=verbose,
-                                    cli=kw.get("cli", DEFAULT_CLI),
-                                    model=kw.get("claude_model"))
-    if backend == "claude":
-        return generate_claude(prompt, schema,
-                               model=kw.get("claude_model", CLAUDE_MODEL),
-                               effort=kw.get("claude_effort", CLAUDE_EFFORT),
-                               verbose=verbose)
-    if backend == "gemini":
-        return generate_gemini(prompt, schema,
-                               model=kw.get("gemini_model", GEMINI_MODEL),
-                               verbose=verbose)
-    return generate(prompt, schema,
-                    model=kw.get("model", DEFAULT_MODEL),
-                    host=kw.get("host", DEFAULT_HOST),
-                    seed=kw.get("seed"),
-                    think=kw.get("think", True),
-                    verbose=verbose)
+    # 4. Offline local LLM (Ollama)
+    if verbose and backend in ("auto", "claude-code", "claude", "gemini"):
+        print("  [writer] Falling back to offline LLM (Ollama)...")
+
+    res = generate(prompt, schema,
+                   model=kw.get("model", DEFAULT_MODEL),
+                   host=kw.get("host", DEFAULT_HOST),
+                   seed=kw.get("seed"),
+                   think=kw.get("think", True),
+                   verbose=verbose)
+    if res:
+        if verbose:
+            print("  [writer] generated successfully using offline LLM (Ollama)")
+        return res
+
+    if verbose:
+        print("  [writer] All LLM backends failed or are unavailable.")
+    return None
 
 
 # A run collects a great many coins and almost nothing else in bulk, so a raw

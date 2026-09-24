@@ -136,6 +136,31 @@ Startup verified all6 simulator placements and printed
 against the same zero-value control and report lines/placements, mean, minimum,
 count>=100, and caps. Do not extend blindly if balance does not improve robustness.
 
+### v54 balanced-state 10k gate result
+
+The persistent service completed normally and saved its 10k checkpoint. The
+first evaluation command failed only because it looked for the v52 result in
+the WSL-local checkout; the complete deterministic evaluation is preserved at
+`checkpoints/experiment_loop/v54_10k_balanced_eval.json` in the Windows-mounted
+repository.
+
+| Policy | placements | total lines | mean | minimum | states >=100 | capped |
+|---|---:|---:|---:|---:|---:|---:|
+| zero-value control | 2704 | 901 | 56.31 | 0 | 3/16 | 0 |
+| v52 uniform-episode 10k | 3944 | 1382 | 86.38 | 0 | 4/16 | 1 |
+| v54 balanced-steps 10k | 1815 | 534 | 33.38 | 0 | 0/16 | 0 |
+
+Balanced placement exposure failed this gate: v54 is 41% below the control and
+61% below v52 in total lines. It improves six states over v52 (`rs_04`,
+`rs_06`, `rs_07`, `rs_09`, `rs_11`, `rs_12` if counting the small rs_09 gain),
+but catastrophically loses the long trajectories that dominated v52, including
+`rs_03` 390->18, `rs_10` 224->11, and `rs_15` 225->45. This rejects the claim
+that per-placement exposure imbalance was the primary cause of poor robustness;
+at this budget, forcing equal exposure to short/hard starts makes aggregate
+learning substantially worse. Do not extend v54 or promote `balanced_steps` as
+the Tetris production sampler based on this run. Further training work needs a
+new, separately justified hypothesis rather than another duration increase.
+
 ## Locations
 
 - Editable code: G:/GitHub/Retro_Games (WSL /mnt/g/GitHub/Retro_Games).

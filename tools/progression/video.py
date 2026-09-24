@@ -27,8 +27,10 @@ import argparse
 import json
 import math
 import os
+import shutil
 import subprocess
 import sys
+import time
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
@@ -37,7 +39,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from tools.progression import chart as chart_card, runners        # noqa: E402
+from tools.progression import chart as chart_card, runners, speech   # noqa: E402
 
 OUT = os.path.join(ROOT, "progression_out")
 PANELS = os.path.join(OUT, "panels")
@@ -361,9 +363,14 @@ def build_chart(cells, game, path, order):
         print("  (no panel numbers on disk: these panels were cached before the "
               "sidecars existed. Delete them to rebuild, or drop --chart)")
         return None
-    return chart_card.build(rows, path, game=game_title(game),
+    card = chart_card.build(rows, path, game=game_title(game),
                             metric="%s per game" % metric.title(),
                             decision_word=work, order=order)
+    # What the numbers ARE, for anyone downstream that has to say them out
+    # loud. Without this the narration called a lines-cleared mean "the
+    # average placement count", which is a different number on the same card.
+    card.update({"metric_label": metric.lower(), "work_label": work})
+    return card
 
 
 def resolve_column(name, folder):
@@ -378,6 +385,114 @@ def resolve_column(name, folder):
         return os.path.join(folder, "ckpt_%s_steps.zip" % name), "%dk" % (int(name) // 1000)
     path = name if os.path.isabs(name) else os.path.join(folder, name)
     return path, os.path.splitext(os.path.basename(name))[0]
+
+
+
+
+def panel_key(name, state, no_stats, pad):
+    """The crop and the burnt-in counters are baked into a panel, so they
+    belong in its NAME: otherwise a --no-stats run silently reuses panels with
+    the counters drawn on."""
+    return "%s_%s%s%s" % (name, state, "_bare" if no_stats else "",
+                          "" if pad == CROP_PAD else "_pad%d" % pad)
+
+
+def render_panels(game, columns, rows, cap, player, cache, crop, pad, no_stats):
+    """Play every (checkpoint, state) pair, reusing anything already rendered.
+
+    The cache is SHARED between runs -- a panel is minutes of emulator time --
+    and each run copies the ones it used into its own folder afterwards."""
+    os.makedirs(cache, exist_ok=True)
+    panels = {}
+    for path, name, label in columns:
+        for state in rows:
+            key = panel_key(name, state, no_stats, pad)
+            mp4 = os.path.join(cache, key + ".mp4")
+            side = os.path.join(cache, key + ".json")
+            if os.path.exists(mp4):
+                print("cached panel %s" % key)
+                probe = subprocess.run(
+                    ["ffprobe", "-v", "error", "-select_streams", "v", "-show_entries",
+                     "stream=width,height", "-of", "csv=p=0", mp4],
+                    capture_output=True, text=True, check=True).stdout.strip()
+                w, h = (int(v) for v in probe.split(",")[:2])
+                panel = {"path": mp4, "width": w, "height": h}
+                if os.path.exists(side):
+                    panel.update(json.load(open(side)))
+            else:
+                print("rendering panel %s ..." % key)
+                panel = capture_panel(game, path, state, cap, player, mp4,
+                                      crop, pad, not no_stats)
+                json.dump({"end_reason": panel["end_reason"],
+                           "decisions": panel["decisions"], "stats": panel["stats"],
+                           "checkpoint": os.path.basename(path), "state": state},
+                          open(side, "w"), indent=2)
+                print("   %s after %d decisions" % (panel["end_reason"], panel["decisions"]))
+            panel["label"] = panel["column"] = label
+            panel["state"] = state
+            panels[(label, state)] = panel
+    return panels
+
+
+def slug(text):
+    return "".join(c.lower() if c.isalnum() else "-" for c in text).strip("-")
+
+
+def run_folder(base, game):
+    """One self-contained folder per run, like the studio pipeline's.
+
+    Everything that run produced lands in it -- the individual games, the
+    card, the silent film, the voice on its own, the combined file and the
+    timed script -- so editing one piece never means regenerating the rest."""
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    folder = os.path.join(base, "%s_%s" % (stamp, slug(game_title(game))))
+    os.makedirs(os.path.join(folder, "gameplays"), exist_ok=True)
+    return folder
+
+
+def copy_gameplays(cells, folder):
+    """The standalone games, named for what they are rather than for the cache."""
+    for cell in cells:
+        dest = os.path.join(folder, "gameplays", "%s__%s.mp4"
+                            % (slug(cell["column"]), slug(cell["state"])))
+        shutil.copyfile(cell["path"], dest)
+
+
+def say(game, card, states, cap, body_seconds, folder, writer_backend,
+        voice_model, voice_name, channel, wpm):
+    """Write the script and render it to audio. Returns (body, card, texts).
+
+    Deliberately BEFORE the video is composed: the closing card is then held
+    for exactly as long as the part written about it, which is the only way
+    the numbers are never spoken over a game still in progress."""
+    from tools.progression import narrate
+
+    try:
+        algorithm = runners.spec_for(game).algorithm
+    except Exception:                                             # noqa: BLE001
+        algorithm = ""
+    print("  [voice] asking %s for a script ..." % writer_backend)
+    script = narrate.write(game_title(game), body_seconds, card, states, cap,
+                           algorithm=algorithm, channel=channel, wpm=wpm,
+                           backend=writer_backend)
+    if not script:
+        print("  (no script: the writer returned nothing)")
+        return None
+    json.dump(script, open(os.path.join(folder, "script.json"), "w"), indent=2)
+    return speak_script(script, folder, voice_model, voice_name)
+
+
+def speak_script(script, folder, voice_model, voice_name):
+    """Render a script to audio: the body, then the card part and the closing."""
+    print("  [voice] speaking %d body and %d card paragraphs with %s ..."
+          % (len(script["body"]), len(script["card"]) + bool(script.get("closing")),
+             voice_model))
+    blocks = os.path.join(folder, "narration_blocks")
+    body = speech.speak(script["body"], blocks, backend=voice_model, voice=voice_name)
+    card_text = list(script["card"]) + ([script["closing"]] if script.get("closing") else [])
+    card_clips = speech.speak(card_text, os.path.join(blocks, "card"),
+                              backend=voice_model, voice=voice_name)
+    return body, card_clips, list(script["body"]) + card_text
 
 
 def main():
@@ -402,37 +517,63 @@ def main():
                    help="pixels of readouts kept beside the board in --crop half "
                         "(default %(default)s: the narrowest that keeps TetrisTime's "
                         "SCORE / LINES / LEVEL labels whole)")
-    p.add_argument("--speed", type=float, default=SPEED,
-                   help="playback speed multiplier (default %(default)s). The grid lasts as "
-                        "long as its LONGEST game: a checkpoint that plays 29 minutes makes "
-                        "a 10-minute video at 3x, so raise this for long games")
+    p.add_argument("--speed", default=str(SPEED),
+                   help="playback speed multiplier, or 'auto' to set it so the gameplay "
+                        "lasts exactly as long as the narration written for it "
+                        "(default %(default)s)")
     p.add_argument("--labels", default=None,
                    help="what to CALL each column, comma separated, in the order of "
                         "--columns. The default is the checkpoint's own name")
     p.add_argument("--no-stats", action="store_true",
                    help="no counters burnt into the panels -- just the games and the "
-                        "labels you chose. The end chart still carries the numbers")
+                        "labels you chose. The card still carries the numbers")
     p.add_argument("--cols", type=int, default=0,
                    help="panels per row. The default puts one column per checkpoint, so "
                         "3 checkpoints x 2 states is 3 wide; --cols 4 wraps the same six "
                         "panels 4 then 2, and --cols 2 makes them 2x3")
     p.add_argument("--chart", action="store_true",
-                   help="close the video with a stats card built from these games")
-    p.add_argument("--chart-seconds", type=float, default=12.0)
+                   help="close the film with a stats card built from these games")
+    p.add_argument("--chart-seconds", type=float, default=12.0,
+                   help="how long the card is held WITHOUT narration; with --voice it is "
+                        "held for exactly as long as the words written about it")
     p.add_argument("--title", default=None,
                    help="headline on the stats card (default: the game's name)")
     p.add_argument("--voice", action="store_true",
-                   help="write and speak a narration over the video: the game's history, "
-                        "how the agent was trained, and the numbers on the chart. OFF by "
-                        "default, like the studio pipeline's")
+                   help="write and speak a narration: the game's history, what the agent "
+                        "is, and -- only over the card -- what the numbers say")
     p.add_argument("--writer", default="auto",
-                   help="which LLM writes the narration (auto|claude-code|claude|gemini|ollama)")
+                   help="which LLM writes the narration "
+                        "(auto|claude-code|claude|gemini|ollama)")
+    p.add_argument("--voice-model", default=speech.DEFAULT,
+                   help="which TTS speaks it: kokoro (default, local, free, one fixed "
+                        "voice), qwen (the studio pipeline's), piper, elevenlabs (PAID, "
+                        "and it sends the script to a third party)")
+    p.add_argument("--voice-name", default=None,
+                   help="the speaker: a Kokoro voice such as %s, a Qwen preset, a piper "
+                        ".onnx path, or an ElevenLabs voice id"
+                        % ", ".join(speech.KOKORO_VOICES[:3]))
+    p.add_argument("--wpm", type=int, default=140,
+                   help="words per minute used to size the script (default %(default)s, "
+                        "measured; asking for fewer leaves silence)")
+    p.add_argument("--channel", default=None,
+                   help="the channel the narration is written for (default: the "
+                        "watermark in studio.json)")
     p.add_argument("--still", action="store_true", help="render one frame and stop")
-    p.add_argument("--panels", default=PANELS, help="where panel mp4s are cached")
-    p.add_argument("--out", default=None,
-                   help="default: progression_out/progression_grid.mp4, or "
-                        "progression_still.png with --still")
+    p.add_argument("--panels", default=PANELS,
+                   help="shared panel cache, reused across runs (default %(default)s)")
+    p.add_argument("--out-dir", default=None,
+                   help="the run folder (default: a new timestamped one under "
+                        "progression_out/runs)")
+    p.add_argument("--respeak", default=None, metavar="FOLDER",
+                   help="say the SAME script again -- another take, or another voice -- "
+                        "and remux. Nothing is replayed and no video is re-encoded")
+    p.add_argument("--renarrate", default=None, metavar="FOLDER",
+                   help="write a NEW script for a finished run, speak it and remux. "
+                        "The gameplay and the card are reused as they are")
     a = p.parse_args()
+
+    if a.respeak or a.renarrate:
+        return regenerate(a)
 
     manifest = json.load(open(a.manifest)) if os.path.exists(a.manifest) else {}
     game = a.game or manifest.get("game")
@@ -445,84 +586,158 @@ def main():
     cap = a.cap or int(manifest.get("placement_cap", 0)) or 500
     player = a.player or int(manifest.get("player", 0))
     folder = a.folder or os.path.join(ROOT, "checkpoints", game)
+    auto_speed = str(a.speed).lower() == "auto"
+    speed = SPEED if auto_speed else float(a.speed)
 
     names = a.columns.split(",")
     given = a.labels.split(",") if a.labels else []
     if given and len(given) != len(names):
         sys.exit("--labels has %d names for %d columns" % (len(given), len(names)))
+    # Everything a model or a GPU could refuse is checked BEFORE the emulator
+    # runs: a missing voice must never cost an hour of replay.
+    if a.voice and not a.still and not speech.available(a.voice_model):
+        sys.exit("voice backend %r is not installed here.\n"
+                 "kokoro:  pip install \"kokoro>=0.9.4\" soundfile   "
+                 "(and: sudo apt install espeak-ng)" % a.voice_model)
 
-    os.makedirs(a.panels, exist_ok=True)
-    columns, panels = [], {}
+    columns = []
     for i, spec_name in enumerate(names):
         path, name = resolve_column(spec_name, folder)
-        label = given[i].strip() if given else HEADINGS.get(name, name)
-        columns.append(label)
-        for state in rows:
-            # The crop and the burnt-in counters are baked into a panel, so
-            # they belong in its NAME: otherwise a --no-stats run silently
-            # reuses panels that have the counters drawn on.
-            key = "%s_%s%s%s" % (name, state, "_bare" if a.no_stats else "",
-                                 "" if a.pad == CROP_PAD else "_pad%d" % a.pad)
-            mp4 = os.path.join(a.panels, key + ".mp4")
-            side = os.path.join(a.panels, key + ".json")
-            if os.path.exists(mp4):
-                print("cached panel %s" % key)
-                probe = subprocess.run(
-                    ["ffprobe", "-v", "error", "-select_streams", "v", "-show_entries",
-                     "stream=width,height", "-of", "csv=p=0", mp4],
-                    capture_output=True, text=True, check=True).stdout.strip()
-                w, h = (int(v) for v in probe.split(",")[:2])
-                panel = {"path": mp4, "width": w, "height": h}
-                if os.path.exists(side):
-                    panel.update(json.load(open(side)))
-            else:
-                print("rendering panel %s ..." % key)
-                panel = capture_panel(game, path, state, cap, player, mp4,
-                                      a.crop, a.pad, not a.no_stats)
-                json.dump({"end_reason": panel["end_reason"],
-                           "decisions": panel["decisions"], "stats": panel["stats"],
-                           "checkpoint": os.path.basename(path), "state": state},
-                          open(side, "w"), indent=2)
-                print("   %s after %d decisions" % (panel["end_reason"], panel["decisions"]))
-            panel["label"] = panel["column"] = label
-            panel["state"] = state
-            panels[(label, state)] = panel
+        columns.append((path, name, given[i].strip() if given else HEADINGS.get(name, name)))
+    labels = [label for _p, _n, label in columns]
 
-    # Reading order: each state's row of checkpoints, then the next state's.
-    # --cols only decides where that sequence wraps.
-    cells = [panels[(c, r)] for r in rows for c in columns]
-    ncols = a.cols or len(columns)
+    panels = render_panels(game, columns, rows, cap, player, a.panels,
+                           a.crop, a.pad, a.no_stats)
+    cells = [panels[(c, r)] for r in rows for c in labels]
+    ncols = a.cols or len(labels)
     if a.cols and len(rows) > 1:
-        # Once the panels wrap, "this column is 100k" and "this row is state
-        # 2" stop being true, so each panel has to say what it is itself.
+        # Once the panels wrap, "this column is 100k" and "this row is state 2"
+        # stop being true, so each panel has to say what it is itself.
         for cell in cells:
-            cell["label"] = "%s  %s" % (cell["label"], cell["state"])
-    headers = (columns, rows) if not a.cols else None
+            cell["label"] = "%s  %s" % (cell["column"], cell["state"])
+    headers = (labels, rows) if not a.cols else None
 
-    out = a.out or os.path.join(
-        OUT, "progression_still.png" if a.still else "progression_grid.mp4")
+    if a.still:
+        still_path = os.path.join(OUT, "progression_still.png")
+        compose(cells, still_path, ncols=ncols, headers=headers, still=True, speed=speed)
+        print("wrote %s" % still_path)
+        return
+
+    out_dir = a.out_dir or run_folder(os.path.join(OUT, "runs"), game)
+    os.makedirs(os.path.join(out_dir, "gameplays"), exist_ok=True)
+    copy_gameplays(cells, out_dir)
+
     card = None
-    if a.chart and not a.still:
+    if a.chart:
         card = build_chart(cells, a.title or game,
-                           os.path.join(OUT, "progression_chart.png"), columns)
-        if card:
-            print("wrote %s" % card["path"])
-    compose(cells, out, ncols=ncols, headers=headers, still=a.still, speed=a.speed,
-            chart=card and card["path"], chart_seconds=a.chart_seconds)
-    print("wrote %s" % out)
+                           os.path.join(out_dir, "chart.png"), labels)
 
-    # Speech is LAST and never fatal: the video already exists by this point,
-    # and a model or a GPU being unavailable must not cost the render.
-    if a.voice and not a.still:
+    longest = max(duration(c["path"]) for c in cells)
+    chart_seconds = a.chart_seconds if card else 0.0
+    spoken = None
+    if a.voice:
+        channel = a.channel or json.load(
+            open(os.path.join(ROOT, "studio.json"))).get("watermark", "")
+        spoken = say(game, card, rows, cap, longest / speed, out_dir, a.writer,
+                     a.voice_model, a.voice_name, channel, a.wpm)
+    if spoken:
         from tools.progression import narrate
-        try:
-            spoken = narrate.add(out, game, card, backend=a.writer, out_dir=OUT,
-                                 states=rows, cap=cap,
-                                 chart_seconds=a.chart_seconds if card else 0.0)
-            if spoken:
-                print("wrote %s" % spoken)
-        except Exception as exc:                                  # noqa: BLE001
-            print("  (narration failed, the silent video is unaffected: %s)" % exc)
+        body, card_clips, _texts = spoken
+        body_seconds = (sum(s for _p, s in body)
+                        + narrate.BLOCK_GAP * max(0, len(body) - 1) + 0.6)
+        if auto_speed:
+            # The GAMEPLAY is cut to the narration, not the other way round.
+            # This is what removes the long silences -- spacing sentences
+            # further apart to cover the gap is what made them unnatural.
+            speed = max(1.0, longest / max(1.0, body_seconds))
+            print("  [voice] speed set to %.2fx, so the games last %s -- the length "
+                  "of the spoken part" % (speed, narrate.clock(body_seconds)))
+        elif body_seconds > longest / speed:
+            print("  (the spoken part runs %s but the games last %s at %gx, so the "
+                  "end will be cut. --speed auto fits them to each other)"
+                  % (narrate.clock(body_seconds), narrate.clock(longest / speed), speed))
+        if card:
+            chart_seconds = max(a.chart_seconds, narrate.card_seconds(card_clips))
+
+    grid_seconds = longest / speed
+    silent = os.path.join(out_dir, "grid.mp4")
+    compose(cells, silent, ncols=ncols, headers=headers, speed=speed,
+            chart=card and card["path"], chart_seconds=chart_seconds)
+    print("wrote %s" % silent)
+
+    if spoken:
+        finish_voice(out_dir, silent, spoken, grid_seconds)
+    json.dump({"game": game, "columns": [list(c) for c in columns], "states": rows,
+               "cap": cap, "player": player, "speed": speed, "crop": a.crop,
+               "pad": a.pad, "no_stats": bool(a.no_stats), "cols": ncols,
+               "chart": bool(card), "chart_seconds": chart_seconds,
+               "grid_seconds": grid_seconds, "title": a.title,
+               "channel": a.channel, "voice_model": a.voice_model,
+               "voice_name": a.voice_name, "writer": a.writer, "wpm": a.wpm,
+               "panels": a.panels},
+              open(os.path.join(out_dir, "run.json"), "w"), indent=2)
+    print("\nrun folder: %s" % out_dir)
+
+
+def finish_voice(out_dir, silent, spoken, grid_seconds):
+    """Lay the spoken blocks over the film and write the timed script."""
+    from tools.progression import narrate
+    body, card_clips, texts = spoken
+    total = duration(silent)
+    placed = narrate.schedule(body, card_clips, grid_seconds)
+    kept = [b for b in placed if b[1] <= total + 0.05]
+    if len(kept) < len(placed):
+        print("  (voice: %d block%s ran past the end of the film and were dropped)"
+              % (len(placed) - len(kept), "" if len(placed) - len(kept) == 1 else "s"))
+    wav = os.path.join(out_dir, "narration.wav")
+    narrate.build_track(kept, total, wav)
+    narrate.mux(silent, wav, os.path.join(out_dir, "narrated.mp4"))
+    narrate.save_schedule(kept, texts, out_dir, "grid.mp4", total, grid_seconds)
+    for name in ("narration.wav", "narrated.mp4", "narration.txt"):
+        print("wrote %s" % os.path.join(out_dir, name))
+
+
+def regenerate(a):
+    """--respeak / --renarrate: redo the audio for a finished run.
+
+    The film and the card are left exactly as they are, so this costs one
+    model call and one TTS pass -- no emulator, no video encode. The card's
+    length is already fixed by the first run, so a much longer new script can
+    overrun it; anything that does not fit is dropped and reported."""
+    out_dir = a.respeak or a.renarrate
+    run = json.load(open(os.path.join(out_dir, "run.json")))
+    silent = os.path.join(out_dir, "grid.mp4")
+    grid_seconds = float(run["grid_seconds"])
+    voice_model = a.voice_model or run.get("voice_model") or speech.DEFAULT
+    voice_name = a.voice_name or run.get("voice_name")
+    if not speech.available(voice_model):
+        sys.exit("voice backend %r is not installed here." % voice_model)
+
+    if a.renarrate:
+        cache = run.get("panels") or PANELS
+        cells = []
+        for _path, name, label in [tuple(c) for c in run["columns"]]:
+            for state in run["states"]:
+                side = os.path.join(cache, panel_key(name, state, run["no_stats"],
+                                                     run["pad"]) + ".json")
+                cells.append(dict(json.load(open(side)), column=label, state=state))
+        card = build_chart(cells, run.get("title") or run["game"],
+                           os.path.join(out_dir, "chart.png"),
+                           [c[2] for c in run["columns"]]) if run.get("chart") else None
+        spoken = say(run["game"], card, run["states"], run["cap"], grid_seconds,
+                     out_dir, a.writer, voice_model, voice_name,
+                     a.channel or run.get("channel") or "", a.wpm)
+        if not spoken:
+            sys.exit("the writer returned nothing; the existing film is untouched")
+    else:
+        # The SAME words, said again: another take, or another voice. The
+        # script is read back from the run rather than rewritten, so nothing
+        # about the wording can change underneath you.
+        spoken = speak_script(json.load(open(os.path.join(out_dir, "script.json"))),
+                              out_dir, voice_model, voice_name)
+
+    finish_voice(out_dir, silent, spoken, grid_seconds)
+    print("\nrun folder: %s" % out_dir)
 
 
 if __name__ == "__main__":

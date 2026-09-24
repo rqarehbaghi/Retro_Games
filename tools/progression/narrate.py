@@ -1,22 +1,28 @@
-"""Write and speak a narration for a progression video.
+"""Write and speak the narration for a progression video.
 
-NOT play-by-play. The picture already shows the games; what it cannot show is
-where the game came from, what the thing playing it actually is, and what the
-numbers on the closing card mean. So the script is a short talk over footage:
-the game's history, how the agent was trained, what the card says, and jokes.
+NOT play-by-play. The picture already shows the games. What it cannot show is
+where the game came from, what the thing playing it actually is, why this
+experiment was run, and what the closing card means.
 
-Two rules carried over from the studio pipeline, both learned the hard way:
+Three rules this file exists to enforce, each of them learned from a bad take:
 
-- The speaker must stay FIXED. Qwen3-TTS's VoiceDesign model invents a new
-  voice per call, so a line-by-line render made every sentence a different
-  person. `tts.speak_lines` uses a named CustomVoice preset for this reason.
-- Speech is MEASURED, never estimated, and a line that cannot finish before
-  the video ends is dropped rather than pushed past it (`tts.space_clips`).
+- THE NUMBERS ARE ONLY SPOKEN OVER THE CARD. Talking about a mean while a game
+  is still playing asks the viewer to look at something that is not on screen
+  yet. So the script is written in two parts, the card part is spoken only
+  once the card is up, and the card is held for exactly as long as that part
+  takes -- the video is cut to the narration, not the narration to the video.
 
-And one that is specific to this video: the model is given the measured
-numbers and told they are the only numbers it may say. A narration that
-invents a figure about the training would be worse than one that says nothing
-about it, because it sounds equally confident.
+- A BLOCK IS A PARAGRAPH, not a sentence. Sentence-at-a-time synthesis resets
+  the voice at every full stop: each one arrives with its own intonation and
+  the gaps land on silence instead of breath. See `speech.py`.
+
+- EVERY FIGURE IS NAMED WITH ITS UNIT. Handed "mean 48" and "averaging 155",
+  a model called a lines-cleared average "the average placement count" -- in a
+  finished video, about a number printed on the card beside it.
+
+The measured numbers are supplied to the model and it is told they are the
+only figures it may state about the training. The game's own history it brings
+itself, with the usual instruction to leave out anything it is unsure of.
 """
 import json
 import os
@@ -27,37 +33,38 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
+from tools.progression import speech                              # noqa: E402
+
+BLOCK_GAP = 0.45        # breath between paragraphs, not a pause for effect
+CARD_LEAD = 0.4         # beat after the card appears before the voice returns
+WPM = 140               # measured, not assumed: see script()
+
 VOICE = """\
-You are writing narration for a short video about a neural network learning to
-play a classic console game. The viewer watches several copies of the same game
-at once, each played by a different training checkpoint, and the video ends on
-a card of measured results.
+You are writing the narration for a short film about a neural network learning
+to play a classic console game. It is published on a channel called %s, whose
+whole premise is that player two is a machine: the machine plays, the results
+get posted, and the running question is whether it is yet good enough to be
+worth a human sitting down opposite it.
 
 Your voice: someone who knows both halves -- the machine learning and the
-console -- and treats them as equally serious and equally absurd. Dry,
-specific, unimpressed by jargon. You explain a thing once, plainly, and move
-on. You are funny the way a good documentary narrator is funny: by saying the
-true thing with perfect timing, never by announcing that something is amazing.
+console -- and finds them equally serious and equally absurd. Dry, exact,
+unimpressed by jargon. You explain a thing once, in plain words, and move on.
+You are funny the way a good documentary narrator is funny: by saying the true
+thing with perfect timing, never by announcing that something is remarkable.
 
-Never hype, never "epic", never emoji, never a rhetorical question you answer
-yourself. The audience is adults who played this game and can follow a real
-explanation."""
+Write for the EAR. Short sentences next to long ones. No sentence that needs
+re-reading. No lists read aloud, no "firstly", no rhetorical question you then
+answer yourself, no "welcome back", no hype, no emoji. The audience are adults
+who played this game and can follow a real explanation."""
 
 SCHEMA = {
     "type": "object",
     "properties": {
-        "script": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {"text": {"type": "string"},
-                               "chart": {"type": "boolean"}},
-                "required": ["text"],
-            },
-        },
+        "body": {"type": "array", "items": {"type": "string"}},
+        "card": {"type": "array", "items": {"type": "string"}},
         "closing": {"type": "string"},
     },
-    "required": ["script", "closing"],
+    "required": ["body", "card", "closing"],
 }
 
 
@@ -67,273 +74,213 @@ def duration(path):
     return float(out.stdout.strip())
 
 
-def _facts(game, card, states, cap):
-    """Everything the model is allowed to state as fact about THIS run.
-
-    Written out as plain sentences rather than a JSON blob: backends without
-    constrained decoding echo structure they are shown, and a narration that
-    reads out a field name has happened before."""
-    lines = ["The game is %s." % game,
-             "Each panel is one complete game, played by one saved checkpoint of "
-             "the same network, from a fixed start.",
-             "%d different start positions were used, and every game was stopped "
-             "after %d moves if it had not ended by then." % (len(states), cap)]
-    if not card:
-        return "\n".join(lines)
-    for name in card["order"]:
-        s = card["stats"][name]
-        sd = "no spread to report from one game" if s["sd"] is None else \
-             "standard deviation %.0f" % s["sd"]
-        lines.append(
-            "Checkpoint '%s': mean %.0f, %s, worst %.0f, best %.0f, over %d game%s, "
-            "averaging %.0f moves per game; %d game%s ended on their own and %d were "
-            "still going when the cap stopped them."
-            % (name, s["mean"], sd, s["min"], s["max"], s["n"], "" if s["n"] == 1 else "s",
-               s["decisions"], s["finished"], "" if s["finished"] == 1 else "s",
-               s["capped"]))
-    return "\n".join(lines)
-
-
-def script(game, seconds, card, states, cap, algorithm="", wpm=125, **kw):
-    """Ask a model for the talk. Returns [{text, anchor, closing}] or None."""
-    import writer
-
-    words = int(seconds / 60.0 * wpm)
-    how = {"afterstate": (
-        "The agent is a value network. For every legal placement of the current "
-        "piece it simulates the board that placement would leave behind, scores "
-        "that resulting board, and plays the best one. It was trained by "
-        "temporal-difference learning: the score it gives a board is dragged "
-        "towards what actually happened next, over and over."),
-        "ppo": (
-        "The agent is a policy network trained with PPO. It sees the screen as "
-        "pixels and picks which buttons to hold, one decision per frame, and "
-        "training nudges it towards the button presses that earned more reward "
-        "without letting it change too fast in one step.")}.get(algorithm, "")
-
-    prompt = (
-        VOICE + "\n\n"
-        "THE VIDEO\n"
-        "It runs %.0f seconds. Several games play side by side, sped up, each "
-        "labelled with which checkpoint is playing it. They end at different "
-        "times and freeze.%s\n\n"
-        "WHAT IS ACTUALLY HAPPENING\n%s\n%s\n\n"
-        "WRITE\n"
-        "One person talking continuously over this, start to finish. Each entry "
-        "in 'script' is the next sentence or two of the SAME monologue, read "
-        "straight through with no gaps, so they have to flow into each other.\n\n"
-        "The subject is NOT what is happening on screen -- the viewer can see "
-        "that, and describing it wastes the only thing you have. Talk about:\n"
-        "- the game itself: when it came out, who made it, what it did that was "
-        "  new, what it sold, what it is remembered for, how the people who are "
-        "  frighteningly good at it play it\n"
-        "- what this machine is and how it learned, in plain words\n"
-        "- what the results mean, and what they do NOT mean at this sample size\n"
-        "- jokes. Real ones, from the material.\n\n"
-        "RULES\n"
-        "- About %d words TOTAL. Synthesised speech is slower than you expect "
-        "  and anything that cannot finish before the video ends is cut.\n"
-        "- The ONLY numbers you may state about the training or the results are "
-        "  the ones listed above. Numbers about the GAME's own history are "
-        "  yours to bring, but say only what you are confident is TRUE -- a "
-        "  wrong date about a game this audience grew up with is worse than no "
-        "  date at all. If you are unsure, say it without the number.\n"
-        "- Do not claim the agent is good or bad in general. It played %d games.\n"
-        "- Plain spoken prose. No stage directions, no speaker labels, no field "
-        "  names, no markdown, no emoji, no timestamps. Every string is read "
-        "  aloud EXACTLY as written.\n"
-        "%s"
-        "- 'closing' is the last thing said. One sentence.\n"
-        "Return JSON: {\"script\": [{\"text\": \"...\"}, {\"text\": \"...\", "
-        "\"chart\": true}], \"closing\": \"...\"}"
-        % (seconds,
-           " The last few seconds are a card of measured results." if card else "",
-           _facts(game, card, states, cap), how, words,
-           sum(card["stats"][n]["n"] for n in card["order"]) if card else len(states),
-           ("- Mark 'chart': true on the entries that discuss the measured "
-            "results. Those are held back so they land while the card is on "
-            "screen. Most entries are not marked.\n") if card else
-           ("- There is NO results card in this video. Do not refer to anything "
-            "appearing on screen after the games.\n")))
-
-    data = writer.write(prompt, SCHEMA, **kw)
-    if not data:
-        return None
-    lines = []
-    for item in data.get("script", []):
-        raw = item if isinstance(item, str) else item.get("text", "")
-        text = writer.clean_spoken(raw)
-        if not text:
-            continue
-        lines.append({"text": text,
-                      "chart": bool(isinstance(item, dict) and item.get("chart")),
-                      "closing": False})
-    closing = writer.clean_spoken(data.get("closing", ""))
-    if closing:
-        lines.append({"text": closing, "chart": True, "closing": True})
-    return lines or None
-
-
-MIN_GAP = 0.35          # breath between one line ending and the next starting
-
-
-def spread(items, start, end, min_gap=MIN_GAP):
-    """Lay lines across a WINDOW, not end to end from the front.
-
-    Read back to back, a script that is shorter than the footage finishes
-    early and leaves the last stretch of video silent. Spacing them by the
-    slack instead means the talk covers the whole thing: the gap between lines
-    is whatever is left over, shared equally.
-
-    Returns [(start, end, length, item)] and the items that did not fit -- if
-    the speech is LONGER than the window there is nothing to share out, and
-    the overflow is dropped rather than pushed past the end of the video."""
-    lengths = [it["seconds"] for it in items]
-    if not items:
-        return [], []
-    # The slack is shared between the GAPS, of which there are one fewer than
-    # there are lines. Dividing by the line count instead leaves one gap's
-    # worth of silence hanging off the end, which is the thing this exists to
-    # prevent: the last line then stops well short of the window it was given.
-    slack = (end - start) - sum(lengths)
-    gap = max(min_gap, slack / (len(items) - 1)) if len(items) > 1 else min_gap
-    placed, dropped, cursor = [], [], start
-    for item, length in zip(items, lengths):
-        if cursor + length > end:
-            dropped.append(item)
-            continue
-        placed.append((cursor, cursor + length, length, item))
-        cursor += length + gap
-    return placed, dropped
-
-
-def plan(lines, seconds, chart_at):
-    """When each sentence starts and stops, for the whole video.
-
-    Two windows, because the closing card is the one moment the narration has
-    to be in step with the picture: everything general is spread across the
-    footage, and the lines about the numbers are spread across the card."""
-    body = [l for l in lines if not l["chart"] and not l["closing"]]
-    onchart = [l for l in lines if l["chart"] and not l["closing"]]
-    closing = [l for l in lines if l["closing"]]
-    reserve = (closing[0]["seconds"] + MIN_GAP) if closing else 0.0
-
-    # With no card at the end there is no second window, and the body runs to
-    # the start of the closing instead of stopping short of a card that is
-    # not there.
-    body_end = (chart_at - MIN_GAP) if onchart else (seconds - reserve)
-    placed, dropped = spread(body, 0.6, max(0.6, body_end))
-    tail, tail_dropped = spread(onchart, chart_at, max(chart_at, seconds - reserve))
-    placed += tail
-    dropped += tail_dropped
-    if closing:
-        at = max(0.0, seconds - closing[0]["seconds"] - 0.3)
-        placed.append((at, at + closing[0]["seconds"], closing[0]["seconds"], closing[0]))
-    return placed, dropped
-
-
 def clock(t):
     return "%d:%05.2f" % (int(t // 60), t % 60)
 
 
-def mux_silent(video, wav, out_path):
-    """The grid video has no audio track at all, so there is nothing to duck.
+def facts(game, card, states, cap):
+    """Everything the model may state as fact about THIS experiment.
 
-    `tts.mux` mixes narration UNDER game audio and reads [0:a]; on a silent
-    video that fails outright rather than degrading, so this is its own path."""
+    Plain sentences rather than a JSON blob: a backend without constrained
+    decoding echoes structure it is shown, and a narration that reads out a
+    field name has happened here before. Every number carries its unit."""
+    lines = ["The game is %s." % game,
+             "Each panel is one complete game, played by one saved checkpoint of "
+             "the same network, from a fixed starting position.",
+             "%d different starting positions were used. Every game was stopped "
+             "after %d moves if it had not ended on its own by then."
+             % (len(states), cap)]
+    if not card:
+        return "\n".join(lines)
+    metric = card.get("metric_label") or "points"
+    work = card.get("work_label") or "moves"
+    lines.append("The headline number for each game is %s. The other number is how "
+                 "many %s it took." % (metric, work))
+    for name in card["order"]:
+        s = card["stats"][name]
+        sd = ("no spread to report from a single game" if s["sd"] is None
+              else "standard deviation %.0f %s" % (s["sd"], metric))
+        lines.append(
+            "Checkpoint '%s': mean %.0f %s per game, %s, worst game %.0f %s, best "
+            "game %.0f %s, from %d game%s, averaging %.0f %s per game; %d ended on "
+            "their own and %d were still going when the cap stopped them."
+            % (name, s["mean"], metric, sd, s["min"], metric, s["max"], metric,
+               s["n"], "" if s["n"] == 1 else "s", s["decisions"], work,
+               s["finished"], s["capped"]))
+    return "\n".join(lines)
+
+
+def write(game, body_seconds, card, states, cap, algorithm="", channel="",
+          wpm=WPM, **kw):
+    """Ask a model for the script. Returns {"body": [...], "card": [...],
+    "closing": str} or None.
+
+    `body_seconds` is how long the GAMEPLAY runs. The card's length is not
+    given, because the card is later held for as long as the card part takes
+    to say -- which is the only way the numbers are never spoken over a game
+    still in progress."""
+    import writer
+
+    words = int(body_seconds / 60.0 * wpm)
+    how = {"afterstate": (
+        "The agent is a value network. For every legal placement of the current "
+        "piece it simulates the board that placement would leave behind, scores "
+        "that resulting board with a single number, and plays the best one. It "
+        "was trained by temporal-difference learning: the score it gives a board "
+        "is dragged towards what actually happened next, over and over. Nobody "
+        "told it that holes are bad; it had to find that in the consequences."),
+        "ppo": (
+        "The agent is a policy network trained with PPO. It sees the screen as "
+        "pixels and chooses which buttons to hold, one decision per frame. "
+        "Training nudges it towards the presses that earned more reward, while "
+        "stopping it changing too much in any one step.")}.get(algorithm, "")
+
+    prompt = (
+        (VOICE % (channel or "this channel")) + "\n\n"
+        "THE FILM\n"
+        "Several games play side by side, sped up, each labelled with which "
+        "training checkpoint is playing it. They finish at different times and "
+        "freeze. Then a card of measured results appears and stays until the "
+        "end.\n\n"
+        "WHY IT EXISTS\n"
+        "This is an experiment, not a highlight reel. The same network was "
+        "saved at different points in its training and every copy was made to "
+        "play the same positions, to see whether it is actually getting better "
+        "-- and how close it is to being worth challenging a human.\n\n"
+        "WHAT IS ACTUALLY HAPPENING\n%s\n%s\n\n"
+        "WRITE TWO PARTS.\n\n"
+        "'body' -- spoken over the GAMES. About %d words, in %d to %d "
+        "paragraphs of two to four sentences. Each paragraph is read as one "
+        "continuous take, and they run one after another, so they must follow "
+        "on. This part is the game's own story and the machine's: when the game "
+        "was made and by whom, what it did that was new, what it is remembered "
+        "for, how the people who are frighteningly good at it play; then what "
+        "this machine is, how it learned, and what it does not know. Jokes "
+        "belong here. NO NUMBERS FROM THE RESULTS IN THIS PART -- they are not "
+        "on screen yet.\n\n"
+        "'card' -- spoken ONLY over the results card, which is held for exactly "
+        "as long as this takes to say, so write what is worth saying and no "
+        "more: two to four paragraphs. This is where the measured numbers go. "
+        "Say what changed between checkpoints, name the units, and be honest "
+        "about what %d games cannot show. If a later checkpoint is worse than "
+        "an earlier one, say so plainly.\n\n"
+        "'closing' -- the last thing said, over the card. One or two sentences "
+        "that land the premise of %s: the machine is player two, this is how it "
+        "is coming along, and whether it is ready to be sat down opposite a "
+        "human. A real ending, not 'like and subscribe'.\n\n"
+        "RULES\n"
+        "- The ONLY numbers you may state about the training or the results are "
+        "the ones listed above, with the units they are given with. Numbers "
+        "about the GAME's own history are yours to bring, but say only what you "
+        "are confident is TRUE: a wrong date about a game this audience grew up "
+        "with is worse than no date.\n"
+        "- Do not describe what is on screen. Do not say 'as you can see'.\n"
+        "- Do not claim the agent is good or bad in general. It played %d games.\n"
+        "- Plain spoken prose, read aloud EXACTLY as written. No stage "
+        "directions, no speaker labels, no field names, no markdown, no "
+        "headings, no emoji, no timestamps.\n"
+        "Return JSON: {\"body\": [\"...\", \"...\"], \"card\": [\"...\"], "
+        "\"closing\": \"...\"}"
+        % (facts(game, card, states, cap), how, words,
+           max(3, words // 90), max(4, words // 60),
+           sum(card["stats"][n]["n"] for n in card["order"]) if card else len(states),
+           channel or "the channel",
+           sum(card["stats"][n]["n"] for n in card["order"]) if card else len(states)))
+
+    data = writer.write(prompt, SCHEMA, **kw)
+    if not data:
+        return None
+    clean = writer.clean_spoken
+    out = {"body": [clean(t) for t in data.get("body", []) if clean(t)],
+           "card": [clean(t) for t in data.get("card", []) if clean(t)],
+           "closing": clean(data.get("closing", ""))}
+    return out if (out["body"] or out["card"]) else None
+
+
+def schedule(body, card, grid_seconds, lead=CARD_LEAD, gap=BLOCK_GAP):
+    """When each block is spoken.
+
+    The body runs end to end from the start; the card part begins once the
+    card is up. Blocks are laid consecutively with one short breath between
+    them -- NOT spread to fill, which was the previous design and produced
+    fifteen second holes between sentences. Filling the video is the job of
+    writing enough words and, if asked, of `--speed auto` setting the gameplay
+    to the length of the speech.
+
+    `body` and `card` are [(path, seconds)]. Returns [(start, end, path,
+    on_card)]."""
+    placed, t = [], 0.6
+    for path, length in body:
+        placed.append((t, t + length, path, False))
+        t += length + gap
+    t = max(t, grid_seconds + lead)
+    for path, length in card:
+        placed.append((t, t + length, path, True))
+        t += length + gap
+    return placed
+
+
+def card_seconds(card, lead=CARD_LEAD, gap=BLOCK_GAP, tail=1.2):
+    """How long the closing card must stay up to hold everything said over it."""
+    if not card:
+        return 0.0
+    return lead + sum(length for _p, length in card) + gap * (len(card) - 1) + tail
+
+
+def build_track(placed, total, out_path, sample_rate=speech.SAMPLE_RATE):
+    """One wav the length of the film, each block starting at its time.
+
+    Built on a silent bed of the right length so the track lines up with the
+    picture on its own, without relying on the mux to position anything."""
+    if not placed:
+        return None
+    inputs, chains, labels = [], [], []
+    for i, (start, _end, path, _on_card) in enumerate(placed):
+        inputs += ["-i", path]
+        chains.append("[%d:a]aresample=%d,adelay=%d|%d[d%d]"
+                      % (i + 1, sample_rate, int(start * 1000), int(start * 1000), i))
+        labels.append("[d%d]" % i)
+    labels.insert(0, "[0:a]")
+    graph = ";".join(chains) + ";" + "".join(labels) + \
+        "amix=inputs=%d:normalize=0:dropout_transition=0[out]" % len(labels)
+    subprocess.run(
+        ["ffmpeg", "-nostdin", "-y", "-v", "error",
+         "-f", "lavfi", "-t", "%.3f" % total,
+         "-i", "anullsrc=channel_layout=mono:sample_rate=%d" % sample_rate,
+         *inputs, "-filter_complex", graph, "-map", "[out]",
+         "-t", "%.3f" % total, out_path], check=True)
+    return out_path
+
+
+def mux(video, wav, out_path):
+    """The grid has no audio track at all, so there is nothing to duck."""
     subprocess.run(
         ["ffmpeg", "-nostdin", "-y", "-v", "error", "-i", video, "-i", wav,
          "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
-         "-shortest", "-movflags", "+faststart", out_path],
-        check=True)
+         "-shortest", "-movflags", "+faststart", out_path], check=True)
     return out_path
 
 
-def add(video, game, card, out_dir, states, cap, chart_seconds=12.0,
-        backend="auto", verbose=True, **kw):
-    """Write, speak and lay a narration over `video`. Returns the new file."""
-    import tts
-    from tools.progression import runners
-
-    seconds = duration(video)
-    try:
-        algorithm = runners.spec_for(game).algorithm
-    except Exception:                                             # noqa: BLE001
-        algorithm = ""
-    if verbose:
-        print("  [voice] asking %s for a script ..." % backend)
-    lines = script(game, seconds, card, states, cap, algorithm=algorithm,
-                   backend=backend, **kw)
-    if not lines:
-        print("  (no script: the writer returned nothing)")
-        return None
-    if not card:
-        # Nothing to hold a line back FOR: without the card there is no moment
-        # in this video that the narration has to be in step with.
-        for item in lines:
-            item["chart"] = bool(item["closing"])
-
-    chart_at = max(0.0, seconds - chart_seconds)
+def save_schedule(placed, texts, out_dir, video_name, total, grid_seconds):
+    """narration.txt is the readable schedule; narration.json is the same
+    thing for anything that has to read it back (--respeak does)."""
+    talk = sum(end - start for start, end, _p, _c in placed)
     txt = os.path.join(out_dir, "narration.txt")
-    if not tts.available():
-        with open(txt, "w") as fh:
-            fh.write("\n".join(l["text"] for l in lines))
-        print("  (script written to %s, but the TTS model is not installed, so "
-              "there are no timings and nothing spoken)" % txt)
-        return None
-
-    model = None
-    try:
-        model = tts.load()
-    except Exception as exc:                                      # noqa: BLE001
-        print("  [voice] GPU load failed (%s), falling back to CPU" % exc)
-        model = tts.load(device="cpu")
-    clips = tts.speak_lines(lines, os.path.join(out_dir, "narration_lines"),
-                            model=model, verbose=verbose)
-    if not clips:
-        return None
-
-    # MEASURED, never estimated: how long a line takes is a property of the
-    # rendered wav, and synthesised speech is reliably slower than any
-    # words-per-minute arithmetic. The schedule is computed from the files.
-    for item, clip in zip([l for l in lines if l["text"].strip()], clips):
-        item["path"] = clip[1]
-        item["seconds"] = tts.wav_seconds(clip[1])
-    spoken = [l for l in lines if l.get("path")]
-    placed, dropped = plan(spoken, seconds, chart_at)
-    if dropped:
-        print("  (voice: %d line%s dropped -- the script was longer than the "
-              "video)" % (len(dropped), "" if len(dropped) == 1 else "s"))
-
-    # Every line, with the window it occupies. This file is the schedule: what
-    # is said, from when to when, and how much of the video is silence.
-    talk = sum(length for _s, _e, length, _i in placed)
     with open(txt, "w") as fh:
-        fh.write("%s -- %s of speech over %s of video (%.0f%% covered)\n\n"
-                 % (os.path.basename(video), clock(talk), clock(seconds),
-                    100.0 * talk / seconds if seconds else 0))
-        for start, end, _length, item in placed:
-            fh.write("[%s - %s]%s %s\n" % (clock(start), clock(end),
-                                           "  (on the card)" if item["chart"] else "",
-                                           item["text"]))
+        fh.write("%s\n%s of speech over %s of film (%.0f%% covered)\n"
+                 "the results card is up from %s\n\n"
+                 % (video_name, clock(talk), clock(total),
+                    100.0 * talk / total if total else 0.0, clock(grid_seconds)))
+        for (start, end, _path, on_card), text in zip(placed, texts):
+            fh.write("[%s - %s]%s\n%s\n\n"
+                     % (clock(start), clock(end), "  ON THE CARD" if on_card else "", text))
     with open(os.path.join(out_dir, "narration.json"), "w") as fh:
-        json.dump({"video": os.path.basename(video), "seconds": round(seconds, 2),
-                   "chart_at": round(chart_at, 2), "spoken_seconds": round(talk, 2),
-                   "lines": [{"start": round(s, 2), "end": round(e, 2),
-                              "on_chart": bool(i["chart"]), "text": i["text"],
-                              "wav": os.path.basename(i["path"])}
-                             for s, e, _l, i in placed]}, fh, indent=2)
-
-    # build_track honours an anchor that is later than where it had got to,
-    # so handing it the planned start of every line reproduces the schedule
-    # above exactly rather than re-deriving a different one.
-    track, _ = tts.build_track([(start, item["path"], item["closing"])
-                                for start, _e, _l, item in placed], seconds,
-                               os.path.join(out_dir, "narration.wav"), verbose=False)
-    if not track:
-        return None
-    out_path = os.path.splitext(video)[0] + "_narrated.mp4"
-    mux_silent(video, track, out_path)
-    print("  [voice] %s of speech across %s of video, schedule in %s"
-          % (clock(talk), clock(seconds), os.path.basename(txt)))
-    return out_path
+        json.dump({"video": video_name, "seconds": round(total, 2),
+                   "card_at": round(grid_seconds, 2),
+                   "spoken_seconds": round(talk, 2),
+                   "blocks": [{"start": round(s, 2), "end": round(e, 2),
+                               "on_card": bool(c), "text": t,
+                               "wav": os.path.basename(p)}
+                              for (s, e, p, c), t in zip(placed, texts)]},
+                  fh, indent=2)
+    return txt

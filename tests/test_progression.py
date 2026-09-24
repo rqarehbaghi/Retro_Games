@@ -6,7 +6,7 @@ import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from tools.progression import chart, ids, narrate, report, select   # noqa: E402
+from tools.progression import chart, ids, narrate, report, select, speech  # noqa: E402
 
 BASE = dict(checkpoint_sha="a", state_sha="b", cfg_hash="c", commit="d", rom="e",
             player=2, players=2, deterministic=True, placement_cap=500)
@@ -177,38 +177,76 @@ class ChartStatsTests(unittest.TestCase):
         self.assertEqual(s["n"], 3)
 
 
+
 class NarrationTimingTests(unittest.TestCase):
-    def lines(self, lengths, chart_flags=None, closing=None):
-        flags = chart_flags or [False] * len(lengths)
-        out = [{"text": "l%d" % i, "seconds": s, "chart": c, "closing": False}
-               for i, (s, c) in enumerate(zip(lengths, flags))]
-        if closing:
-            out.append({"text": "end", "seconds": closing, "chart": True, "closing": True})
-        return out
+    """The rule the schedule exists to keep: nothing about the RESULTS is
+    spoken until the results are on screen."""
 
-    def test_lines_are_spread_across_the_whole_video_not_packed_at_the_front(self):
-        # The point of the schedule: 3 x 5s of speech in 60s of video must not
-        # finish at 0:16 and leave 44 seconds of silence.
-        placed, dropped = narrate.spread(self.lines([5, 5, 5]), 0.6, 60.0)
-        self.assertEqual(dropped, [])
-        self.assertGreater(placed[-1][0], 30.0)
-        self.assertLessEqual(placed[-1][1], 60.0)
+    def clips(self, lengths):
+        return [("block_%d.wav" % i, s) for i, s in enumerate(lengths)]
 
-    def test_speech_longer_than_the_window_is_dropped_not_pushed_past_the_end(self):
-        placed, dropped = narrate.spread(self.lines([5, 5, 5]), 0.6, 8.0)
-        self.assertEqual(len(placed), 1)
-        self.assertEqual(len(dropped), 2)
+    def test_body_runs_consecutively_from_the_start(self):
+        placed = narrate.schedule(self.clips([10, 10, 10]), [], grid_seconds=60.0)
+        self.assertAlmostEqual(placed[0][0], 0.6)
+        # One breath between paragraphs, not a gap sized to fill the video.
+        self.assertAlmostEqual(placed[1][0] - placed[0][1], narrate.BLOCK_GAP)
+        self.assertFalse(any(on_card for _s, _e, _p, on_card in placed))
 
-    def test_chart_lines_wait_for_the_card_and_the_closing_lands_last(self):
-        lines = self.lines([4, 4, 3], [False, False, True], closing=3)
-        placed, _ = narrate.plan(lines, seconds=60.0, chart_at=50.0)
-        by_text = {item["text"]: (start, end) for start, end, _l, item in placed}
-        self.assertLess(by_text["l1"][1], 50.0)          # body ends before the card
-        self.assertGreaterEqual(by_text["l2"][0], 50.0)  # the card line waits
-        self.assertAlmostEqual(by_text["end"][1], 59.7, places=1)
+    def test_no_card_line_is_spoken_before_the_card_is_up(self):
+        placed = narrate.schedule(self.clips([5, 5]), self.clips([8, 4]),
+                                  grid_seconds=60.0)
+        card = [start for start, _e, _p, on_card in placed if on_card]
+        self.assertTrue(card)
+        self.assertTrue(all(start >= 60.0 for start in card),
+                        "a results line would be spoken over a game still playing")
 
-    def test_without_a_card_the_body_uses_the_whole_video(self):
-        lines = self.lines([4, 4], closing=3)
-        placed, _ = narrate.plan(lines, seconds=60.0, chart_at=60.0)
-        body_end = max(end for _s, end, _l, item in placed if not item["closing"])
-        self.assertGreater(body_end, 40.0)
+    def test_a_long_body_still_never_pushes_card_lines_early(self):
+        # The body overrunning the gameplay must not drag the card part back
+        # before the card: the card start is a floor, not an offset.
+        placed = narrate.schedule(self.clips([80]), self.clips([5]), grid_seconds=60.0)
+        self.assertGreaterEqual([s for s, _e, _p, c in placed if c][0], 80.0)
+
+    def test_the_card_is_held_for_exactly_what_is_said_over_it(self):
+        held = narrate.card_seconds(self.clips([8, 6]))
+        self.assertGreater(held, 14.0)                 # both blocks fit
+        self.assertLess(held, 18.0)                    # and not much more
+        self.assertEqual(narrate.card_seconds([]), 0.0)
+
+    def test_facts_name_the_unit_of_every_number(self):
+        # A mean with no unit was read aloud as "the average placement count"
+        # when it was lines cleared.
+        card = {"order": ["100k"], "metric_label": "lines", "work_label": "pieces",
+                "stats": {"100k": {"n": 2, "mean": 496.0, "sd": 422.0, "min": 198.0,
+                                   "max": 795.0, "median": 496.0, "decisions": 1265.0,
+                                   "per_100": 39.0, "finished": 1, "capped": 1}}}
+        text = narrate.facts("Tetris", card, ["a", "b"], 2000)
+        self.assertIn("mean 496 lines per game", text)
+        self.assertIn("standard deviation 422 lines", text)
+        self.assertIn("averaging 1265 pieces per game", text)
+        self.assertIn("The headline number for each game is lines", text)
+
+    def test_facts_survive_a_card_that_does_not_name_its_units(self):
+        card = {"order": ["c"], "stats": {"c": {"n": 1, "mean": 5.0, "sd": None,
+                                                "min": 5.0, "max": 5.0, "median": 5.0,
+                                                "decisions": 10.0, "per_100": 50.0,
+                                                "finished": 1, "capped": 0}}}
+        text = narrate.facts("G", card, ["a"], 100)
+        self.assertIn("no spread to report from a single game", text)
+
+
+class SpeechBackendTests(unittest.TestCase):
+    def test_unknown_backend_is_refused_by_name(self):
+        with self.assertRaises(ValueError):
+            speech.speak(["hello"], "/tmp", backend="not-a-real-tts")
+
+    def test_a_missing_backend_fails_before_anything_is_rendered(self):
+        # The check exists so a voice that is not installed costs nothing --
+        # it must raise rather than return empty.
+        if speech.available("piper"):
+            self.skipTest("piper is installed here")
+        with self.assertRaises(RuntimeError):
+            speech.speak(["hello"], "/tmp", backend="piper")
+
+
+if __name__ == "__main__":
+    unittest.main()

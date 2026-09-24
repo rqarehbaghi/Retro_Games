@@ -25,6 +25,7 @@ the sweep, not from six panels.
 """
 import argparse
 import json
+import math
 import os
 import subprocess
 import sys
@@ -36,7 +37,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from tools.progression import runners                             # noqa: E402
+from tools.progression import chart as chart_card, runners        # noqa: E402
 
 OUT = os.path.join(ROOT, "progression_out")
 PANELS = os.path.join(OUT, "panels")
@@ -118,8 +119,9 @@ class PanelWriter:
     Sizing waits for the first frame, because only the emulator knows how big
     its screen is."""
 
-    def __init__(self, path, crop, grid, pad=CROP_PAD):
+    def __init__(self, path, crop, grid, pad=CROP_PAD, show_stats=True):
         self.path, self.crop, self.grid, self.pad = path, crop, grid, pad
+        self.show_stats = show_stats
         self.ff = self.font = None
         self.box = None
         self.w = self.h = 0
@@ -146,8 +148,11 @@ class PanelWriter:
         # Counters sit a quarter of the way down, in the empty top of the
         # board: at the bottom they covered the stack, which is the one thing
         # the video is about. One per line -- "LINES 147  PIECES 350" on one
-        # line is wider than the panel and lost its end.
-        for i, (label, value) in enumerate(state.get("stats") or []):
+        # line is wider than the panel and lost its end. --no-stats turns them
+        # off entirely; the game draws its own score row anyway, and the end
+        # chart carries the numbers that are actually being compared.
+        for i, (label, value) in enumerate(
+                (state.get("stats") or []) if self.show_stats else []):
             plate(draw, (6, int(self.h * 0.25) + i * (self.font.size + 12)),
                   "%s %s" % (label, value), self.font)
         if end:
@@ -167,10 +172,16 @@ class PanelWriter:
         return {"path": self.path, "width": self.w, "height": self.h}
 
 
-def capture_panel(game, checkpoint, state, cap, player, path, crop, pad=CROP_PAD):
-    """Play one (checkpoint, state) pair and write its panel to `path`."""
+def capture_panel(game, checkpoint, state, cap, player, path, crop, pad=CROP_PAD,
+                  show_stats=True):
+    """Play one (checkpoint, state) pair and write its panel to `path`.
+
+    The numbers come back as well as going into the pixels, and main() saves
+    them beside the mp4: a cached panel is a video and nothing else, so
+    without the sidecar the end chart could only be built on a run that
+    replayed everything."""
     spec = runners.spec_for(game, player, state)
-    writer = PanelWriter(path, crop, spec.grid, pad)
+    writer = PanelWriter(path, crop, spec.grid, pad, show_stats)
     result = runners.run(game, checkpoint, state, cap, player, writer)
     panel = writer.finish(result["last"], {"stats": result["stats"]}, result["end_reason"])
     panel.update({"end_reason": result["end_reason"], "decisions": result["decisions"],
@@ -184,30 +195,79 @@ def duration(path):
     return float(out.stdout.strip())
 
 
-def compose(panels, columns, rows, out_path, still=False, still_at=8.0, speed=SPEED):
-    """Every panel into one 1920x1080 frame, each frozen once its game ends."""
-    ncols, nrows = len(columns), len(rows)
-    longest = max(duration(p["path"]) for p in panels.values())
-    cell_w, cell_h = 1920 // ncols, (1080 - 120) // nrows
-    first = panels[(columns[0], rows[0])]
-    pw = min(cell_w - 40, int((cell_h - 34) * first["width"] / first["height"]))
-    ph = int(pw * first["height"] / first["width"])
+def fit_size(text, width, base, minimum=11):
+    """Shrink a label until it fits the panel it names.
 
-    order = [(c, r) for r in rows for c in columns]
+    Press Start 2P is fixed-cell, about one em per character, so the LENGTH of
+    a label decides its rendered width almost exactly -- and a 2x3 grid of tall
+    boards makes each panel narrow enough that two neighbouring labels ran into
+    each other and read as one word."""
+    if not text:
+        return base
+    return max(minimum, min(base, int((width - 16) / len(text))))
+
+
+def drawtext(chain, labels):
+    """A drawtext per label, threaded through one filter chain.
+
+    House style, same as the studio pipeline: black glyphs on an OPAQUE white
+    plate. An outline or a shadow disappears into a bright frame."""
+    path = font_file()
+    out, src = "", chain
+    for k, (body, cx, cy, size) in enumerate(labels):
+        dst = "[t%d]" % (k + 1) if k < len(labels) - 1 else "[final]"
+        out += ("%sdrawtext=%stext='%s':fontcolor=black:fontsize=%d:box=1:boxcolor=white:"
+                "boxborderw=8:x=%d-text_w/2:y=%d%s;"
+                % (src, ("fontfile=%s:" % path) if path else "",
+                   body.replace(":", "\\:").replace("'", ""), size, cx, cy, dst))
+        src = dst
+    return out.rstrip(";")
+
+
+def compose(cells, out_path, ncols=None, headers=None, still=False, still_at=8.0,
+            speed=SPEED, chart=None, chart_seconds=12.0):
+    """Every panel into one 1920x1080 frame, each frozen once its game ends.
+
+    `cells` is a flat list in READING ORDER, each with a path, a size and a
+    `label`. The shape is `ncols` wide and however many rows that needs, so
+    six panels are 3x2 or 2x3 or 6x1 without any of this knowing what a
+    checkpoint or a state is.
+
+    `headers` is the older per-column/per-row labelling, used when the grid IS
+    checkpoints across by states down; pass None and each panel carries its own
+    caption instead, which is the only thing that still reads correctly once
+    the panels wrap.
+    """
+    ncols = ncols or len(cells)
+    nrows = int(math.ceil(len(cells) / float(ncols)))
+    longest = max(duration(c["path"]) for c in cells)
+    top = 96 if headers else 70
+    cell_w, cell_h = 1920 // ncols, (1080 - top - 24) // nrows
+    pw = min(cell_w - 40, int((cell_h - 34) * cells[0]["width"] / cells[0]["height"]))
+    ph = int(pw * cells[0]["height"] / cells[0]["width"])
+    # Panels are usually limited by HEIGHT, not width -- a tall Tetris well in
+    # a wide cell. Centring each panel in its own cell then leaves a column of
+    # empty screen down the middle, so the whole block is packed to a fixed
+    # gutter and centred as one thing.
+    gut_x, gut_y = 48, 44
+    block_w = ncols * pw + (ncols - 1) * gut_x
+    block_h = nrows * ph + (nrows - 1) * gut_y
+    x0 = max(0, (1920 - block_w) // 2)
+    y0 = max(top, top + ((1080 - top - 24) - block_h) // 2)
+
     inputs, filters, overlays = [], [], "[bg]"
-    for i, key in enumerate(order):
-        panel = panels[key]
-        inputs += ["-i", panel["path"]]
-        pad = max(0.0, longest - duration(panel["path"]))
+    for i, cell in enumerate(cells):
+        inputs += ["-i", cell["path"]]
+        pad = max(0.0, longest - duration(cell["path"]))
         filters.append(
             "[%d:v]setpts=PTS/%s,tpad=stop_mode=clone:stop_duration=%.3f,"
             "scale=%d:%d:flags=neighbor[p%d]" % (i, speed, pad / speed, pw, ph, i))
-    for i in range(len(order)):
-        cx = (i % ncols) * cell_w + (cell_w - pw) // 2
-        cy = 96 + (i // ncols) * cell_h + 10
-        nxt = "[s%d]" % i if i < len(order) - 1 else "[vout]"
+    for i in range(len(cells)):
+        cx = x0 + (i % ncols) * (pw + gut_x)
+        cy = y0 + (i // ncols) * (ph + gut_y)
+        nxt = "[s%d]" % i if i < len(cells) - 1 else "[vout]"
         overlays += "[p%d]overlay=%d:%d%s;" % (i, cx, cy, nxt)
-        if i < len(order) - 1:
+        if i < len(cells) - 1:
             overlays += "[s%d]" % i
     # The background MUST carry a duration. color= is an infinite source, and
     # overlaying onto it made the render run for as long as ffmpeg was left
@@ -217,26 +277,42 @@ def compose(panels, columns, rows, out_path, still=False, still_at=8.0, speed=SP
     graph = (";".join(filters) + ";"
              + "color=c=black:s=1920x1080:r=60:d=%.3f[bg];" % out_seconds + overlays)
     graph = graph.rstrip(";")
-    # Headers go on the composite, not inside the panels: a checkpoint name is
-    # wider than one board. Same house style as every other overlay in this
-    # repo -- black on an opaque white plate.
-    path_font = font_file()
-    labels = [(HEADINGS.get(col, col), (i % ncols) * cell_w + cell_w // 2, 34, 26)
-              for i, col in enumerate(columns)]
-    labels += [(row, 1920 // 2, 96 + j * cell_h - 26, 20) for j, row in enumerate(rows)]
-    labels.append(("%gx speed" % speed, 1920 // 2, 1050, 16))
-    text = ""
-    for k, (body, cx, cy, size) in enumerate(labels):
-        src = "[vout]" if k == 0 else "[t%d]" % k
-        dst = "[t%d]" % (k + 1) if k < len(labels) - 1 else "[final]"
-        text += ("%sdrawtext=%stext='%s':fontcolor=black:fontsize=%d:box=1:boxcolor=white:"
-                 "boxborderw=8:x=%d-text_w/2:y=%d%s;"
-                 % (src, ("fontfile=%s:" % path_font) if path_font else "",
-                    body.replace(":", "\\:").replace("'", ""), size, cx, cy, dst))
-    graph += ";" + text.rstrip(";")
 
-    cmd = ["ffmpeg", "-nostdin", "-y", "-v", "error"] + inputs + \
-          ["-filter_complex", graph, "-map", "[final]", "-an"]
+    # Labels go on the composite, not inside the panels: a checkpoint name is
+    # wider than one board.
+    if headers:
+        columns, rows = headers
+        labels = [(HEADINGS.get(col, col), x0 + i * (pw + gut_x) + pw // 2, 34,
+                   fit_size(HEADINGS.get(col, col), pw + gut_x, 26))
+                  for i, col in enumerate(columns)]
+        labels += [(row, 1920 // 2, y0 + j * (ph + gut_y) - 30, 20)
+                   for j, row in enumerate(rows)]
+    else:
+        labels = [(cell["label"], x0 + (i % ncols) * (pw + gut_x) + pw // 2,
+                   y0 + (i // ncols) * (ph + gut_y) - 34,
+                   fit_size(cell["label"], pw + gut_x, 22))
+                  for i, cell in enumerate(cells)]
+    labels.append(("%gx speed" % speed, 1920 // 2, 1054, 16))
+    graph += ";" + drawtext("[vout]", labels)
+
+    cmd = ["ffmpeg", "-nostdin", "-y", "-v", "error"] + inputs
+    last = "[final]"
+    if chart and not still:
+        # The chart is a still image held for a few seconds, concatenated onto
+        # the end in the SAME pass -- writing the grid and then re-encoding it
+        # to append a tail would cost a second full encode of the whole video.
+        inputs_len = len(cells)
+        cmd += ["-loop", "1", "-t", "%.3f" % chart_seconds, "-i", chart]
+        # concat refuses inputs that disagree on size, pixel format, sample
+        # aspect or rate, and it fails at RUN time rather than when the graph
+        # is built -- so both sides are pinned explicitly.
+        graph += (";[final]fps=60,setsar=1,format=yuv420p[gridv];"
+                  "[%d:v]scale=1920:1080,fps=60,setsar=1,format=yuv420p,"
+                  "fade=in:st=0:d=0.5[chartv];"
+                  "[gridv][chartv]concat=n=2:v=1:a=0[outv]" % inputs_len)
+        last = "[outv]"
+        out_seconds += chart_seconds
+    cmd += ["-filter_complex", graph, "-map", last, "-an"]
     if still:
         # A few seconds in, not frame 1: at frame 1 every board is empty and
         # the still says nothing about the layout in use.
@@ -247,6 +323,32 @@ def compose(panels, columns, rows, out_path, still=False, still_at=8.0, speed=SP
                 "-pix_fmt", "yuv420p", "-movflags", "+faststart", out_path]
     subprocess.run(cmd, check=True)
     return out_path
+
+
+def build_chart(cells, game, path, order):
+    """The closing card, built from the panels' own sidecar numbers.
+
+    The headline is whatever the game reports FIRST -- lines for Tetris, score
+    for Mario -- and the second figure is the work it took, which is placements
+    for one algorithm and env steps for the other. Neither is named here."""
+    rows, metric, work = [], "", "decisions"
+    for cell in cells:
+        stats = cell.get("stats") or []
+        if not stats:
+            continue
+        metric = metric or stats[0][0]
+        if len(stats) > 1:
+            work = stats[1][0].lower()
+        rows.append({"column": cell["column"], "value": stats[0][1],
+                     "decisions": cell.get("decisions") or 0,
+                     "end_reason": cell.get("end_reason")})
+    if not rows:
+        print("  (no panel numbers on disk: these panels were cached before the "
+              "sidecars existed. Delete them to rebuild, or drop --chart)")
+        return None
+    return chart_card.build(rows, path, game=game,
+                            metric="%s per game" % metric.title(),
+                            decision_word=work, order=order)
 
 
 def resolve_column(name, folder):
@@ -289,6 +391,25 @@ def main():
                    help="playback speed multiplier (default %(default)s). The grid lasts as "
                         "long as its LONGEST game: a checkpoint that plays 29 minutes makes "
                         "a 10-minute video at 3x, so raise this for long games")
+    p.add_argument("--labels", default=None,
+                   help="what to CALL each column, comma separated, in the order of "
+                        "--columns. The default is the checkpoint's own name")
+    p.add_argument("--no-stats", action="store_true",
+                   help="no counters burnt into the panels -- just the games and the "
+                        "labels you chose. The end chart still carries the numbers")
+    p.add_argument("--cols", type=int, default=0,
+                   help="panels per row. The default puts one column per checkpoint, so "
+                        "3 checkpoints x 2 states is 3 wide; --cols 4 wraps the same six "
+                        "panels 4 then 2, and --cols 2 makes them 2x3")
+    p.add_argument("--chart", action="store_true",
+                   help="close the video with a stats card built from these games")
+    p.add_argument("--chart-seconds", type=float, default=12.0)
+    p.add_argument("--voice", action="store_true",
+                   help="write and speak a narration over the video: the game's history, "
+                        "how the agent was trained, and the numbers on the chart. OFF by "
+                        "default, like the studio pipeline's")
+    p.add_argument("--writer", default="auto",
+                   help="which LLM writes the narration (auto|claude-code|claude|gemini|ollama)")
     p.add_argument("--still", action="store_true", help="render one frame and stop")
     p.add_argument("--panels", default=PANELS, help="where panel mp4s are cached")
     p.add_argument("--out", default=None,
@@ -308,14 +429,25 @@ def main():
     player = a.player or int(manifest.get("player", 0))
     folder = a.folder or os.path.join(ROOT, "checkpoints", game)
 
+    names = a.columns.split(",")
+    given = a.labels.split(",") if a.labels else []
+    if given and len(given) != len(names):
+        sys.exit("--labels has %d names for %d columns" % (len(given), len(names)))
+
     os.makedirs(a.panels, exist_ok=True)
     columns, panels = [], {}
-    for spec_name in a.columns.split(","):
+    for i, spec_name in enumerate(names):
         path, name = resolve_column(spec_name, folder)
-        columns.append(name)
+        label = given[i].strip() if given else HEADINGS.get(name, name)
+        columns.append(label)
         for state in rows:
-            key = "%s_%s" % (name, state)
+            # The crop and the burnt-in counters are baked into a panel, so
+            # they belong in its NAME: otherwise a --no-stats run silently
+            # reuses panels that have the counters drawn on.
+            key = "%s_%s%s%s" % (name, state, "_bare" if a.no_stats else "",
+                                 "" if a.pad == CROP_PAD else "_pad%d" % a.pad)
             mp4 = os.path.join(a.panels, key + ".mp4")
+            side = os.path.join(a.panels, key + ".json")
             if os.path.exists(mp4):
                 print("cached panel %s" % key)
                 probe = subprocess.run(
@@ -323,18 +455,56 @@ def main():
                      "stream=width,height", "-of", "csv=p=0", mp4],
                     capture_output=True, text=True, check=True).stdout.strip()
                 w, h = (int(v) for v in probe.split(",")[:2])
-                panels[(name, state)] = {"path": mp4, "width": w, "height": h}
+                panel = {"path": mp4, "width": w, "height": h}
+                if os.path.exists(side):
+                    panel.update(json.load(open(side)))
             else:
                 print("rendering panel %s ..." % key)
-                panels[(name, state)] = capture_panel(
-                    game, path, state, cap, player, mp4, a.crop, a.pad)
-                print("   %s after %d decisions" % (panels[(name, state)]["end_reason"],
-                                                    panels[(name, state)]["decisions"]))
+                panel = capture_panel(game, path, state, cap, player, mp4,
+                                      a.crop, a.pad, not a.no_stats)
+                json.dump({"end_reason": panel["end_reason"],
+                           "decisions": panel["decisions"], "stats": panel["stats"],
+                           "checkpoint": os.path.basename(path), "state": state},
+                          open(side, "w"), indent=2)
+                print("   %s after %d decisions" % (panel["end_reason"], panel["decisions"]))
+            panel["label"] = panel["column"] = label
+            panel["state"] = state
+            panels[(label, state)] = panel
+
+    # Reading order: each state's row of checkpoints, then the next state's.
+    # --cols only decides where that sequence wraps.
+    cells = [panels[(c, r)] for r in rows for c in columns]
+    ncols = a.cols or len(columns)
+    if a.cols and len(rows) > 1:
+        # Once the panels wrap, "this column is 100k" and "this row is state
+        # 2" stop being true, so each panel has to say what it is itself.
+        for cell in cells:
+            cell["label"] = "%s  %s" % (cell["label"], cell["state"])
+    headers = (columns, rows) if not a.cols else None
 
     out = a.out or os.path.join(
         OUT, "progression_still.png" if a.still else "progression_grid.mp4")
-    compose(panels, columns, rows, out, still=a.still, speed=a.speed)
+    card = None
+    if a.chart and not a.still:
+        card = build_chart(cells, game, os.path.join(OUT, "progression_chart.png"), columns)
+        if card:
+            print("wrote %s" % card["path"])
+    compose(cells, out, ncols=ncols, headers=headers, still=a.still, speed=a.speed,
+            chart=card and card["path"], chart_seconds=a.chart_seconds)
     print("wrote %s" % out)
+
+    # Speech is LAST and never fatal: the video already exists by this point,
+    # and a model or a GPU being unavailable must not cost the render.
+    if a.voice and not a.still:
+        from tools.progression import narrate
+        try:
+            spoken = narrate.add(out, game, card, backend=a.writer, out_dir=OUT,
+                                 states=rows, cap=cap,
+                                 chart_seconds=a.chart_seconds if card else 0.0)
+            if spoken:
+                print("wrote %s" % spoken)
+        except Exception as exc:                                  # noqa: BLE001
+            print("  (narration failed, the silent video is unaffected: %s)" % exc)
 
 
 if __name__ == "__main__":

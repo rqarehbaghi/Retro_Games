@@ -552,9 +552,11 @@ def main():
                    help="the speaker: a Kokoro voice such as %s, a Qwen preset, a piper "
                         ".onnx path, or an ElevenLabs voice id"
                         % ", ".join(speech.KOKORO_VOICES[:3]))
-    p.add_argument("--wpm", type=int, default=140,
-                   help="words per minute used to size the script (default %(default)s, "
-                        "measured; asking for fewer leaves silence)")
+    p.add_argument("--wpm", type=int, default=0,
+                   help="words per minute used to size the script. The default is the "
+                        "measured rate of the voice you picked (kokoro 170, qwen 130), "
+                        "because a wrong figure here is silence at the end or lines cut "
+                        "off it")
     p.add_argument("--channel", default=None,
                    help="the channel the narration is written for (default: the "
                         "watermark in studio.json)")
@@ -586,6 +588,7 @@ def main():
     cap = a.cap or int(manifest.get("placement_cap", 0)) or 500
     player = a.player or int(manifest.get("player", 0))
     folder = a.folder or os.path.join(ROOT, "checkpoints", game)
+    a.wpm = a.wpm or speech.words_per_minute(a.voice_model)
     auto_speed = str(a.speed).lower() == "auto"
     speed = SPEED if auto_speed else float(a.speed)
 
@@ -726,6 +729,7 @@ def regenerate(a):
     grid_seconds = float(run["grid_seconds"])
     voice_model = a.voice_model or run.get("voice_model") or speech.DEFAULT
     voice_name = a.voice_name or run.get("voice_name")
+    a.wpm = a.wpm or speech.words_per_minute(voice_model)
     if not speech.available(voice_model):
         sys.exit("voice backend %r is not installed here." % voice_model)
 

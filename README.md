@@ -85,8 +85,11 @@ place.
 Check what's available/imported:
 
 ```bash
-python list_games.py
+python tools/doctor.py
 ```
+
+It lists every integration that has a ROM, along with everything else this
+machine does or does not have.
 
 Game IDs generally look like `SuperMarioBros-Nes`, `Contra-Nes`,
 `Zelda-Nes`, etc.
@@ -406,38 +409,40 @@ reward, no visible improvement across checkpoints), that's the first
 thing worth checking -- via the integration UI (`Game > Data` menu)
 rather than assuming the training code is broken.
 
-## 6. Turn checkpoints into a progress-reel video
+## 6. Turn checkpoints into a progression video
 
-Once you've got checkpoints, `make_progress_reel.py` plays a short clip
-from each one (using the exact same agent-play + bk2-to-mp4 pipeline as
-`play_and_record.py`), labels each clip with its iteration number, and
-assembles two finished, edited videos in one run:
+`tools/progression/video.py` plays several checkpoints at once -- each from
+the same fixed starting positions -- and composes them into one 1080p film:
+N checkpoints across, M start states down, every panel frozen on its ending
+with GAME OVER or CAP REACHED. It can close on a card of measured results and
+speak a narration over the whole thing.
 
 ```bash
-python make_progress_reel.py --game SuperMarioBros3-Nes-v0 \
-    --checkpoint-dir ./checkpoints --iterations 1 100
+python tools/progression/video.py --game TetrisTime-Nes-v0 \
+    --folder checkpoints/tetris_v54 --columns 5000,100000,200000 \
+    --labels "5k steps,100k steps,200k steps" --states p1_01,p1_02 \
+    --manifest progression_out/suite_1p/suite_manifest.json --player 1 \
+    --no-stats --chart --title Tetris --speed auto --voice
 ```
 
-`--iterations` here must match milestone checkpoints that actually exist
-for this game (the default `1 100` matches `train.py`'s own default run
-length -- adjust both together if you change `--checkpoint-iterations`
-when training).
+It is GAME-AGNOSTIC: `runners.py` dispatches on the game's declared
+`algorithm`, so an afterstate agent and a PPO agent both work, and the numbers
+on a panel are the game's own `report_stats`. Swap in `--game
+SuperMarioBros3-Nes-v0 --crop full` and the same command makes a Mario film.
 
-Output in `./progress_reels/`:
+Every run writes a self-contained folder under `progression_out/runs/`: each
+game on its own, the card, the silent film, the voice as its own wav, the two
+combined, and the narration as a timed script. `--respeak <folder>` says the
+same words again in another voice, `--renarrate <folder>` writes new ones --
+neither replays a frame or re-encodes the video.
 
-- `progress_youtube.mp4` -- 1920x1080 landscape, `--clip-seconds` (default `8`) per checkpoint
-- `progress_shorts.mp4` -- 1080x1920 portrait, `--clip-seconds-short` (default `4`) per checkpoint -- Instagram/TikTok, also works as a YouTube Short
+`--still` renders a single frame in seconds, which is the cheap way to check
+a layout before committing to a full render. Run `--help` for every flag.
 
-With the default 4 checkpoints that's 32s and 16s total respectively --
-well within any platform's limits. Adjust `--clip-seconds` /
-`--clip-seconds-short` to taste, or pass a different `--iterations` list
-(it just needs to match checkpoint filenames that actually exist in
-`--checkpoint-dir`).
-
-Text overlays use the DejaVu Sans font -- add it if you haven't already:
+Spoken narration needs a voice model, which is a separate ~350MB download:
 
 ```bash
-sudo apt install -y fonts-dejavu-core
+bash tools/get_kokoro.sh
 ```
 
 ## Moving to AWS EC2 later

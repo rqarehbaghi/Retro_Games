@@ -1,25 +1,64 @@
-stable-retro
-gymnasium
-numpy
-stable-baselines3[extra]
+# Everything the project imports. `bash setup.sh` installs this into ./venv,
+# and `python tools/doctor.py` afterwards reports what pip CANNOT install --
+# ffmpeg, the fonts, a ROM, a GPU driver, a voice model's weights.
+#
+# Known-good on the machine this was last verified on (Ubuntu in WSL2,
+# Python 3.14): numpy 2.5.2, gymnasium 1.3.0, stable-retro 1.0.1,
+# stable-baselines3 2.9.0, torch 2.13.0+cu130, opencv-python-headless 5.0.0.93,
+# Pillow 12.3.0, pygame-ce 2.5.8, matplotlib 3.11.1. Nothing is pinned here on
+# purpose: the torch build in particular depends on the CUDA version of the
+# machine, and pinning one would break every other machine.
 
-# Needed for train.py's frame preprocessing (grayscale/resize). Headless
-# build -- no GUI libs needed, matches the rest of this headless setup.
+# ---------------------------------------------------------------- the core --
+stable-retro                 # the emulator and the integration format
+gymnasium                    # the env API everything is written against
+numpy
+stable-baselines3[extra]     # PPO; pulls torch, which rl/afterstate.py also uses directly
+torch                        # listed explicitly because this project imports it directly
+
+# train.py's frame preprocessing (grayscale/resize). The HEADLESS build: no GUI
+# libraries, which matches a server and does not fight pygame's own SDL.
 opencv-python-headless
 
+# Every overlay, every panel and the whole stats card are drawn with Pillow --
+# overlays.py, tools/progression/chart.py, tools/progression/video.py.
+Pillow
+
+# The interactive play window and the gamepad (play_engine.py, tools/probe_pad.py).
+# pygame-ce is the maintained fork and is what `import pygame` resolves to.
+pygame-ce
+
+# Training plots in rl/afterstate.py.
+matplotlib
+
 # GPU video encoding (NVENC) is NOT a pip package -- it comes from the NVIDIA
-# driver and ffmpeg. `bash tools/check_nvenc.sh` (run by setup.sh) tests it and
+# driver plus ffmpeg. `bash tools/check_nvenc.sh` (run by setup.sh) tests it and
 # explains any fix. Renders use libx264 by default: on a WSL2 laptop NVENC
-# measured slower than x264 and failed 3 of 18 encodes (see overlays.py).
+# measured slower and failed 3 of 18 encodes (see overlays.py).
 
-# Optional -- only for `studio.py --writer claude`, which has the Anthropic
-# API write the captions, commentary and descriptions. The `ollama` backend
-# needs nothing beyond the standard library.
-anthropic
+# ------------------------------------------------- writers (pick any ONE) --
+# The writer produces captions, upload copy and narration. `auto` cascades:
+# Claude Code CLI (a Pro/Max SUBSCRIPTION, installed with npm, not pip) ->
+# Claude API (prepaid CREDITS, needs the package below) -> Gemini -> Ollama
+# (local, free, installed with its own script). Only the two API paths are pip
+# packages, and both are optional.
+anthropic                    # only for --writer claude
+# google-genai               # only for --writer gemini
 
-# Optional -- only for `studio.py --voice`, which speaks the narration with
-# Qwen3-TTS. Apache 2.0, about 4GB of weights, needs a CUDA GPU. It pulls its
-# own torch, so install it in a separate venv if it disturbs the pinned one
-# training depends on.
+# ------------------------------------------------------- voice (optional) --
+# Only for --voice. Nothing below is needed to render a silent video.
+soundfile                    # reads and writes the spoken wavs
+
+# Kokoro-82M, Apache-2.0, local and free. The RECOMMENDED voice: its speakers
+# are fixed embeddings, so a paragraph in the middle of a film sounds like the
+# one at the start. Two packages exist for the same model -- the PyTorch one
+# (`kokoro`) requires Python < 3.13 and pulls its own torch, so this is the
+# onnxruntime one, which runs anywhere and touches nothing. Its weights are a
+# separate ~350MB download: bash tools/get_kokoro.sh
+kokoro-onnx
+
+# Qwen3-TTS, Apache-2.0, ~4GB, needs a CUDA GPU. What the studio pipeline
+# speaks with. It pulls its OWN torch, which can move the one training is
+# pinned to -- check `pip install --dry-run` before letting it, or put it in a
+# separate venv (see tts.py).
 # qwen-tts
-# soundfile

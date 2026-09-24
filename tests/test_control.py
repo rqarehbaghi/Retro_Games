@@ -18,6 +18,20 @@ class ControlTests(unittest.TestCase):
                                 val_net=net, target_net=net)
         self.assertAlmostEqual(candidate_targets(agent, replay.buffer).item(), 0.04)
 
+    def test_policy_guidance_selects_action_but_target_stays_task_only(self):
+        replay = CandidateReplay(4, reward_key='task_reward',
+                                 selection_reward_key='immediate_reward')
+        replay.push(np.array([0.]), candidates=[
+            {'afterstate': np.array([1.]), 'immediate_reward': -10., 'task_reward': 4.},
+            {'afterstate': np.array([2.]), 'immediate_reward': 10., 'task_reward': 1.},
+        ])
+        net = lambda x: torch.zeros(x.shape[0])
+        agent = SimpleNamespace(device='cpu', gamma=.99, value_reward_scale=.01,
+                                val_net=net, target_net=net)
+        # Guidance chooses candidate 2, but V still learns its task reward (1),
+        # not the shaped selection reward (10).
+        self.assertAlmostEqual(candidate_targets(agent, replay.buffer).item(), 0.01)
+
     def test_terminal_candidate_never_bootstraps(self):
         agent = SimpleNamespace(device='cpu', gamma=.99,
                                 val_net=lambda x: x[:, 0], target_net=lambda x: x[:, 0])

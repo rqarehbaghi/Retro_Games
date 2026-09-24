@@ -6,7 +6,7 @@ import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from tools.progression import ids, select     # noqa: E402
+from tools.progression import ids, report, select     # noqa: E402
 
 BASE = dict(checkpoint_sha="a", state_sha="b", cfg_hash="c", commit="d", rom="e",
             player=2, players=2, deterministic=True, placement_cap=500)
@@ -67,6 +67,54 @@ class SelectionTests(unittest.TestCase):
     def test_empty_control_results_refuse_to_choose(self):
         with self.assertRaises(ValueError):
             select.select({})
+
+
+class ReportTests(unittest.TestCase):
+    def rows(self, cap_500=2, cap_2000=3):
+        out = [{"checkpoint": "ckpt_100000_steps.zip", "state": "s%d" % i, "placements": 500,
+                "delta_lines": 195, "end_reason": "placement_cap", "placement_cap": 500}
+               for i in range(cap_500)]
+        out += [{"checkpoint": "ckpt_100000_steps.zip", "state": "s%d" % i, "placements": 700,
+                 "delta_lines": 260, "end_reason": "game_over", "placement_cap": 2000}
+                for i in range(cap_2000)]
+        return out
+
+    def test_results_from_different_caps_are_never_pooled(self):
+        # Mixing budgets compares checkpoints under different rules, which is
+        # what the whole design guards against.
+        with tempfile.TemporaryDirectory() as d:
+            for i, row in enumerate(self.rows()):
+                json.dump(row, open(os.path.join(d, "%02d.json" % i), "w"))
+            original, report.CACHE = report.CACHE, d
+            try:
+                kept, excluded = report.load_results(2000)
+            finally:
+                report.CACHE = original
+            self.assertEqual(len(kept), 3)
+            self.assertEqual(excluded, 2)
+            self.assertTrue(all(r["placement_cap"] == 2000 for r in kept))
+
+    def test_capped_trajectories_are_counted_not_hidden(self):
+        summary = report.summarise([
+            {"checkpoint": "c", "delta_lines": 10, "end_reason": "game_over", "placement_cap": 2000},
+            {"checkpoint": "c", "delta_lines": 99, "end_reason": "placement_cap", "placement_cap": 2000},
+        ])
+        self.assertEqual(summary["c"]["capped_trajectories"], 1)
+        self.assertEqual(summary["c"]["states"], 2)
+
+    def test_distribution_has_no_threshold_field(self):
+        summary = report.summarise([
+            {"checkpoint": "c", "delta_lines": v, "end_reason": "game_over", "placement_cap": 2000}
+            for v in (10, 20, 30, 40)])
+        self.assertEqual(sorted(summary["c"]), sorted(
+            ["states", "median", "q1", "q3", "min", "max", "capped_trajectories",
+             "steps", "placement_cap", "iqr"]))
+        self.assertEqual(summary["c"]["median"], 25.0)
+        self.assertEqual(summary["c"]["iqr"], 15.0)
+
+    def test_checkpoint_labels_sort_control_first_then_by_steps(self):
+        self.assertEqual(report.order_labels(["200k", "control", "5k", "100k"]),
+                         ["control", "5k", "100k", "200k"])
 
 
 class ManifestTests(unittest.TestCase):

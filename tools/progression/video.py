@@ -459,7 +459,7 @@ def copy_gameplays(cells, folder):
 
 
 def say(game, card, states, cap, body_seconds, folder, writer_backend,
-        voice_model, voice_name, channel, wpm):
+        voice_model, voice_name, channel, wpm, take=""):
     """Write the script and render it to audio. Returns (body, card, texts).
 
     Deliberately BEFORE the video is composed: the closing card is then held
@@ -478,16 +478,16 @@ def say(game, card, states, cap, body_seconds, folder, writer_backend,
     if not script:
         print("  (no script: the writer returned nothing)")
         return None
-    json.dump(script, open(os.path.join(folder, "script.json"), "w"), indent=2)
-    return speak_script(script, folder, voice_model, voice_name)
+    json.dump(script, open(os.path.join(folder, "script%s.json" % take), "w"), indent=2)
+    return speak_script(script, folder, voice_model, voice_name, take)
 
 
-def speak_script(script, folder, voice_model, voice_name):
+def speak_script(script, folder, voice_model, voice_name, take=""):
     """Render a script to audio: the body, then the card part and the closing."""
     print("  [voice] speaking %d body and %d card paragraphs with %s ..."
           % (len(script["body"]), len(script["card"]) + bool(script.get("closing")),
              voice_model))
-    blocks = os.path.join(folder, "narration_blocks")
+    blocks = os.path.join(folder, "narration_blocks%s" % take)
     body = speech.speak(script["body"], blocks, backend=voice_model, voice=voice_name)
     card_text = list(script["card"]) + ([script["closing"]] if script.get("closing") else [])
     card_clips = speech.speak(card_text, os.path.join(blocks, "card"),
@@ -679,7 +679,21 @@ def main():
     print("\nrun folder: %s" % out_dir)
 
 
-def finish_voice(out_dir, silent, spoken, grid_seconds):
+def next_take(out_dir):
+    """Takes are NUMBERED, not overwritten.
+
+    Re-speaking is meant to be done repeatedly -- another voice, another
+    reading -- and comparing takes is the entire point, so take 2 must not
+    destroy take 1. The first is unsuffixed; after that it is _take2, _take3."""
+    if not os.path.exists(os.path.join(out_dir, "narration.wav")):
+        return ""
+    n = 2
+    while os.path.exists(os.path.join(out_dir, "narration_take%d.wav" % n)):
+        n += 1
+    return "_take%d" % n
+
+
+def finish_voice(out_dir, silent, spoken, grid_seconds, take=""):
     """Lay the spoken blocks over the film and write the timed script."""
     from tools.progression import narrate
     body, card_clips, texts = spoken
@@ -687,14 +701,15 @@ def finish_voice(out_dir, silent, spoken, grid_seconds):
     placed = narrate.schedule(body, card_clips, grid_seconds)
     kept = [b for b in placed if b[1] <= total + 0.05]
     if len(kept) < len(placed):
-        print("  (voice: %d block%s ran past the end of the film and were dropped)"
+        print("  (voice: %d block%s ran past the end of the film and were dropped. "
+              "--renarrate asks for a shorter script; the film itself is unchanged)"
               % (len(placed) - len(kept), "" if len(placed) - len(kept) == 1 else "s"))
-    wav = os.path.join(out_dir, "narration.wav")
+    wav = os.path.join(out_dir, "narration%s.wav" % take)
     narrate.build_track(kept, total, wav)
-    narrate.mux(silent, wav, os.path.join(out_dir, "narrated.mp4"))
-    narrate.save_schedule(kept, texts, out_dir, "grid.mp4", total, grid_seconds)
-    for name in ("narration.wav", "narrated.mp4", "narration.txt"):
-        print("wrote %s" % os.path.join(out_dir, name))
+    narrate.mux(silent, wav, os.path.join(out_dir, "narrated%s.mp4" % take))
+    narrate.save_schedule(kept, texts, out_dir, "grid.mp4", total, grid_seconds, take)
+    for name in ("narration%s.wav", "narrated%s.mp4", "narration%s.txt"):
+        print("wrote %s" % os.path.join(out_dir, name % take))
 
 
 def regenerate(a):
@@ -706,6 +721,7 @@ def regenerate(a):
     overrun it; anything that does not fit is dropped and reported."""
     out_dir = a.respeak or a.renarrate
     run = json.load(open(os.path.join(out_dir, "run.json")))
+    take = next_take(out_dir)
     silent = os.path.join(out_dir, "grid.mp4")
     grid_seconds = float(run["grid_seconds"])
     voice_model = a.voice_model or run.get("voice_model") or speech.DEFAULT
@@ -726,17 +742,25 @@ def regenerate(a):
                            [c[2] for c in run["columns"]]) if run.get("chart") else None
         spoken = say(run["game"], card, run["states"], run["cap"], grid_seconds,
                      out_dir, a.writer, voice_model, voice_name,
-                     a.channel or run.get("channel") or "", a.wpm)
+                     a.channel or run.get("channel") or "", a.wpm, take)
         if not spoken:
             sys.exit("the writer returned nothing; the existing film is untouched")
     else:
         # The SAME words, said again: another take, or another voice. The
         # script is read back from the run rather than rewritten, so nothing
-        # about the wording can change underneath you.
-        spoken = speak_script(json.load(open(os.path.join(out_dir, "script.json"))),
-                              out_dir, voice_model, voice_name)
+        # about the wording can change underneath you -- and it is the NEWEST
+        # script, so re-speaking after a --renarrate says the new words rather
+        # than silently resurrecting the first ones.
+        scripts = sorted(f for f in os.listdir(out_dir)
+                         if f.startswith("script") and f.endswith(".json"))
+        if not scripts:
+            sys.exit("no script.json in %s -- that run was rendered without --voice, "
+                     "so there is nothing to say again. Use --renarrate." % out_dir)
+        print("  [voice] re-speaking %s" % scripts[-1])
+        spoken = speak_script(json.load(open(os.path.join(out_dir, scripts[-1]))),
+                              out_dir, voice_model, voice_name, take)
 
-    finish_voice(out_dir, silent, spoken, grid_seconds)
+    finish_voice(out_dir, silent, spoken, grid_seconds, take)
     print("\nrun folder: %s" % out_dir)
 
 

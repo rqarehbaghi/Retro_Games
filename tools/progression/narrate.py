@@ -261,11 +261,11 @@ def mux(video, wav, out_path):
     return out_path
 
 
-def save_schedule(placed, texts, out_dir, video_name, total, grid_seconds):
+def save_schedule(placed, texts, out_dir, video_name, total, grid_seconds, take=""):
     """narration.txt is the readable schedule; narration.json is the same
     thing for anything that has to read it back (--respeak does)."""
     talk = sum(end - start for start, end, _p, _c in placed)
-    txt = os.path.join(out_dir, "narration.txt")
+    txt = os.path.join(out_dir, "narration%s.txt" % take)
     with open(txt, "w") as fh:
         fh.write("%s\n%s of speech over %s of film (%.0f%% covered)\n"
                  "the results card is up from %s\n\n"
@@ -274,7 +274,7 @@ def save_schedule(placed, texts, out_dir, video_name, total, grid_seconds):
         for (start, end, _path, on_card), text in zip(placed, texts):
             fh.write("[%s - %s]%s\n%s\n\n"
                      % (clock(start), clock(end), "  ON THE CARD" if on_card else "", text))
-    with open(os.path.join(out_dir, "narration.json"), "w") as fh:
+    with open(os.path.join(out_dir, "narration%s.json" % take), "w") as fh:
         json.dump({"video": video_name, "seconds": round(total, 2),
                    "card_at": round(grid_seconds, 2),
                    "spoken_seconds": round(talk, 2),

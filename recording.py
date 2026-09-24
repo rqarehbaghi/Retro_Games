@@ -85,12 +85,11 @@ def render_to_mp4(bk2_path, mp4_path=None, check=True):
 
 
 def upscale_mp4(mp4_path, out_path=None, factor=4, mode="sharp", oversample=True,
-                crf=17, preset="slow"):
-    """Upscale native retro mp4 to a sharp, oversampled HD video suitable for social media.
+                crf=17, preset="slow", width=None, height=None):
+    """Upscale native video by a factor or onto an exact output canvas.
 
     Using integer oversampling (8x nearest-neighbor pre-scale) and area downsampling
-    guarantees sharp, perfectly solid pixel art with anti-aliased subpixel boundaries,
-    eliminating shimmering and compression blur on social platforms.
+    keeps pixel edges stable when the requested canvas is not an integer multiple.
     """
     if not mp4_path or not os.path.exists(mp4_path):
         return None
@@ -98,7 +97,19 @@ def upscale_mp4(mp4_path, out_path=None, factor=4, mode="sharp", oversample=True
         base, ext = os.path.splitext(mp4_path)
         out_path = f"{base}_HD{ext}"
 
-    if oversample and mode == "sharp":
+    if (width is None) != (height is None):
+        raise ValueError("width and height must be provided together")
+    if width is not None and (int(width) <= 0 or int(height) <= 0):
+        raise ValueError("width and height must be positive")
+
+    if width is not None:
+        width, height = int(width), int(height)
+        flags = "area" if oversample and mode == "sharp" else (
+            "neighbor" if mode == "sharp" else "lanczos")
+        prefix = "scale=iw*8:ih*8:flags=neighbor," if oversample and mode == "sharp" else ""
+        vf = (f"{prefix}scale={width}:{height}:force_original_aspect_ratio=decrease:flags={flags},"
+              f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black")
+    elif oversample and mode == "sharp":
         vf = f"scale=iw*8:ih*8:flags=neighbor,scale=iw*{factor}/8:ih*{factor}/8:flags=area"
     elif mode == "sharp":
         vf = f"scale=iw*{factor}:ih*{factor}:flags=neighbor"
@@ -113,15 +124,29 @@ def upscale_mp4(mp4_path, out_path=None, factor=4, mode="sharp", oversample=True
         "-c:a", "copy",
         out_path
     ]
-    res = subprocess.run(cmd, capture_output=True)
-    return out_path if res.returncode == 0 and os.path.exists(out_path) else None
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True)
+    except OSError as exc:
+        print(f"FFmpeg upscale could not start: {exc}", file=sys.stderr)
+        return None
+    if res.returncode != 0:
+        detail = (res.stderr or res.stdout or "unknown FFmpeg error").strip().splitlines()
+        print("FFmpeg upscale failed: %s" % (detail[-1] if detail else "unknown error"),
+              file=sys.stderr)
+        return None
+    if not os.path.exists(out_path):
+        print(f"FFmpeg upscale reported success but created no file: {out_path}",
+              file=sys.stderr)
+        return None
+    return out_path
 
 
 def render_to_hd_mp4(bk2_path, hd_path=None, factor=4, mode="sharp", oversample=True,
-                     check=True, crf=17, preset="slow"):
-    """Replay a .bk2 and produce a sharp oversampled HD MP4."""
+                     check=True, crf=17, preset="slow", width=1920, height=1080):
+    """Replay a .bk2 and produce a sharp, exact-size HD MP4."""
     native_mp4 = render_to_mp4(bk2_path, check=check)
     if not native_mp4 or not os.path.exists(native_mp4):
         return None
     return upscale_mp4(native_mp4, out_path=hd_path, factor=factor, mode=mode,
-                       oversample=oversample, crf=crf, preset=preset)
+                       oversample=oversample, crf=crf, preset=preset,
+                       width=width, height=height)

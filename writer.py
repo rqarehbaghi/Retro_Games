@@ -457,7 +457,10 @@ def generate_gemini(prompt, schema, model=None, verbose=True, timeout=120, **_kw
 def write(prompt, schema, backend=DEFAULT_BACKEND, **kw):
     """Dispatch to whichever backend was asked for, with automatic cascade support."""
     verbose = kw.get("verbose", True)
-    cascade = backend == "auto" or kw.get("cascade", True)
+    # Naming a backend pins it.  Falling through from an explicitly selected
+    # subscription/API backend can change billing and privacy expectations;
+    # only ``auto`` cascades unless a programmatic caller deliberately opts in.
+    cascade = backend == "auto" or bool(kw.get("cascade", False))
 
     # 1. Claude Code CLI
     if backend in ("auto", "claude-code"):

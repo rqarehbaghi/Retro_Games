@@ -224,7 +224,12 @@ class MacroPlacementController:
 
     def ready(self):
         """True when a settled, playable state is available to act on."""
-        return ((self.action is None or (self.completed and self.respawned))
+        # A new valid piece type is the other verified spawn signal.  The
+        # placement generator already stops on it, so requiring a row reset
+        # here would contradict _replacement_present() and force one extra
+        # uncontrolled neutral frame before the afterstate is accepted.
+        return ((self.action is None or
+                 (self.completed and self._replacement_present()))
                 and self.active_type())
 
     def _replacement_present(self):

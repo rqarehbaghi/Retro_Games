@@ -1281,9 +1281,12 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
         # found") and it crashes on any 2-player movie whose scenario returns a
         # scalar reward. render_bk2.py exists precisely to fix both, and a
         # fallback that quietly reintroduces them is worse than an error.
-        # Replay the movie through the emulator and upscale to sharp oversampled HD
-        hd_path = recording.render_to_hd_mp4(bk2_path, factor=4, mode="sharp",
-                                            oversample=True, check=False)
+        # Replay the movie through the emulator and place its native aspect on
+        # an exact 1920x1080 canvas. A plain 4x NES scale is only 1024x960 and
+        # should not be labelled as the same HD output the studio promises.
+        hd_path = recording.render_to_hd_mp4(
+            bk2_path, mode="sharp", oversample=True, check=False,
+            width=1920, height=1080)
         if hd_path and os.path.exists(hd_path):
             print(f"Exported HD Match Video: {hd_path}")
             return hd_path

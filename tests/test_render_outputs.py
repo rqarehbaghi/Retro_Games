@@ -1,14 +1,23 @@
 """What a studio run renders, which encoder it uses, and how the blur is built.
 
-No ffmpeg run and no GPU needed: the NVENC probe result is injected.
+Most tests are pure; one small artifact test runs ffmpeg when it is installed.
+No GPU is needed because the NVENC probe result is injected.
 """
 import os
+import contextlib
+import io
+import json
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import overlays   # noqa: E402
+import recording  # noqa: E402
 import studio     # noqa: E402
 
 
@@ -121,6 +130,41 @@ class OversampleTests(unittest.TestCase):
         spec = {"style": {"oversample": 1}}
         wide = overlays.build_filter(spec, 1920, 1080, overlays=False)
         self.assertIn("scale=1920:1080:force_original_aspect_ratio=decrease:flags=neighbor", wide)
+
+
+class RecordedHdTests(unittest.TestCase):
+    def test_ffmpeg_failure_is_reported(self):
+        with tempfile.TemporaryDirectory() as d:
+            source = os.path.join(d, "source.mp4")
+            open(source, "wb").close()
+            failed = SimpleNamespace(returncode=1, stdout="", stderr="encoder exploded")
+            err = io.StringIO()
+            with mock.patch.object(recording.subprocess, "run", return_value=failed):
+                with contextlib.redirect_stderr(err):
+                    self.assertIsNone(recording.upscale_mp4(source))
+            self.assertIn("encoder exploded", err.getvalue())
+
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"),
+                         "ffmpeg and ffprobe are required for artifact verification")
+    def test_upscale_creates_the_exact_requested_canvas(self):
+        # This is deliberately an artifact test rather than another assertion
+        # about a generated filter string: encode a real clip, then inspect it.
+        with tempfile.TemporaryDirectory() as d:
+            source = os.path.join(d, "source.mp4")
+            output = os.path.join(d, "hd.mp4")
+            subprocess.run([
+                "ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i",
+                "color=black:s=64x48:r=10:d=0.2", "-pix_fmt", "yuv420p", source,
+            ], check=True)
+            got = recording.upscale_mp4(
+                source, output, width=192, height=108, preset="ultrafast")
+            self.assertEqual(got, output)
+            probe = subprocess.run([
+                "ffprobe", "-v", "error", "-select_streams", "v:0",
+                "-show_entries", "stream=width,height", "-of", "json", output,
+            ], check=True, capture_output=True, text=True)
+            stream = json.loads(probe.stdout)["streams"][0]
+            self.assertEqual((stream["width"], stream["height"]), (192, 108))
 
 
 if __name__ == "__main__":

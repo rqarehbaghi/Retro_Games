@@ -386,6 +386,15 @@ class MacroTests(unittest.TestCase):
         self.assertEqual(calls, [["LEFT"], []])
         self.assertTrue(result[4]["afterstate_ready"])
 
+    def test_type_change_is_ready_even_without_a_row_reset(self):
+        # A different valid piece is already the replacement. The controller
+        # must not stop on that signal and then contradict itself by demanding
+        # a row reset before publishing the afterstate.
+        m, calls = self.macro([(1, 12), (2, 12), (2, 12)])
+        result = m.step(0)
+        self.assertEqual(calls, [["LEFT"], []])
+        self.assertTrue(result[4]["afterstate_ready"])
+
     def test_same_type_row_reset(self):
         m, calls = self.macro([(1, 12), (1, 2)])
         m.step(0)

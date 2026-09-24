@@ -94,6 +94,14 @@ python restyle.py ./studio_out/<folder>
   `tools/probe_pad.py` (the unified gamepad diagnostic: OS/WSL `/dev/input` permission audit,
   SDL enumeration, then a live button/axis/auto-fire probe), and `tools/import_fixer.py`
   (matches ROMs in `ROMs/` against stable-retro's hash databases, headered or not, and imports them)
+- `tools/progression/` — the showcase tool, separate from the studio pipeline
+  and from training: it plays checkpoints headless and composes them into one
+  1080p grid, N checkpoints across by M start states down, each panel frozen on
+  its end with GAME OVER or CAP REACHED. It is GAME-AGNOSTIC — `runners.py`
+  dispatches on the game's `algorithm` (afterstate placements, or PPO button
+  streams), the numbers burnt on a panel are the game's own `report_stats`, and
+  the crop comes from the real frame size plus `observation.grid` if the game
+  declares one. `video.py --help` has a Tetris and a Mario invocation.
 
 ## Facts that cost real effort to establish
 

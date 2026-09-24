@@ -6,7 +6,7 @@ import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from tools.progression import ids, report, select     # noqa: E402
+from tools.progression import chart, ids, narrate, report, select   # noqa: E402
 
 BASE = dict(checkpoint_sha="a", state_sha="b", cfg_hash="c", commit="d", rom="e",
             player=2, players=2, deterministic=True, placement_cap=500)
@@ -152,3 +152,63 @@ class ManifestTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ChartStatsTests(unittest.TestCase):
+    def rows(self, values, ends=None):
+        ends = ends or ["game_over"] * len(values)
+        return [{"column": "c", "value": v, "decisions": 100, "end_reason": e}
+                for v, e in zip(values, ends)]
+
+    def test_sample_standard_deviation_not_population(self):
+        # n-1. The population sd flatters a small sample, and every column
+        # here is a handful of start states.
+        s = chart.summarise(self.rows([2, 4, 4, 4, 5, 5, 7, 9]))
+        self.assertAlmostEqual(s["mean"], 5.0)
+        self.assertAlmostEqual(s["sd"], 2.13808, places=4)
+
+    def test_single_game_has_undefined_spread_not_zero(self):
+        self.assertIsNone(chart.summarise(self.rows([42]))["sd"])
+
+    def test_capped_runs_are_counted_apart_from_finished_ones(self):
+        s = chart.summarise(self.rows([10, 20, 30],
+                                      ["game_over", "placement_cap", "game_over"]))
+        self.assertEqual((s["finished"], s["capped"]), (2, 1))
+        self.assertEqual(s["n"], 3)
+
+
+class NarrationTimingTests(unittest.TestCase):
+    def lines(self, lengths, chart_flags=None, closing=None):
+        flags = chart_flags or [False] * len(lengths)
+        out = [{"text": "l%d" % i, "seconds": s, "chart": c, "closing": False}
+               for i, (s, c) in enumerate(zip(lengths, flags))]
+        if closing:
+            out.append({"text": "end", "seconds": closing, "chart": True, "closing": True})
+        return out
+
+    def test_lines_are_spread_across_the_whole_video_not_packed_at_the_front(self):
+        # The point of the schedule: 3 x 5s of speech in 60s of video must not
+        # finish at 0:16 and leave 44 seconds of silence.
+        placed, dropped = narrate.spread(self.lines([5, 5, 5]), 0.6, 60.0)
+        self.assertEqual(dropped, [])
+        self.assertGreater(placed[-1][0], 30.0)
+        self.assertLessEqual(placed[-1][1], 60.0)
+
+    def test_speech_longer_than_the_window_is_dropped_not_pushed_past_the_end(self):
+        placed, dropped = narrate.spread(self.lines([5, 5, 5]), 0.6, 8.0)
+        self.assertEqual(len(placed), 1)
+        self.assertEqual(len(dropped), 2)
+
+    def test_chart_lines_wait_for_the_card_and_the_closing_lands_last(self):
+        lines = self.lines([4, 4, 3], [False, False, True], closing=3)
+        placed, _ = narrate.plan(lines, seconds=60.0, chart_at=50.0)
+        by_text = {item["text"]: (start, end) for start, end, _l, item in placed}
+        self.assertLess(by_text["l1"][1], 50.0)          # body ends before the card
+        self.assertGreaterEqual(by_text["l2"][0], 50.0)  # the card line waits
+        self.assertAlmostEqual(by_text["end"][1], 59.7, places=1)
+
+    def test_without_a_card_the_body_uses_the_whole_video(self):
+        lines = self.lines([4, 4], closing=3)
+        placed, _ = narrate.plan(lines, seconds=60.0, chart_at=60.0)
+        body_end = max(end for _s, end, _l, item in placed if not item["closing"])
+        self.assertGreater(body_end, 40.0)

@@ -116,7 +116,7 @@ def script(game, seconds, card, states, cap, algorithm="", wpm=125, **kw):
         "THE VIDEO\n"
         "It runs %.0f seconds. Several games play side by side, sped up, each "
         "labelled with which checkpoint is playing it. They end at different "
-        "times and freeze. The last few seconds are a card of results.\n\n"
+        "times and freeze.%s\n\n"
         "WHAT IS ACTUALLY HAPPENING\n%s\n%s\n\n"
         "WRITE\n"
         "One person talking continuously over this, start to finish. Each entry "
@@ -142,14 +142,19 @@ def script(game, seconds, card, states, cap, algorithm="", wpm=125, **kw):
         "- Plain spoken prose. No stage directions, no speaker labels, no field "
         "  names, no markdown, no emoji, no timestamps. Every string is read "
         "  aloud EXACTLY as written.\n"
-        "- Mark 'chart': true on the entries that discuss the measured results. "
-        "  Those are held back so they land while the card is on screen. Most "
-        "  entries are not marked.\n"
-        "- 'closing' is the last thing said, over the card. One sentence.\n"
+        "%s"
+        "- 'closing' is the last thing said. One sentence.\n"
         "Return JSON: {\"script\": [{\"text\": \"...\"}, {\"text\": \"...\", "
         "\"chart\": true}], \"closing\": \"...\"}"
-        % (seconds, _facts(game, card, states, cap), how, words,
-           sum(card["stats"][n]["n"] for n in card["order"]) if card else len(states)))
+        % (seconds,
+           " The last few seconds are a card of measured results." if card else "",
+           _facts(game, card, states, cap), how, words,
+           sum(card["stats"][n]["n"] for n in card["order"]) if card else len(states),
+           ("- Mark 'chart': true on the entries that discuss the measured "
+            "results. Those are held back so they land while the card is on "
+            "screen. Most entries are not marked.\n") if card else
+           ("- There is NO results card in this video. Do not refer to anything "
+            "appearing on screen after the games.\n")))
 
     data = writer.write(prompt, SCHEMA, **kw)
     if not data:
@@ -186,8 +191,12 @@ def spread(items, start, end, min_gap=MIN_GAP):
     lengths = [it["seconds"] for it in items]
     if not items:
         return [], []
+    # The slack is shared between the GAPS, of which there are one fewer than
+    # there are lines. Dividing by the line count instead leaves one gap's
+    # worth of silence hanging off the end, which is the thing this exists to
+    # prevent: the last line then stops well short of the window it was given.
     slack = (end - start) - sum(lengths)
-    gap = max(min_gap, slack / len(items)) if len(items) else min_gap
+    gap = max(min_gap, slack / (len(items) - 1)) if len(items) > 1 else min_gap
     placed, dropped, cursor = [], [], start
     for item, length in zip(items, lengths):
         if cursor + length > end:
@@ -320,7 +329,7 @@ def add(video, game, card, out_dir, states, cap, chart_seconds=12.0,
     # above exactly rather than re-deriving a different one.
     track, _ = tts.build_track([(start, item["path"], item["closing"])
                                 for start, _e, _l, item in placed], seconds,
-                               os.path.join(out_dir, "narration.wav"))
+                               os.path.join(out_dir, "narration.wav"), verbose=False)
     if not track:
         return None
     out_path = os.path.splitext(video)[0] + "_narrated.mp4"

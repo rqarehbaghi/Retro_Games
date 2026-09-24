@@ -181,7 +181,7 @@ def space_clips(clips, duration_s, min_gap=MIN_GAP, verbose=True):
     return placed
 
 
-def build_track(clips, duration_s, out_path, sample_rate=SAMPLE_RATE):
+def build_track(clips, duration_s, out_path, sample_rate=SAMPLE_RATE, verbose=True):
     """Returns (path, placed) -- the track, and where each line actually landed.
 
     The placements come back because they are not knowable until the speech is
@@ -194,7 +194,11 @@ def build_track(clips, duration_s, out_path, sample_rate=SAMPLE_RATE):
     the footage on its own, without relying on the mux to position anything."""
     if not clips:
         return None, []
-    clips = space_clips(clips, duration_s)
+    # verbose=False is for a caller that has ALREADY scheduled every line and
+    # is handing the times in: space_clips then reports its held time as
+    # "silence added waiting for moments the script names", which is true of
+    # the studio pipeline and misleading for a deliberate spread.
+    clips = space_clips(clips, duration_s, verbose=verbose)
     inputs, chains, labels = [], [], []
     for i, (at, path) in enumerate(clips):
         inputs += ["-i", path]

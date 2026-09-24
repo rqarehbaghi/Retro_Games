@@ -102,6 +102,11 @@ python restyle.py ./studio_out/<folder>
   streams), the numbers burnt on a panel are the game's own `report_stats`, and
   the crop comes from the real frame size plus `observation.grid` if the game
   declares one. `video.py --help` has a Tetris and a Mario invocation.
+  `--labels` names the columns, `--no-stats` takes the burnt-in counters off,
+  `--cols` reflows the panels into any shape, `--chart` closes on a stats card
+  built from those same games (`chart.py`), and `--voice` writes and speaks a
+  narration about the game and the training rather than the gameplay
+  (`narrate.py`) -- off by default, like the studio pipeline's.
 
 ## Facts that cost real effort to establish
 

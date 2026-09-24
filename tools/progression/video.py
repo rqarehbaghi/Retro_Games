@@ -303,13 +303,23 @@ def compose(cells, out_path, ncols=None, headers=None, still=False, still_at=8.0
         # to append a tail would cost a second full encode of the whole video.
         inputs_len = len(cells)
         cmd += ["-loop", "1", "-t", "%.3f" % chart_seconds, "-i", chart]
-        # concat refuses inputs that disagree on size, pixel format, sample
-        # aspect or rate, and it fails at RUN time rather than when the graph
-        # is built -- so both sides are pinned explicitly.
-        graph += (";[final]fps=60,setsar=1,format=yuv420p[gridv];"
-                  "[%d:v]scale=1920:1080,fps=60,setsar=1,format=yuv420p,"
-                  "fade=in:st=0:d=0.5[chartv];"
-                  "[gridv][chartv]concat=n=2:v=1:a=0[outv]" % inputs_len)
+        # BOTH segments must be TRIMMED, not merely expected to end.
+        #
+        # Without the trim the grid segment ran far past the background's own
+        # duration -- overlay repeats a finished input rather than stopping --
+        # and concat happily played that overrun instead of ever reaching the
+        # card. It looked right, because the -t on the output cut the result
+        # back to exactly the length the card should have made it: a 232s file
+        # that was 232s of grid with the card silently never shown. concat also
+        # refuses segments that disagree on size, pixel format, sample aspect
+        # or frame rate, and it fails at RUN time rather than when the graph is
+        # built, so those are pinned here too.
+        graph += (";[final]trim=duration=%.3f,setpts=PTS-STARTPTS,fps=60,setsar=1,"
+                  "format=yuv420p[gridv];"
+                  "[%d:v]scale=1920:1080,trim=duration=%.3f,setpts=PTS-STARTPTS,"
+                  "fps=60,setsar=1,format=yuv420p,fade=in:st=0:d=0.5[chartv];"
+                  "[gridv][chartv]concat=n=2:v=1:a=0[outv]"
+                  % (out_seconds, inputs_len, chart_seconds))
         last = "[outv]"
         out_seconds += chart_seconds
     cmd += ["-filter_complex", graph, "-map", last, "-an"]
@@ -323,6 +333,11 @@ def compose(cells, out_path, ncols=None, headers=None, still=False, still_at=8.0
                 "-pix_fmt", "yuv420p", "-movflags", "+faststart", out_path]
     subprocess.run(cmd, check=True)
     return out_path
+
+
+def game_title(game):
+    """'TetrisTime-Nes-v0' is an integration id, not a name to put on a card."""
+    return game.split("-")[0] if "-" in game else game
 
 
 def build_chart(cells, game, path, order):
@@ -346,7 +361,7 @@ def build_chart(cells, game, path, order):
         print("  (no panel numbers on disk: these panels were cached before the "
               "sidecars existed. Delete them to rebuild, or drop --chart)")
         return None
-    return chart_card.build(rows, path, game=game,
+    return chart_card.build(rows, path, game=game_title(game),
                             metric="%s per game" % metric.title(),
                             decision_word=work, order=order)
 
@@ -404,6 +419,8 @@ def main():
     p.add_argument("--chart", action="store_true",
                    help="close the video with a stats card built from these games")
     p.add_argument("--chart-seconds", type=float, default=12.0)
+    p.add_argument("--title", default=None,
+                   help="headline on the stats card (default: the game's name)")
     p.add_argument("--voice", action="store_true",
                    help="write and speak a narration over the video: the game's history, "
                         "how the agent was trained, and the numbers on the chart. OFF by "
@@ -486,7 +503,8 @@ def main():
         OUT, "progression_still.png" if a.still else "progression_grid.mp4")
     card = None
     if a.chart and not a.still:
-        card = build_chart(cells, game, os.path.join(OUT, "progression_chart.png"), columns)
+        card = build_chart(cells, a.title or game,
+                           os.path.join(OUT, "progression_chart.png"), columns)
         if card:
             print("wrote %s" % card["path"])
     compose(cells, out, ncols=ncols, headers=headers, still=a.still, speed=a.speed,

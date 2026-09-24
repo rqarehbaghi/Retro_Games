@@ -1,0 +1,83 @@
+{
+  "code_commit": "22c4d66298814159d67f2a4035a5ffa8f224dc41+dirty",
+  "config_sha256": "e8d64c948116e3a48c79dc55ba7704810a66f0c00da8ea03c16d2e987a6b57ce",
+  "deterministic": true,
+  "game": "TetrisTime-Nes-v0",
+  "generation": {
+    "command": "tools/progression/suite.py --game TetrisTime-Nes-v0 --from-recording TetrisTime-Nes-v0-boot-000000.bk2 --count 2",
+    "method": "replay the recorded menu navigation with N idle frames inserted first; only that offset varies. No trained checkpoint is involved.",
+    "probe": "first 20 piece types under one fixed input script, identical for every candidate",
+    "recording": "TetrisTime-Nes-v0-boot-000000.bk2",
+    "recording_sha256": "ea9b02a4172f64f1533b5943b42642358a70c73448c5a02f48623c2893a954ce"
+  },
+  "placement_cap": 2000,
+  "player": 1,
+  "players": 1,
+  "prefix_pieces": 20,
+  "rejected": [],
+  "rom_sha256": "5e4b49d021a77206873e0ee39953370cf0f187594353665303e57ea77d0a58f6",
+  "selection_rule": {
+    "hard_state": "rank 4 of 32 (10th percentile) by the same ranking",
+    "median_state": "rank 16 of 32 by the ZERO-VALUE CONTROL's placements, ascending",
+    "note": "checkpoint results are never consulted when choosing displayed states",
+    "ties": "broken on state name, ascending"
+  },
+  "states": [
+    {
+      "delay_frames": 0,
+      "file": "p1_01.state",
+      "name": "p1_01",
+      "piece_prefix": [
+        1,
+        2,
+        7,
+        6,
+        7,
+        4,
+        5,
+        4,
+        7,
+        4,
+        7,
+        2,
+        4,
+        2,
+        2,
+        4,
+        3,
+        6,
+        5,
+        4
+      ],
+      "sha256": "dbb8a591a38dafa1a4e8b70bfa6e4029b93f11ca827e89cff6b9e242de38e677"
+    },
+    {
+      "delay_frames": 1,
+      "file": "p1_02.state",
+      "name": "p1_02",
+      "piece_prefix": [
+        4,
+        6,
+        3,
+        4,
+        6,
+        5,
+        7,
+        7,
+        2,
+        3,
+        1,
+        1,
+        5,
+        3,
+        1,
+        3,
+        7,
+        2,
+        3,
+        5
+      ],
+      "sha256": "3d5f07b8c5e8103b32cddf7332fc2521ffd7aba49b14ed73f690e2f3792d5790"
+    }
+  ]
+}

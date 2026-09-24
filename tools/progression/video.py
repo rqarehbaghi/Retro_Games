@@ -33,7 +33,7 @@ OUT = os.path.join(ROOT, "progression_out")
 PANELS = os.path.join(OUT, "panels")
 SPEED = 3.0
 HEADINGS = {"control": "Zero-value control"}
-PANEL_SCALE = 3                      # nearest-neighbour upscale of the cropped well
+PANEL_SCALE = 2                      # nearest-neighbour upscale of the cropped well
 MARGIN = 6                           # game pixels kept around the well
 
 
@@ -81,7 +81,8 @@ def plate(draw, xy, text, font, pad=4):
     draw.text((x, y), text, font=font, fill=(0, 0, 0))
 
 
-def capture_panel(checkpoint, state, cap, player, path, label):
+def capture_panel(checkpoint, state, cap, player, path, label, game="TetrisTime-Nes-v0",
+                  crop="half"):
     """Play one pair and write its well, with burnt-in counters, to `path`.
 
     Counters are drawn per frame here rather than as ffmpeg drawtext filters: a
@@ -94,8 +95,7 @@ def capture_panel(checkpoint, state, cap, player, path, label):
     from rl.afterstate import AfterstateAgent
 
     overrides = {"player": player, "state": state}
-    spec = TrainingSpec(json.load(open(os.path.join(OUT, "suite_manifest.json")))["game"],
-                        overrides)
+    spec = TrainingSpec(game, overrides)
     cfg = spec.afterstate_config
     sim = get_simulator(cfg.get("simulator") or spec.features_name or spec.game, config=cfg)
     agent = AfterstateAgent(input_dim=sim.feature_dim, device="cpu",
@@ -107,12 +107,30 @@ def capture_panel(checkpoint, state, cap, player, path, label):
     lines_var = cfg.get("lines_var", "lines_p{player}").replace("{player}", str(player))
 
     grid = spec.grid
-    x0 = max(0, int(grid["x"]) - MARGIN)
-    x1 = min(256, int(grid["x"]) + int(grid["cols"]) * int(grid["cell"]) + MARGIN)
-    y0 = max(0, int(grid["y"]) - 2 * int(grid["cell"]))
-    y1 = min(240, int(grid["y"]) + int(grid["rows"]) * int(grid["cell"]) + MARGIN)
+    if crop == "well":
+        # Just the agent's own well. Tight, and it cuts off NEXT, SCORE,
+        # LINES and LEVEL, which is why it is not the default.
+        x0 = max(0, int(grid["x"]) - MARGIN)
+        x1 = min(256, int(grid["x"]) + int(grid["cols"]) * int(grid["cell"]) + MARGIN)
+        y0 = max(0, int(grid["y"]) - 2 * int(grid["cell"]))
+        y1 = min(240, int(grid["y"]) + int(grid["rows"]) * int(grid["cell"]) + MARGIN)
+    elif crop == "full":
+        x0, y0, x1, y1 = 0, 0, 240, 224
+    else:
+        # The agent's SIDE of the screen, full height: its well, its NEXT box
+        # and the SCORE / LINES / LEVEL readouts. Wider than a strict half
+        # (120) because the readout LABELS sit just past the halfway line and a
+        # clean half cuts them mid-word ("SCO", "LIN", "LEV"); trimmed back to
+        # 152 from 168 because the extra pixels only added the "HI" of HIGH
+        # SCORE and a sliver of the neighbouring column. Compared side by side
+        # at 168 / 152 / 144 / 136 before choosing.
+        y0, y1 = 0, 224
+        if int(grid["x"]) < 120:
+            x0, x1 = 0, 152
+        else:
+            x0, x1 = 240 - 152, 240
     w, h = (x1 - x0) * PANEL_SCALE, (y1 - y0) * PANEL_SCALE
-    font = house_font(max(8, w // 14))
+    font = house_font(max(8, w // 20))
 
     ff = subprocess.Popen(
         ["ffmpeg", "-nostdin", "-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "rgb24",
@@ -123,16 +141,22 @@ def capture_panel(checkpoint, state, cap, player, path, label):
     state_box = {"lines": 0, "placements": 0, "end": None}
 
     def write(frame):
-        # Only the counters go INSIDE the panel, and abbreviated: the well is
-        # ~276px wide, so a label like "Zero-value control" simply runs off the
-        # edge. Checkpoint and state names are drawn as headers by compose(),
-        # where there is room for them.
+        # Counters sit a quarter of the way down, in the empty top of the well:
+        # at the bottom they covered the stack, which is the one thing the
+        # video is about. Checkpoint and state names are headers on the
+        # composite, where there is room for them.
         panel = Image.fromarray(np.asarray(frame)[y0:y1, x0:x1]).resize(
             (w, h), Image.NEAREST)
         draw = ImageDraw.Draw(panel)
-        plate(draw, (6, 4), "L %d  P %d" % (state_box["lines"], state_box["placements"]), font)
+        # Two lines, not one: "LINES 147   PIECES 350" is wider than the panel
+        # and the piece count was cut off at the edge.
+        plate(draw, (6, int(h * 0.25)), "LINES %d" % state_box["lines"], font)
+        plate(draw, (6, int(h * 0.25) + font.size + 12),
+              "PIECES %d" % state_box["placements"], font)
         if state_box["end"]:
-            plate(draw, (6, h - font.size - 14), state_box["end"], font)
+            end_text = state_box["end"]
+            width = draw.textlength(end_text, font=font)
+            plate(draw, ((w - width) / 2, h // 2 - font.size), end_text, font)
         ff.stdin.write(panel.tobytes())
 
     env = make_env(spec.game, overrides)
@@ -184,7 +208,7 @@ def duration(path):
     return float(out.stdout.strip())
 
 
-def compose(panels, columns, rows, out_path, still=False, still_at=8.0):
+def compose(panels, columns, rows, out_path, still=False, still_at=8.0, speed=SPEED):
     """Six panels into 1920x1080, each frozen on its last frame once it ends."""
     longest = max(duration(p["path"]) for p in panels.values())
     cell_w, cell_h = 1920 // 3, (1080 - 120) // 2
@@ -201,7 +225,7 @@ def compose(panels, columns, rows, out_path, still=False, still_at=8.0):
         pad = max(0.0, longest - duration(panel["path"]))
         filters.append(
             "[%d:v]setpts=PTS/%s,tpad=stop_mode=clone:stop_duration=%.3f,"
-            "scale=%d:%d:flags=neighbor[p%d]" % (i, SPEED, pad / SPEED, pw, ph, i))
+            "scale=%d:%d:flags=neighbor[p%d]" % (i, speed, pad / speed, pw, ph, i))
     for i, (col, row) in enumerate([(c, r) for r in rows for c in columns]):
         cx = (i % 3) * cell_w + (cell_w - pw) // 2
         cy = 96 + (i // 3) * cell_h + 10
@@ -209,7 +233,13 @@ def compose(panels, columns, rows, out_path, still=False, still_at=8.0):
         overlays += "[p%d]overlay=%d:%d%s;" % (i, cx, cy, nxt)
         if i < len(panels) - 1:
             overlays += "[s%d]" % i
-    graph = ";".join(filters) + ";" + "color=c=black:s=1920x1080:r=60[bg];" + overlays
+    # The background MUST carry a duration. color= is an infinite source, and
+    # overlaying onto it made the render run for as long as ffmpeg was left
+    # alive -- a 29-minute game at 3x produced 6776 seconds of output and was
+    # mistaken for a slow encode rather than an unbounded one.
+    out_seconds = longest / speed
+    graph = (";".join(filters) + ";"
+             + "color=c=black:s=1920x1080:r=60:d=%.3f[bg];" % out_seconds + overlays)
     graph = graph.rstrip(";")
     # Headers go on the composite, not inside the panels: a checkpoint name is
     # wider than the well. Same house style as every other overlay here --
@@ -224,10 +254,8 @@ def compose(panels, columns, rows, out_path, still=False, still_at=8.0):
     for i, col in enumerate(columns):
         labels.append((HEADINGS.get(col, col), (i % 3) * cell_w + cell_w // 2, 34, font_head))
     for j, row in enumerate(rows):
-        tag = "median-difficulty state" if j == 0 else "hard state"
-        labels.append(("%s  (%s)" % (row, tag), 1920 // 2, 96 + j * cell_h - 26, 20))
-    labels.append(("%gx speed   -   states chosen from the control alone"
-                   % SPEED, 1920 // 2, 1050, 16))
+        labels.append((row, 1920 // 2, 96 + j * cell_h - 26, 20))
+    labels.append(("%gx speed" % speed, 1920 // 2, 1050, 16))
     text = ""
     for k, (body, cx, cy, size) in enumerate(labels):
         src = "[vout]" if k == 0 else "[t%d]" % k
@@ -245,7 +273,8 @@ def compose(panels, columns, rows, out_path, still=False, still_at=8.0):
         # the still says nothing about the layout in use.
         cmd += ["-ss", str(still_at), "-frames:v", "1", out_path]
     else:
-        cmd += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
+        cmd += ["-t", "%.3f" % out_seconds,
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
                 "-pix_fmt", "yuv420p", "-movflags", "+faststart", out_path]
     subprocess.run(cmd, check=True)
     return out_path
@@ -255,18 +284,28 @@ def main():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--folder", default=os.path.join(ROOT, "checkpoints", "tetris_v54"))
-    p.add_argument("--columns", default="control,100000,200000")
+    p.add_argument("--columns", default="5000,100000,200000",
+                   help="checkpoint step counts, or 'control', comma separated")
+    p.add_argument("--states", default=None,
+                   help="start states for the rows (default: the first two in the manifest)")
+    p.add_argument("--manifest", default=os.path.join(OUT, "suite_manifest.json"))
+    p.add_argument("--cap", type=int, default=0, help="placement cap (default: the manifest's)")
+    p.add_argument("--player", type=int, default=0, help="which player the agent drives")
+    p.add_argument("--crop", choices=("half", "full", "well"), default="half",
+                   help="half the screen on the agent's side (default), the whole "
+                        "screen, or the well alone")
+    p.add_argument("--speed", type=float, default=SPEED,
+                   help="playback speed multiplier (default %(default)s). The grid lasts as "
+                        "long as its LONGEST game: a checkpoint that plays 29 minutes makes "
+                        "a 10-minute video at 3x, so raise this for long games")
     p.add_argument("--still", action="store_true", help="render one frame and stop")
     p.add_argument("--out", default=os.path.join(OUT, "progression_grid.mp4"))
     a = p.parse_args()
 
-    results = json.load(open(os.path.join(OUT, "results.json")))
-    if "selection" not in results:
-        sys.exit("results.json has no selection: run report.py --select first")
-    chosen = results["selection"]
-    rows = [chosen["median_state"], chosen["hard_state"]]
-    manifest = json.load(open(os.path.join(OUT, "suite_manifest.json")))
-    cap, player = int(manifest["placement_cap"]), int(manifest["player"])
+    manifest = json.load(open(a.manifest))
+    rows = a.states.split(",") if a.states else [s["name"] for s in manifest["states"][:2]]
+    cap = a.cap or int(manifest["placement_cap"])
+    player = a.player or int(manifest["player"])
 
     os.makedirs(PANELS, exist_ok=True)
     columns, panels = [], {}
@@ -290,11 +329,11 @@ def main():
                 panels[(name, state)] = {"path": mp4, "width": w, "height": h}
             else:
                 print("rendering panel %s ..." % key)
-                panels[(name, state)] = capture_panel(path, state, cap, player, mp4, label)
+                panels[(name, state)] = capture_panel(path, state, cap, player, mp4, label, manifest["game"], a.crop)
                 print("   %s" % panels[(name, state)]["end_reason"])
 
     out = a.out if not a.still else os.path.join(OUT, "progression_still.png")
-    compose(panels, columns, rows, out, still=a.still)
+    compose(panels, columns, rows, out, still=a.still, speed=a.speed)
     print("wrote %s" % out)
 
 

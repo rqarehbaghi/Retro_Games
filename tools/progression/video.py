@@ -77,7 +77,7 @@ def plate(draw, xy, text, font, pad=4):
     draw.text((x, y), text, font=font, fill=(0, 0, 0))
 
 
-def crop_box(frame, grid, crop):
+def crop_box(frame, grid, crop, pad=CROP_PAD):
     """Which rectangle of the screen this panel shows.
 
     Derived from the frame the emulator actually produced and, for the two
@@ -96,12 +96,16 @@ def crop_box(frame, grid, crop):
         return (max(0, x - MARGIN), max(0, y - 2 * cell),
                 min(screen_w, right + MARGIN), min(screen_h, bottom + MARGIN))
     # "half": the agent's SIDE of the screen, full height -- its board plus
-    # CROP_PAD pixels of the readouts beside it. CROP_PAD 64 was chosen by
-    # rendering candidates side by side on TetrisTime: wider pulled in the
-    # second player's well, narrower cut the readout labels mid-word.
+    # `pad` pixels of the readouts beside it. 64 was chosen by rendering
+    # candidates side by side on TetrisTime: it is the narrowest crop that
+    # keeps the SCORE / LINES / LEVEL labels whole. It cannot be narrowed
+    # without cutting them, because on that screen the OTHER player's well
+    # sits directly BELOW those labels -- no rectangle keeps one and drops
+    # the other. --pad is the knob for a game where the trade goes the other
+    # way.
     if x < screen_w // 2:
-        return 0, 0, min(screen_w, right + CROP_PAD), screen_h
-    return max(0, x - CROP_PAD), 0, screen_w, screen_h
+        return 0, 0, min(screen_w, right + pad), screen_h
+    return max(0, x - pad), 0, screen_w, screen_h
 
 
 class PanelWriter:
@@ -114,14 +118,14 @@ class PanelWriter:
     Sizing waits for the first frame, because only the emulator knows how big
     its screen is."""
 
-    def __init__(self, path, crop, grid):
-        self.path, self.crop, self.grid = path, crop, grid
+    def __init__(self, path, crop, grid, pad=CROP_PAD):
+        self.path, self.crop, self.grid, self.pad = path, crop, grid, pad
         self.ff = self.font = None
         self.box = None
         self.w = self.h = 0
 
     def _open(self, frame):
-        x0, y0, x1, y1 = crop_box(frame, self.grid, self.crop)
+        x0, y0, x1, y1 = crop_box(frame, self.grid, self.crop, self.pad)
         self.box = (x0, y0, x1, y1)
         self.w, self.h = (x1 - x0) * PANEL_SCALE, (y1 - y0) * PANEL_SCALE
         self.font = house_font(max(8, self.w // 20))
@@ -163,10 +167,10 @@ class PanelWriter:
         return {"path": self.path, "width": self.w, "height": self.h}
 
 
-def capture_panel(game, checkpoint, state, cap, player, path, crop):
+def capture_panel(game, checkpoint, state, cap, player, path, crop, pad=CROP_PAD):
     """Play one (checkpoint, state) pair and write its panel to `path`."""
     spec = runners.spec_for(game, player, state)
-    writer = PanelWriter(path, crop, spec.grid)
+    writer = PanelWriter(path, crop, spec.grid, pad)
     result = runners.run(game, checkpoint, state, cap, player, writer)
     panel = writer.finish(result["last"], {"stats": result["stats"]}, result["end_reason"])
     panel.update({"end_reason": result["end_reason"], "decisions": result["decisions"],
@@ -277,6 +281,10 @@ def main():
     p.add_argument("--crop", choices=("half", "full", "well"), default="half",
                    help="half the screen on the agent's side (default), the whole screen, "
                         "or the declared board alone; a game with no grid is always whole")
+    p.add_argument("--pad", type=int, default=CROP_PAD,
+                   help="pixels of readouts kept beside the board in --crop half "
+                        "(default %(default)s: the narrowest that keeps TetrisTime's "
+                        "SCORE / LINES / LEVEL labels whole)")
     p.add_argument("--speed", type=float, default=SPEED,
                    help="playback speed multiplier (default %(default)s). The grid lasts as "
                         "long as its LONGEST game: a checkpoint that plays 29 minutes makes "
@@ -319,7 +327,7 @@ def main():
             else:
                 print("rendering panel %s ..." % key)
                 panels[(name, state)] = capture_panel(
-                    game, path, state, cap, player, mp4, a.crop)
+                    game, path, state, cap, player, mp4, a.crop, a.pad)
                 print("   %s after %d decisions" % (panels[(name, state)]["end_reason"],
                                                     panels[(name, state)]["decisions"]))
 

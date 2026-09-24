@@ -161,27 +161,6 @@ learning substantially worse. Do not extend v54 or promote `balanced_steps` as
 the Tetris production sampler based on this run. Further training work needs a
 new, separately justified hypothesis rather than another duration increase.
 
-### Next bounded hypothesis: backup-policy mismatch
-
-Code review found a concrete mismatch in the active `greedy_candidates` backup.
-Live action selection ranks candidates with `immediate_reward + gamma*V`, where
-`immediate_reward` contains the configured fixed board-damage guidance. Replay,
-however, stored only `task_reward`, and the Double-DQN maximization also selected
-its backed-up action using only that sparse line reward. On the many zero-line
-moves this discards the guidance and initially resolves a complete tie to the
-first enumerated placement. The value target was therefore learning a different,
-largely arbitrary policy from the one that collected the trajectory.
-
-The generic candidate replay now keeps separate selection and target rewards:
-selection guidance chooses the backed-up action, while task reward evaluates the
-chosen action. This does not train V on the board shaping, so it cannot relearn
-and cancel that guidance. The historical single-reward behaviour remains the
-default for other callers. Tetris returns to uniform-per-episode `random`
-sampling because v54 rejected `balanced_steps`; this isolates the backup fix
-against v52 at the same 10k budget. All 89 tests pass. The next run must be fresh
-and must compare its full 16-state deterministic distribution to v52 and the
-same zero-value control before any extension.
-
 ## Locations
 
 - Editable code: G:/GitHub/Retro_Games (WSL /mnt/g/GitHub/Retro_Games).
@@ -194,11 +173,9 @@ same zero-value control before any extension.
 
 ## Diagnosis and acceptance
 
-TARGET RETIRED 2026-09-23: the earlier 100+ lines-per-game request was a
-diagnostic expectation from the period when training cleared only a handful of
-lines, not a continuing acceptance threshold. Compare the full per-state
-distribution, mean/minimum, placements, caps and broad regressions; totals alone
-can hide failures.
+USER TARGET UPDATE2026-09-15:100+ NEW cleared lines PER GAME, i.e. at least1600
+across16 but require per-state results, minimum and count>=100 (total alone can
+hide failures). Earlier provisional relative-improvement gate is not completion.
 Read TRAINING_REWARD_AUDIT.md for the full reward/control audit and new fixes.
 Production games.json now lines-only, not the former absolute-cost objective.
 Default evaluation cap1000 placements, not200. Old snapshots remain immutable.

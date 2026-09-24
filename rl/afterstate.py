@@ -656,15 +656,7 @@ def train_afterstate(args, spec, overrides):
     control_replay = None
     if backup == "greedy_candidates":
         from rl.control import CandidateReplay, update_candidates
-        # V learns task return, but the greedy backup must choose actions with
-        # the same fixed candidate guidance used by the behaviour policy.  If
-        # it maximizes task_reward alone, selection_delta disappears from the
-        # backup and zero-reward ties collapse to an arbitrary first placement.
-        control_replay = CandidateReplay(
-            replay_capacity,
-            reward_key="task_reward",
-            selection_reward_key="immediate_reward",
-        )
+        control_replay = CandidateReplay(replay_capacity, reward_key="task_reward")
     print(f"value backup: {backup}; replay capacity {replay_capacity}")
 
     if args.resume:
@@ -860,3 +852,4 @@ def train_afterstate(args, spec, overrides):
     agent.save(final_path)
     print(f"\nTraining complete. Final weights saved to {final_path}")
     env.close()
+

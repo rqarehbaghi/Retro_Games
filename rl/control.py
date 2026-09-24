@@ -11,20 +11,13 @@ import torch.nn.functional as F
 
 
 class CandidateReplay:
-    def __init__(self, capacity, reward_key='immediate_reward',
-                 selection_reward_key=None):
+    def __init__(self, capacity, reward_key='immediate_reward'):
         if capacity <= 0:
             raise ValueError('Replay capacity must be positive')
         self.capacity = capacity
         self.buffer = []
         self.pos = 0
         self.reward_key = reward_key
-        # The reward optimized by the value target can deliberately differ
-        # from fixed guidance used by the behaviour policy.  Keep the two
-        # separate: use selection rewards to choose the backed-up action, then
-        # use task rewards to evaluate that choice.  When no separate key is
-        # supplied, preserve the historical one-reward behaviour.
-        self.selection_reward_key = selection_reward_key or reward_key
 
     def push(self, state, candidates=None, terminal_reward=None):
         if not candidates and terminal_reward is None:
@@ -32,14 +25,8 @@ class CandidateReplay:
         features = np.asarray([c['afterstate'] for c in candidates], dtype=np.float32) if candidates else None
         rewards = np.asarray([c.get(self.reward_key, c.get('immediate_reward', 0.))
                               for c in candidates], dtype=np.float32) if candidates else None
-        selection_rewards = np.asarray([
-            c.get(self.selection_reward_key, c.get(self.reward_key,
-                                                    c.get('immediate_reward', 0.)))
-            for c in candidates
-        ], dtype=np.float32) if candidates else None
         terminals = np.asarray([c.get('terminal', False) for c in candidates], dtype=bool) if candidates else None
-        item = (np.array(state, copy=True), features, rewards, terminal_reward,
-                terminals, selection_rewards)
+        item = (np.array(state, copy=True), features, rewards, terminal_reward, terminals)
         if len(self.buffer) < self.capacity:
             self.buffer.append(item)
         else:
@@ -48,13 +35,10 @@ class CandidateReplay:
         return item
 
     @staticmethod
-    def correct(item, index, reward, observed=None, terminal=False,
-                selection_reward=None):
+    def correct(item, index, reward, observed=None, terminal=False):
         """Replace the EXECUTED candidate's prediction with its measured outcome."""
         item[2][index] = reward
         item[4][index] = terminal
-        if selection_reward is not None:
-            item[5][index] = selection_reward
         if observed is not None:
             item[1][index] = observed
 
@@ -78,14 +62,11 @@ def candidate_targets(agent, batch):
                 values.append(float(getattr(agent, 'value_reward_scale', 1.0)) * float(row[3]))
                 continue
             rewards = torch.as_tensor(row[2], device=agent.device)
-            selection_rewards = torch.as_tensor(row[5], device=agent.device)
             live = torch.as_tensor(~row[4], device=agent.device)
             online_values = online[offset:offset+count].masked_fill(~live, 0.)
             target_values = target[offset:offset+count].masked_fill(~live, 0.)
             scaled_rewards = float(getattr(agent, 'value_reward_scale', 1.0)) * rewards
-            scaled_selection = (float(getattr(agent, 'value_reward_scale', 1.0))
-                                * selection_rewards)
-            choice = torch.argmax(scaled_selection + agent.gamma * online_values)
+            choice = torch.argmax(scaled_rewards + agent.gamma * online_values)
             values.append(float(scaled_rewards[choice] + agent.gamma * target_values[choice]))
             offset += count
     return torch.tensor(values, device=agent.device, dtype=torch.float32)

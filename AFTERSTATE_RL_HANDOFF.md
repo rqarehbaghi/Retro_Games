@@ -1,14 +1,5 @@
 # Afterstate RL — handoff brief for a code reviewer
 
-**Update 2026-09-23:** review of the active `greedy_candidates` path found a
-backup-policy mismatch. Live behaviour chose with fixed board-damage guidance
-plus learned value, while the fitted backup chose with sparse task reward plus
-value; most zero-line choices therefore began as arbitrary first-candidate ties.
-Candidate replay now keeps separate selection and target rewards, choosing the
-backup action with the live policy's guidance but evaluating it with task reward
-only. The failed v54 `balanced_steps` sampler was also reverted to uniform
-per-episode sampling. See `TETRIS_EXPERIMENT_LOOP.md` for the bounded next gate.
-
 **Correction 2026-09-14:** the historical SIX-piece/no-Z claim below is false.
 RAM type7 is a playable Z, confirmed by frame traces and all4 rotation screenshots
 in checkpoints/experiment_loop/type7_rotations/. Windows games.json now includes

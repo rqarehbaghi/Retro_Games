@@ -10,7 +10,20 @@
     "recording": "TetrisTime-Nes-v0-boot-000000.bk2",
     "recording_sha256": "ce5b9df68053f27ee20d50c93a7da00c8a12e60c9bfc13e2793254325a599191"
   },
-  "placement_cap": 500,
+  "placement_cap": 2000,
+  "placement_cap_history": [
+    {
+      "cap": 500,
+      "evidence": "10-trajectory probe: 6 of 10 reached the cap, including every 100k and 200k run, all stopping at ~195 delta lines. A cap that binds censors exactly the checkpoints the comparison is about, so 100k and 200k would have looked identical.",
+      "status": "rejected before the sweep"
+    },
+    {
+      "cap": 2000,
+      "evidence": "200k played to a natural game over on 4 states at cap 6000: 642, 698, 752 and 1340 placements (242-521 delta lines), 0% capped. 2000 clears the observed maximum with margin and keeps the 1312-trajectory sweep near 3-4 hours. Justification is fixed equal opportunity and compute, not any line target.",
+      "note": "State selection and the state files are unaffected: their hashes are unchanged. Only the measurement budget moved, and it is part of the cache key, so nothing measured at cap 500 can be mixed with these results.",
+      "status": "in use"
+    }
+  ],
   "player": 2,
   "players": 2,
   "prefix_pieces": 20,

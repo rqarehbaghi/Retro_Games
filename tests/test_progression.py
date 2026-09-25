@@ -6,7 +6,7 @@ import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from tools.progression import chart, ids, narrate, report, select, speech  # noqa: E402
+from tools.progression import chart, ids, narrate, report, select, speech, video  # noqa: E402
 
 BASE = dict(checkpoint_sha="a", state_sha="b", cfg_hash="c", commit="d", rom="e",
             player=2, players=2, deterministic=True, placement_cap=500)
@@ -250,3 +250,54 @@ class SpeechBackendTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CatchUpTests(unittest.TestCase):
+    """Playing to game over means one survivor can hold the film open while
+    everything else sits frozen. The rate plan is what stops that."""
+
+    LENGTHS = [100.0, 120.0, 300.0, 900.0]
+
+    def test_disabled_is_one_constant_rate(self):
+        plan, out = video.rate_plan(self.LENGTHS, 8.0, catch_up=1.0)
+        self.assertTrue(all(rate == 8.0 for _end, rate in plan))
+        self.assertAlmostEqual(out, 900.0 / 8.0)
+
+    def test_rate_rises_only_as_games_end_and_never_falls(self):
+        plan, _out = video.rate_plan(self.LENGTHS, 8.0, catch_up=6.0)
+        rates = [rate for _end, rate in plan]
+        self.assertEqual(rates[0], 8.0, "it must start at the speed asked for")
+        self.assertEqual(rates, sorted(rates), "the film must never slow down")
+        # Boundaries are exactly the moments a game ends, so the speed never
+        # changes in the middle of the action.
+        self.assertEqual([end for end, _rate in plan], sorted(set(self.LENGTHS)))
+
+    def test_boost_is_proportional_to_how_many_are_still_playing(self):
+        plan, _out = video.rate_plan(self.LENGTHS, 8.0, catch_up=99.0)
+        # 4 alive, then 3, 2, 1 -> 1x, 4/3, 2x, 4x of the base rate.
+        self.assertEqual([round(r / 8.0, 3) for _e, r in plan], [1.0, 1.333, 2.0, 4.0])
+
+    def test_catch_up_is_a_ceiling(self):
+        plan, _out = video.rate_plan(self.LENGTHS, 8.0, catch_up=2.0)
+        self.assertEqual(max(r for _e, r in plan), 16.0)
+
+    def test_identical_games_get_no_boost(self):
+        plan, out = video.rate_plan([200.0, 200.0, 200.0], 4.0, catch_up=6.0)
+        self.assertEqual(len(plan), 1)
+        self.assertAlmostEqual(out, 50.0)
+
+    def test_total_is_the_sum_of_the_segments(self):
+        plan, out = video.rate_plan(self.LENGTHS, 8.0, catch_up=6.0)
+        starts = [0.0] + [end for end, _r in plan[:-1]]
+        self.assertAlmostEqual(
+            out, sum((end - start) / rate
+                     for (end, rate), start in zip(plan, starts)))
+        self.assertLess(out, 900.0 / 8.0, "catch-up must shorten the film")
+
+    def test_the_expression_escapes_its_commas(self):
+        # An unescaped comma is a FILTER SEPARATOR in a filtergraph: ffmpeg
+        # went looking for a filter called 'min(T' and the render died.
+        expr = video.remap(video.rate_plan(self.LENGTHS, 8.0, 6.0)[0])
+        self.assertIn("\,", expr)
+        self.assertNotIn("min(T,", expr)
+        self.assertTrue(expr.startswith("setpts=("))

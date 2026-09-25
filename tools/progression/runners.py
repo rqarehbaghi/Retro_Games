@@ -30,6 +30,9 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 CONTROL = "control"          # the untrained net, as a column name
+# cap <= 0 means PLAY TO THE END: no move budget, the game stops when the
+# agent loses. Honest, and unbounded -- an agent that does not lose does not
+# stop, which is what a cap exists to prevent.
 FRAME_STACK = 4              # train.py's default, and a policy only works on
                              # the observation shape it was trained with
 
@@ -125,7 +128,7 @@ def run_afterstate(spec, checkpoint, state, cap, player, on_frame):
 
     lines0 = int(info.get(lines_var, 0) or 0)
     decisions, pending, end = 0, False, "placement_cap"
-    while decisions < cap:
+    while cap <= 0 or decisions < cap:
         action = None
         if not pending:
             cands = sim.get_candidates(obs=obs, ram=getattr(core, "ram", None),
@@ -170,7 +173,7 @@ def run_policy(spec, checkpoint, state, cap, player, on_frame):
     core.env = FrameTap(core.env, lambda frame: on_frame(frame, box))
 
     decisions, end = 0, "placement_cap"
-    while decisions < cap:
+    while cap <= 0 or decisions < cap:
         if model is None:
             # The control column for a policy game: the untrained equivalent is
             # a uniformly random button press, not a zeroed net -- an untrained

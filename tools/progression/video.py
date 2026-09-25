@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Render a grid of agents playing: N checkpoints across, M start states down.
 
-    # Tetris: three checkpoints, two states
+    # Tetris: three checkpoints, two states, played until they lose
     python tools/progression/video.py --game TetrisTime-Nes-v0 \
         --folder checkpoints/tetris_v54 --columns 5000,100000,200000 \
-        --states p1_01,p1_02 --manifest progression_out/suite_1p/suite_manifest.json
+        --states p1_01,p1_02 --player 1
 
     # Mario: the same picture, a different game
     python tools/progression/video.py --game SuperMarioBros3-Nes-v0 \
@@ -226,8 +226,53 @@ def drawtext(chain, labels):
     return out.rstrip(";")
 
 
+def rate_plan(lengths, speed, catch_up):
+    """How fast to play, as fewer and fewer games are still going.
+
+    Uncapped, the last survivor holds the film open while everything else sits
+    frozen: with ten panels, nine of them finished, the viewer watches nine
+    still images for as long as the tenth takes. So the rate rises as panels
+    end -- when a tenth of the grid is still playing there is a tenth as much
+    to look at, and it can be played proportionally faster.
+
+    Returns [(source_end, rate)] covering 0..max(lengths), and the total output
+    length. The boundaries are exactly the moments a game ends, so the rate
+    only ever changes when the picture changes."""
+    total = max(lengths)
+    marks = sorted({round(x, 3) for x in lengths} | {round(total, 3)})
+    plan, previous = [], 0.0
+    for mark in marks:
+        if mark <= previous:
+            continue
+        # Still playing THROUGH this segment, not at its edge.
+        alive = sum(1 for x in lengths if round(x, 3) >= mark)
+        boost = min(catch_up, len(lengths) / float(max(1, alive)))
+        plan.append((mark, speed * max(1.0, boost)))
+        previous = mark
+    out = sum((end - start) / rate
+              for (end, rate), start in zip(plan, [0.0] + [p[0] for p in plan[:-1]]))
+    return plan, out
+
+
+def remap(plan):
+    """The rate plan as ONE setpts expression, in output seconds.
+
+    Every panel gets the same expression, which is what keeps them in step --
+    a per-panel speed would drift them apart. Written as a sum of clipped
+    segments rather than nested ifs: out(T) = SUM over segments of the time
+    spent in that segment divided by its rate."""
+    # The commas inside max() and min() MUST be escaped: a comma is what
+    # separates one filter from the next in a filtergraph, so an unescaped one
+    # made ffmpeg look for a filter called 'min(T' and fail.
+    terms, start = [], 0.0
+    for end, rate in plan:
+        terms.append("max(0\\,min(T\\,%.3f)-%.3f)/%.4f" % (end, start, rate))
+        start = end
+    return "setpts=(%s)/TB" % "+".join(terms)
+
+
 def compose(cells, out_path, ncols=None, headers=None, still=False, still_at=8.0,
-            speed=SPEED, chart=None, chart_seconds=12.0):
+            speed=SPEED, chart=None, chart_seconds=12.0, catch_up=1.0):
     """Every panel into one 1920x1080 frame, each frozen once its game ends.
 
     `cells` is a flat list in READING ORDER, each with a path, a size and a
@@ -257,13 +302,18 @@ def compose(cells, out_path, ncols=None, headers=None, still=False, still_at=8.0
     x0 = max(0, (1920 - block_w) // 2)
     y0 = max(top, top + ((1080 - top - 24) - block_h) // 2)
 
+    lengths = [duration(c["path"]) for c in cells]
+    plan, out_seconds = rate_plan(lengths, speed, catch_up)
     inputs, filters, overlays = [], [], "[bg]"
     for i, cell in enumerate(cells):
         inputs += ["-i", cell["path"]]
-        pad = max(0.0, longest - duration(cell["path"]))
+        # Freeze FIRST, in source time, then remap: every panel is then the
+        # same length before the speed is applied, so one shared expression
+        # keeps them all on the same clock.
         filters.append(
-            "[%d:v]setpts=PTS/%s,tpad=stop_mode=clone:stop_duration=%.3f,"
-            "scale=%d:%d:flags=neighbor[p%d]" % (i, speed, pad / speed, pw, ph, i))
+            "[%d:v]tpad=stop_mode=clone:stop_duration=%.3f,%s,"
+            "scale=%d:%d:flags=neighbor[p%d]"
+            % (i, max(0.0, longest - lengths[i]), remap(plan), pw, ph, i))
     for i in range(len(cells)):
         cx = x0 + (i % ncols) * (pw + gut_x)
         cy = y0 + (i // ncols) * (ph + gut_y)
@@ -274,8 +324,8 @@ def compose(cells, out_path, ncols=None, headers=None, still=False, still_at=8.0
     # The background MUST carry a duration. color= is an infinite source, and
     # overlaying onto it made the render run for as long as ffmpeg was left
     # alive -- a 29-minute game at 3x produced 6776 seconds of output and was
-    # mistaken for a slow encode rather than an unbounded one.
-    out_seconds = longest / speed
+    # mistaken for a slow encode rather than an unbounded one. out_seconds comes
+    # from the rate plan, which knows what the varying speed adds up to.
     graph = (";".join(filters) + ";"
              + "color=c=black:s=1920x1080:r=60:d=%.3f[bg];" % out_seconds + overlays)
     graph = graph.rstrip(";")
@@ -294,7 +344,12 @@ def compose(cells, out_path, ncols=None, headers=None, still=False, still_at=8.0
                    y0 + (i // ncols) * (ph + gut_y) - 34,
                    fit_size(cell["label"], pw + gut_x, 22))
                   for i, cell in enumerate(cells)]
-    labels.append(("%gx speed" % speed, 1920 // 2, 1054, 16))
+    # Say the rate honestly: with catch-up it is not one number, and a viewer
+    # watching the last board suddenly move faster deserves to know why.
+    fastest = max(rate for _end, rate in plan)
+    labels.append(("%gx speed" % speed if fastest <= speed * 1.01 else
+                   "%gx speed, up to %.0fx as games end" % (speed, fastest),
+                   1920 // 2, 1054, 16))
     graph += ";" + drawtext("[vout]", labels)
 
     cmd = ["ffmpeg", "-nostdin", "-y", "-v", "error"] + inputs
@@ -515,17 +570,26 @@ def speak_script(script, folder, voice_model, voice_name, take=""):
 def main():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--game", default=None, help="default: the manifest's game")
+    p.add_argument("--game", default=None,
+                   help="the integration id, e.g. TetrisTime-Nes-v0. Required")
     p.add_argument("--folder", default=None,
                    help="where the checkpoints are (default: checkpoints/<game>)")
     p.add_argument("--columns", default="control",
                    help="one per column: 'control', a step count, or a checkpoint filename")
     p.add_argument("--states", default=None,
-                   help="one per row (default: the first two in the manifest)")
-    p.add_argument("--manifest", default=os.path.join(OUT, "suite_manifest.json"),
-                   help="a generated state suite; optional if --states and --game are given")
+                   help="start states, one per row. Required")
+    p.add_argument("--manifest", default=None,
+                   help="OPTIONAL. A pre-registered state suite from the evaluation "
+                        "side (tools/progression/suite.py). It only supplies defaults "
+                        "for --game, --states, --cap and --player, and it is NOT read "
+                        "unless you name it -- inheriting a cap from a file nobody "
+                        "mentioned is how two stopping rules end up in one grid")
     p.add_argument("--cap", type=int, default=0,
-                   help="decisions per game -- placements, or env steps for a policy")
+                   help="decisions per game -- placements for Tetris, env steps for a "
+                        "policy. 0, the default, means PLAY TO GAME OVER: no budget, "
+                        "the game ends when the agent loses. That is the honest "
+                        "ending, and it is unbounded -- an agent that does not lose "
+                        "does not stop")
     p.add_argument("--player", type=int, default=0, help="which player the agent drives")
     p.add_argument("--crop", choices=("half", "full", "well"), default="half",
                    help="half the screen on the agent's side (default), the whole screen, "
@@ -577,6 +641,12 @@ def main():
     p.add_argument("--channel", default=None,
                    help="the channel the narration is written for (default: the "
                         "watermark in studio.json)")
+    p.add_argument("--catch-up", type=float, default=6.0,
+                   help="how much faster the film may run once games start ending "
+                        "(default %(default)s). The rate rises in proportion to how "
+                        "many panels are still playing, so the last survivor does not "
+                        "hold the film open while everything else sits frozen. 1 "
+                        "disables it and plays the whole thing at --speed")
     p.add_argument("--still", action="store_true", help="render one frame and stop")
     p.add_argument("--panels", default=PANELS,
                    help="shared panel cache, reused across runs (default %(default)s)")
@@ -594,15 +664,15 @@ def main():
     if a.respeak or a.renarrate:
         return regenerate(a)
 
-    manifest = json.load(open(a.manifest)) if os.path.exists(a.manifest) else {}
+    manifest = json.load(open(a.manifest)) if a.manifest else {}
     game = a.game or manifest.get("game")
     if not game:
-        sys.exit("no game: pass --game, or a --manifest that names one")
+        sys.exit("no game: pass --game")
     rows = (a.states.split(",") if a.states
             else [s["name"] for s in manifest.get("states", [])[:2]])
     if not rows:
-        sys.exit("no start states: pass --states, or a --manifest that lists them")
-    cap = a.cap or int(manifest.get("placement_cap", 0)) or 500
+        sys.exit("no start states: pass --states")
+    cap = a.cap or int(manifest.get("placement_cap", 0))
     player = a.player or int(manifest.get("player", 0))
     folder = a.folder or os.path.join(ROOT, "checkpoints", game)
     a.wpm = a.wpm or speech.words_per_minute(a.voice_model)
@@ -652,13 +722,16 @@ def main():
         card = build_chart(cells, a.title or game,
                            os.path.join(out_dir, "chart.png"), labels)
 
-    longest = max(duration(c["path"]) for c in cells)
+    lengths = [duration(c["path"]) for c in cells]
+    # At speed 1 this is what the catch-up plan adds up to; every other speed
+    # divides it, which is what makes --speed auto solvable in one step.
+    unit_seconds = rate_plan(lengths, 1.0, a.catch_up)[1]
     chart_seconds = a.chart_seconds if card else 0.0
     spoken = None
     if a.voice:
         channel = a.channel or json.load(
             open(os.path.join(ROOT, "studio.json"))).get("watermark", "")
-        spoken = say(game, card, rows, cap, longest / speed, out_dir, a.writer,
+        spoken = say(game, card, rows, cap, unit_seconds / speed, out_dir, a.writer,
                      a.voice_model, a.voice_name, channel, a.wpm)
     if spoken:
         from tools.progression import narrate
@@ -669,20 +742,22 @@ def main():
             # The GAMEPLAY is cut to the narration, not the other way round.
             # This is what removes the long silences -- spacing sentences
             # further apart to cover the gap is what made them unnatural.
-            speed = max(1.0, longest / max(1.0, body_seconds))
+            speed = max(1.0, unit_seconds / max(1.0, body_seconds))
             print("  [voice] speed set to %.2fx, so the games last %s -- the length "
                   "of the spoken part" % (speed, narrate.clock(body_seconds)))
-        elif body_seconds > longest / speed:
+        elif body_seconds > unit_seconds / speed:
             print("  (the spoken part runs %s but the games last %s at %gx, so the "
                   "end will be cut. --speed auto fits them to each other)"
-                  % (narrate.clock(body_seconds), narrate.clock(longest / speed), speed))
+                  % (narrate.clock(body_seconds),
+                     narrate.clock(unit_seconds / speed), speed))
         if card:
             chart_seconds = max(a.chart_seconds, narrate.card_seconds(card_clips))
 
-    grid_seconds = longest / speed
+    grid_seconds = rate_plan(lengths, speed, a.catch_up)[1]
     silent = os.path.join(out_dir, "grid.mp4")
     compose(cells, silent, ncols=ncols, headers=headers, speed=speed,
-            chart=card and card["path"], chart_seconds=chart_seconds)
+            chart=card and card["path"], chart_seconds=chart_seconds,
+            catch_up=a.catch_up)
     print("wrote %s" % silent)
 
     if spoken:
@@ -691,6 +766,7 @@ def main():
                "cap": cap, "player": player, "speed": speed, "crop": a.crop,
                "pad": a.pad, "no_stats": bool(a.no_stats), "cols": ncols,
                "chart": bool(card), "chart_seconds": chart_seconds,
+               "catch_up": a.catch_up,
                "grid_seconds": grid_seconds, "title": a.title,
                "channel": a.channel, "voice_model": a.voice_model,
                "voice_name": a.voice_name, "writer": a.writer, "wpm": a.wpm,

@@ -488,13 +488,68 @@ def panel_key(name, state, no_stats, pad):
                           "" if pad == CROP_PAD else "_pad%d" % pad)
 
 
-def render_panels(game, columns, rows, cap, player, cache, crop, pad, no_stats):
+def render_one(job):
+    """Play one pair and write its mp4 and its sidecar. The unit of work.
+
+    Called in this process when there is one panel to do, and in a worker
+    subprocess when there are several -- stable-retro allows ONE emulator per
+    process, so panels can only overlap by being separate processes."""
+    panel = capture_panel(job["game"], job["checkpoint"], job["state"], job["cap"],
+                          job["player"], job["mp4"], job["crop"], job["pad"],
+                          not job["no_stats"])
+    json.dump({"cap": job["cap"], "player": job["player"], "crop": job["crop"],
+               "end_reason": panel["end_reason"], "decisions": panel["decisions"],
+               "stats": panel["stats"], "state": job["state"],
+               "checkpoint": os.path.basename(job["checkpoint"])},
+              open(job["side"], "w"), indent=2)
+    return panel
+
+
+def render_parallel(jobs, workers):
+    """Several panels at once, one subprocess each.
+
+    A subprocess per panel rather than a thread: the emulator is one instance
+    per PROCESS, and it also means a crash in one game cannot take the rest of
+    the run with it. Output is captured and reported per panel as it lands,
+    because a dozen emulators writing to one terminal interleaves into noise."""
+    started = time.time()
+    queue, running, done = list(jobs), [], 0
+    print("rendering %d panels, %d at a time" % (len(queue), workers))
+    while queue or running:
+        while queue and len(running) < workers:
+            job = queue.pop(0)
+            proc = subprocess.Popen(
+                [sys.executable, os.path.abspath(__file__), "--render-one",
+                 json.dumps(job)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            running.append((job, proc, time.time()))
+        for item in list(running):
+            job, proc, began = item
+            if proc.poll() is None:
+                continue
+            running.remove(item)
+            done += 1
+            out = (proc.stdout.read() or b"").decode("utf-8", "replace")
+            if proc.returncode != 0:
+                print("  [%d/%d] FAILED %s\n%s"
+                      % (done, len(jobs), job["key"], out[-2000:]))
+                continue
+            side = json.load(open(job["side"])) if os.path.exists(job["side"]) else {}
+            print("  [%d/%d] %-26s %s after %s decisions   %.1f min"
+                  % (done, len(jobs), job["key"], side.get("end_reason", "?"),
+                     side.get("decisions", "?"), (time.time() - began) / 60.0))
+        if running:
+            time.sleep(0.5)
+    print("  all panels done in %.1f min" % ((time.time() - started) / 60.0))
+
+
+def render_panels(game, columns, rows, cap, player, cache, crop, pad, no_stats,
+                  workers=1):
     """Play every (checkpoint, state) pair, reusing anything already rendered.
 
     The cache is SHARED between runs -- a panel is minutes of emulator time --
     and each run copies the ones it used into its own folder afterwards."""
     os.makedirs(cache, exist_ok=True)
-    panels = {}
+    order, todo = [], []
     for path, name, label in columns:
         for state in rows:
             key = panel_key(name, state, no_stats, pad)
@@ -504,6 +559,7 @@ def render_panels(game, columns, rows, cap, player, cache, crop, pad, no_stats):
             cached = json.load(open(side)) if os.path.exists(side) else None
             stale = cached and [k for k, v in settings.items()
                                 if k in cached and cached[k] != v]
+            order.append((key, mp4, side, label, state))
             if os.path.exists(mp4) and not stale:
                 print("cached panel %s" % key)
                 if cached and not all(k in cached for k in settings):
@@ -513,32 +569,41 @@ def render_panels(game, columns, rows, cap, player, cache, crop, pad, no_stats):
                     print("   (predates the settings check -- delete it to be sure "
                           "it was played under cap %d, player %d, crop %s)"
                           % (cap, player, crop))
-                probe = subprocess.run(
-                    ["ffprobe", "-v", "error", "-select_streams", "v", "-show_entries",
-                     "stream=width,height", "-of", "csv=p=0", mp4],
-                    capture_output=True, text=True, check=True).stdout.strip()
-                w, h = (int(v) for v in probe.split(",")[:2])
-                panel = {"path": mp4, "width": w, "height": h}
-                panel.update(cached or {})
-            else:
-                if stale:
-                    # The cap decides when a game is STOPPED and the player
-                    # decides whose board it is: a panel made under a different
-                    # one is a different experiment, and reusing it would put
-                    # two rules in the same grid and the same average.
-                    print("re-rendering %s -- it was made with a different %s"
-                          % (key, ", ".join(stale)))
-                print("rendering panel %s ..." % key)
-                panel = capture_panel(game, path, state, cap, player, mp4,
-                                      crop, pad, not no_stats)
-                json.dump(dict(settings, end_reason=panel["end_reason"],
-                               decisions=panel["decisions"], stats=panel["stats"],
-                               checkpoint=os.path.basename(path), state=state),
-                          open(side, "w"), indent=2)
-                print("   %s after %d decisions" % (panel["end_reason"], panel["decisions"]))
-            panel["label"] = panel["column"] = label
-            panel["state"] = state
-            panels[(label, state)] = panel
+                continue
+            if stale:
+                # The cap decides when a game is STOPPED and the player decides
+                # whose board it is: a panel made under a different one is a
+                # different experiment, and reusing it would put two rules in
+                # the same grid and the same average.
+                print("re-rendering %s -- it was made with a different %s"
+                      % (key, ", ".join(stale)))
+            todo.append({"key": key, "game": game, "checkpoint": path, "state": state,
+                         "cap": cap, "player": player, "mp4": mp4, "side": side,
+                         "crop": crop, "pad": pad, "no_stats": bool(no_stats)})
+
+    if len(todo) > 1 and workers > 1:
+        render_parallel(todo, min(workers, len(todo)))
+    else:
+        for job in todo:
+            print("rendering panel %s ..." % job["key"])
+            panel = render_one(job)
+            print("   %s after %d decisions" % (panel["end_reason"], panel["decisions"]))
+
+    panels = {}
+    for key, mp4, side, label, state in order:
+        if not os.path.exists(mp4):
+            sys.exit("panel %s was not rendered -- see the failure above" % key)
+        probe = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v", "-show_entries",
+             "stream=width,height", "-of", "csv=p=0", mp4],
+            capture_output=True, text=True, check=True).stdout.strip()
+        w, h = (int(v) for v in probe.split(",")[:2])
+        panel = {"path": mp4, "width": w, "height": h}
+        if os.path.exists(side):
+            panel.update(json.load(open(side)))
+        panel["label"] = panel["column"] = label
+        panel["state"] = state
+        panels[(label, state)] = panel
     return panels
 
 
@@ -700,6 +765,14 @@ def main():
                         "hold the film open while everything else sits frozen. 1 "
                         "disables it and plays the whole thing at --speed")
     p.add_argument("--still", action="store_true", help="render one frame and stop")
+    p.add_argument("--jobs", type=int, default=4,
+                   help="how many panels to play AT ONCE (default %(default)s). Each "
+                        "one is its own process because stable-retro allows a single "
+                        "emulator per process; they are independent games, so this is "
+                        "the whole difference between minutes and hours. Raise it "
+                        "towards your core count, lower it if memory is tight")
+    p.add_argument("--render-one", default=None,
+                   help=argparse.SUPPRESS)      # worker mode, not for humans
     p.add_argument("--panels", default=PANELS,
                    help="shared panel cache, reused across runs (default %(default)s)")
     p.add_argument("--out-dir", default=None,
@@ -713,6 +786,11 @@ def main():
                         "The gameplay and the card are reused as they are")
     a = p.parse_args()
 
+    if a.render_one:
+        # A worker: play exactly one panel and exit. The parent reads the
+        # sidecar this writes rather than anything printed here.
+        render_one(json.loads(a.render_one))
+        return
     if a.respeak or a.renarrate:
         return regenerate(a)
 
@@ -758,7 +836,7 @@ def main():
     labels = [label for _p, _n, label in columns]
 
     panels = render_panels(game, columns, rows, cap, player, a.panels,
-                           a.crop, a.pad, a.no_stats)
+                           a.crop, a.pad, a.no_stats, a.jobs)
     cells = [panels[(c, r)] for r in rows for c in labels]
     ncols = a.cols or len(labels)
     if a.cols and len(rows) > 1:

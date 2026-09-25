@@ -631,6 +631,12 @@ def main():
     p.add_argument("--labels", default=None,
                    help="what to CALL each column, comma separated, in the order of "
                         "--columns. The default is the checkpoint's own name")
+    p.add_argument("--row-labels", default=None,
+                   help="what to CALL each row, comma separated, in the order of "
+                        "--states. The default is the state's own name; pass an empty "
+                        "string to print no row labels at all, which is usually what "
+                        "you want -- a start state is an internal name, not something "
+                        "the viewer needs")
     p.add_argument("--no-stats", action="store_true",
                    help="no counters burnt into the panels -- just the games and the "
                         "labels you chose. The card still carries the numbers")
@@ -719,6 +725,15 @@ def main():
     given = a.labels.split(",") if a.labels else []
     if given and len(given) != len(names):
         sys.exit("--labels has %d names for %d columns" % (len(given), len(names)))
+    if a.row_labels is None:
+        row_labels = list(rows)
+    elif a.row_labels.strip():
+        row_labels = [r.strip() for r in a.row_labels.split(",")]
+        if len(row_labels) != len(rows):
+            sys.exit("--row-labels has %d names for %d states"
+                     % (len(row_labels), len(rows)))
+    else:
+        row_labels = []
     # Everything a model or a GPU could refuse is checked BEFORE the emulator
     # runs: a missing voice must never cost an hour of replay.
     if a.voice and not a.still and not speech.available(a.voice_model):
@@ -738,10 +753,13 @@ def main():
     ncols = a.cols or len(labels)
     if a.cols and len(rows) > 1:
         # Once the panels wrap, "this column is 100k" and "this row is state 2"
-        # stop being true, so each panel has to say what it is itself.
+        # stop being true, so each panel has to say what it is itself -- with
+        # the row's name only if there is one to say.
+        by_state = dict(zip(rows, row_labels))
         for cell in cells:
-            cell["label"] = "%s  %s" % (cell["column"], cell["state"])
-    headers = (labels, rows) if not a.cols else None
+            name = by_state.get(cell["state"], "")
+            cell["label"] = ("%s  %s" % (cell["column"], name)) if name else cell["column"]
+    headers = (labels, row_labels) if not a.cols else None
 
     if a.still:
         still_path = os.path.join(OUT, "progression_still.png")

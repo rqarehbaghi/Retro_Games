@@ -226,7 +226,7 @@ def drawtext(chain, labels):
     return out.rstrip(";")
 
 
-def rate_plan(lengths, speed, catch_up):
+def rate_plan(lengths, speed, catch_up, hold=0.0):
     """How fast to play, as fewer and fewer games are still going.
 
     Uncapped, the last survivor holds the film open while everything else sits
@@ -249,6 +249,12 @@ def rate_plan(lengths, speed, catch_up):
         boost = min(catch_up, len(lengths) / float(max(1, alive)))
         plan.append((mark, speed * max(1.0, boost)))
         previous = mark
+    if hold > 0:
+        # A beat at REAL time on the final board before the card replaces it.
+        # Cutting away the instant the last game ends means nobody sees how it
+        # ended, and at 40x the difference between "ended" and "gone" is two
+        # frames. Rate 1.0 means these seconds are exactly these seconds.
+        plan.append((total + hold, 1.0))
     out = sum((end - start) / rate
               for (end, rate), start in zip(plan, [0.0] + [p[0] for p in plan[:-1]]))
     return plan, out
@@ -272,7 +278,7 @@ def remap(plan):
 
 
 def compose(cells, out_path, ncols=None, headers=None, still=False, still_at=8.0,
-            speed=SPEED, chart=None, chart_seconds=12.0, catch_up=1.0):
+            speed=SPEED, chart=None, chart_seconds=12.0, catch_up=1.0, hold=0.0):
     """Every panel into one 1920x1080 frame, each frozen once its game ends.
 
     `cells` is a flat list in READING ORDER, each with a path, a size and a
@@ -303,17 +309,28 @@ def compose(cells, out_path, ncols=None, headers=None, still=False, still_at=8.0
     y0 = max(top, top + ((1080 - top - 24) - block_h) // 2)
 
     lengths = [duration(c["path"]) for c in cells]
-    plan, out_seconds = rate_plan(lengths, speed, catch_up)
+    plan, out_seconds = rate_plan(lengths, speed, catch_up, hold)
+    pad_to = longest + hold
     inputs, filters, overlays = [], [], "[bg]"
     for i, cell in enumerate(cells):
         inputs += ["-i", cell["path"]]
+        # A finished panel is DIMMED, so the eye goes to the games still being
+        # played rather than to a wall of identical frozen boards. It stays on
+        # screen -- how a game ended is the thing worth seeing -- it just stops
+        # competing. Applied in SOURCE time, before the remap, so the moment it
+        # dims is the moment that game actually ended.
+        # The LAST game to finish is never dimmed: its ending is the moment
+        # the whole film has been building to, and dimming it at the instant
+        # it lands is exactly how you miss it.
+        dim = ("eq=brightness=-0.28:saturation=0.45:enable='gte(t\\,%.3f)',"
+               % lengths[i]) if len(cells) > 1 and lengths[i] < longest - 0.01 else ""
         # Freeze FIRST, in source time, then remap: every panel is then the
         # same length before the speed is applied, so one shared expression
         # keeps them all on the same clock.
         filters.append(
-            "[%d:v]tpad=stop_mode=clone:stop_duration=%.3f,%s,"
+            "[%d:v]tpad=stop_mode=clone:stop_duration=%.3f,%s%s,"
             "scale=%d:%d:flags=neighbor[p%d]"
-            % (i, max(0.0, longest - lengths[i]), remap(plan), pw, ph, i))
+            % (i, max(0.0, pad_to - lengths[i]), dim, remap(plan), pw, ph, i))
     for i in range(len(cells)):
         cx = x0 + (i % ncols) * (pw + gut_x)
         cy = y0 + (i // ncols) * (ph + gut_y)
@@ -531,7 +548,7 @@ def copy_gameplays(cells, folder):
 
 
 def say(game, card, states, cap, body_seconds, folder, writer_backend,
-        voice_model, voice_name, channel, wpm, take=""):
+        voice_model, voice_name, channel, wpm, take="", card_budget=22.0):
     """Write the script and render it to audio. Returns (body, card, texts).
 
     Deliberately BEFORE the video is composed: the closing card is then held
@@ -546,7 +563,7 @@ def say(game, card, states, cap, body_seconds, folder, writer_backend,
     print("  [voice] asking %s for a script ..." % writer_backend)
     script = narrate.write(game_title(game), body_seconds, card, states, cap,
                            algorithm=algorithm, channel=channel, wpm=wpm,
-                           backend=writer_backend)
+                           card_seconds_budget=card_budget, backend=writer_backend)
     if not script:
         print("  (no script: the writer returned nothing)")
         return None
@@ -614,9 +631,15 @@ def main():
                         "panels 4 then 2, and --cols 2 makes them 2x3")
     p.add_argument("--chart", action="store_true",
                    help="close the film with a stats card built from these games")
-    p.add_argument("--chart-seconds", type=float, default=12.0,
-                   help="how long the card is held WITHOUT narration; with --voice it is "
-                        "held for exactly as long as the words written about it")
+    p.add_argument("--chart-seconds", type=float, default=22.0,
+                   help="the MAXIMUM the results card is held (default %(default)s). "
+                        "With --voice it is held for as long as the words written about "
+                        "it, up to this -- anything longer is a still image with a "
+                        "voice over it, which is not a video")
+    p.add_argument("--hold", type=float, default=3.0,
+                   help="seconds held on the final board, at real speed, after the last "
+                        "game ends and before the card (default %(default)s). At 40x, "
+                        "the difference between a game ending and the cut is two frames")
     p.add_argument("--title", default=None,
                    help="headline on the stats card (default: the game's name)")
     p.add_argument("--voice", action="store_true",
@@ -725,14 +748,15 @@ def main():
     lengths = [duration(c["path"]) for c in cells]
     # At speed 1 this is what the catch-up plan adds up to; every other speed
     # divides it, which is what makes --speed auto solvable in one step.
-    unit_seconds = rate_plan(lengths, 1.0, a.catch_up)[1]
+    unit_seconds = rate_plan(lengths, 1.0, a.catch_up, a.hold)[1]
     chart_seconds = a.chart_seconds if card else 0.0
     spoken = None
     if a.voice:
         channel = a.channel or json.load(
             open(os.path.join(ROOT, "studio.json"))).get("watermark", "")
         spoken = say(game, card, rows, cap, unit_seconds / speed, out_dir, a.writer,
-                     a.voice_model, a.voice_name, channel, a.wpm)
+                     a.voice_model, a.voice_name, channel, a.wpm,
+                     card_budget=a.chart_seconds)
     if spoken:
         from tools.progression import narrate
         body, card_clips, _texts = spoken
@@ -751,13 +775,17 @@ def main():
                   % (narrate.clock(body_seconds),
                      narrate.clock(unit_seconds / speed), speed))
         if card:
-            chart_seconds = max(a.chart_seconds, narrate.card_seconds(card_clips))
+            # A CEILING, not a target. The card held for 108 seconds on one
+            # run because the writer had 108 seconds of things to say about
+            # it; the viewer was looking at a static image for most of a
+            # two-minute film.
+            chart_seconds = min(a.chart_seconds, narrate.card_seconds(card_clips))
 
-    grid_seconds = rate_plan(lengths, speed, a.catch_up)[1]
+    grid_seconds = rate_plan(lengths, speed, a.catch_up, a.hold)[1]
     silent = os.path.join(out_dir, "grid.mp4")
     compose(cells, silent, ncols=ncols, headers=headers, speed=speed,
             chart=card and card["path"], chart_seconds=chart_seconds,
-            catch_up=a.catch_up)
+            catch_up=a.catch_up, hold=a.hold)
     print("wrote %s" % silent)
 
     if spoken:
@@ -766,7 +794,7 @@ def main():
                "cap": cap, "player": player, "speed": speed, "crop": a.crop,
                "pad": a.pad, "no_stats": bool(a.no_stats), "cols": ncols,
                "chart": bool(card), "chart_seconds": chart_seconds,
-               "catch_up": a.catch_up,
+               "catch_up": a.catch_up, "hold": a.hold,
                "grid_seconds": grid_seconds, "title": a.title,
                "channel": a.channel, "voice_model": a.voice_model,
                "voice_name": a.voice_name, "writer": a.writer, "wpm": a.wpm,
@@ -839,7 +867,8 @@ def regenerate(a):
                            [c[2] for c in run["columns"]]) if run.get("chart") else None
         spoken = say(run["game"], card, run["states"], run["cap"], grid_seconds,
                      out_dir, a.writer, voice_model, voice_name,
-                     a.channel or run.get("channel") or "", a.wpm, take)
+                     a.channel or run.get("channel") or "", a.wpm, take,
+                     card_budget=run.get("chart_seconds") or a.chart_seconds)
         if not spoken:
             sys.exit("the writer returned nothing; the existing film is untouched")
     else:

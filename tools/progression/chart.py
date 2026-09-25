@@ -172,6 +172,17 @@ def build(results, out_path, game="", metric="", decision_word="decisions",
                    font=f_body, fill=WHISKER)
 
     # ------------------------------------------------------------ footer --
+    # WHO WON, said once, on the card. The narration is told to cite this and
+    # nothing else as the answer, so the number on screen and the claim in the
+    # voice cannot drift apart.
+    best = max(names, key=lambda n: stats[n]["mean"]) if names else ""
+    if best:
+        d.rectangle((tx, H - 250, W - 80, H - 170), outline=BAR, width=2)
+        d.text((tx + 22, H - 236), "BEST ON THESE GAMES", font=f_small, fill=DIM)
+        d.text((tx + 22, H - 208), "%s  -  %.0f %s per game"
+               % (best, stats[best]["mean"], (metric or "").split()[0].lower()),
+               font=f_head, fill=BAR)
+
     n_total = sum(stats[n]["n"] for n in names)
     d.line((80, H - 130, W - 80, H - 130), fill=RULE, width=2)
     d.text((80, H - 108),
@@ -186,4 +197,4 @@ def build(results, out_path, game="", metric="", decision_word="decisions",
            "measurement of how good the agent is.", font=f_small, fill=DIM)
 
     img.save(out_path)
-    return {"path": out_path, "stats": stats, "order": names}
+    return {"path": out_path, "stats": stats, "order": names, "best": best}

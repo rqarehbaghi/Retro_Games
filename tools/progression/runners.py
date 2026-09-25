@@ -77,6 +77,20 @@ def spec_for(game, player=0, state=None):
     return TrainingSpec(game, overrides)
 
 
+def counter_modulus(gv, *names):
+    """When does this counter roll over, according to its OWN declaration?
+
+    A `tiles` variable is read from N digit tiles on the HUD, so it counts to
+    10^N - 1 and then starts again -- the width is already recorded in
+    games.json with its evidence, so the modulus is derived from it rather
+    than guessed. 0 means no known modulus and no correction is applied."""
+    for name in names:
+        s = gv.spec.get(name) or {}
+        if s.get("source") == "tiles" and s.get("length"):
+            return 10 ** int(s["length"])
+    return 0
+
+
 def _stats_from_info(info, names, player, limit=2):
     """The game's own declared report_stats, as (LABEL, value) pairs.
 
@@ -126,7 +140,9 @@ def run_afterstate(spec, checkpoint, state, cap, player, on_frame):
     on_frame(np.asarray(core.env.unwrapped.render()), box)
     core.env = FrameTap(core.env, lambda frame: on_frame(frame, box))
 
-    lines0 = int(info.get(lines_var, 0) or 0)
+    lines0 = raw_previous = int(info.get(lines_var, 0) or 0)
+    modulus = counter_modulus(gv, lines_var, "lines")
+    wraps = 0
     decisions, pending, end = 0, False, "placement_cap"
     while cap <= 0 or decisions < cap:
         action = None
@@ -137,7 +153,17 @@ def run_afterstate(spec, checkpoint, state, cap, player, on_frame):
                 action = agent.select_action(cands, epsilon=0.0)[0]
                 pending, decisions = True, decisions + 1
         obs, _r, term, trunc, info = env.step(action)
-        box["stats"] = [("LINES", int(info.get(lines_var, 0) or 0) - lines0),
+        # The counter is a fixed number of DIGITS on the HUD, so it rolls over
+        # -- and a counter that only ever counts up cannot decrease for any
+        # other reason. A 100k checkpoint that cleared 1057 lines was recorded
+        # as 57, which put it below checkpoints it had beaten several times
+        # over. Half the modulus is the threshold so an ordinary clear of four
+        # lines is never mistaken for a roll.
+        raw = int(info.get(lines_var, 0) or 0)
+        if modulus and raw < raw_previous - modulus // 2:
+            wraps += 1
+        raw_previous = raw
+        box["stats"] = [("LINES", wraps * modulus + raw - lines0),
                         ("PIECES", decisions)]
         if info.get("afterstate_ready", True):
             pending = False

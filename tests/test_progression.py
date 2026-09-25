@@ -6,7 +6,7 @@ import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from tools.progression import chart, ids, narrate, report, select, speech, video  # noqa: E402
+from tools.progression import chart, ids, narrate, report, runners, select, speech, video  # noqa: E402
 
 BASE = dict(checkpoint_sha="a", state_sha="b", cfg_hash="c", commit="d", rom="e",
             player=2, players=2, deterministic=True, placement_cap=500)
@@ -301,3 +301,40 @@ class CatchUpTests(unittest.TestCase):
         self.assertIn("\,", expr)
         self.assertNotIn("min(T,", expr)
         self.assertTrue(expr.startswith("setpts=("))
+
+
+class HoldTests(unittest.TestCase):
+    def test_hold_adds_exactly_its_seconds_at_real_speed(self):
+        plan_no, out_no = video.rate_plan([100.0, 200.0], 8.0, 4.0, hold=0.0)
+        plan_yes, out_yes = video.rate_plan([100.0, 200.0], 8.0, 4.0, hold=3.0)
+        self.assertAlmostEqual(out_yes - out_no, 3.0)
+        # Real time, so three seconds on screen is three seconds of game.
+        self.assertEqual(plan_yes[-1][1], 1.0)
+        self.assertEqual(len(plan_yes), len(plan_no) + 1)
+
+    def test_no_hold_adds_no_segment(self):
+        plan, _out = video.rate_plan([100.0, 200.0], 8.0, 4.0, hold=0.0)
+        self.assertTrue(all(rate >= 8.0 for _end, rate in plan))
+
+
+class CounterWrapTests(unittest.TestCase):
+    """A HUD counter has a fixed number of digits and rolls over. A 100k
+    checkpoint that cleared 1057 lines was recorded as 57, which ranked it
+    below checkpoints it had beaten several times over."""
+
+    class FakeVars:
+        def __init__(self, spec):
+            self.spec = spec
+
+    def test_modulus_comes_from_the_declared_digit_width(self):
+        gv = self.FakeVars({"lines": {"source": "tiles", "length": 3}})
+        self.assertEqual(runners.counter_modulus(gv, "lines_p1", "lines"), 1000)
+
+    def test_unknown_encoding_means_no_correction(self):
+        gv = self.FakeVars({"lines": {"source": "ram", "address": "0x1234"}})
+        self.assertEqual(runners.counter_modulus(gv, "lines"), 0)
+        self.assertEqual(runners.counter_modulus(self.FakeVars({}), "nope"), 0)
+
+    def test_a_four_digit_counter_wraps_at_ten_thousand(self):
+        gv = self.FakeVars({"score": {"source": "tiles", "length": 4}})
+        self.assertEqual(runners.counter_modulus(gv, "score"), 10000)

@@ -40,22 +40,41 @@ CARD_LEAD = 0.4         # beat after the card appears before the voice returns
 WPM = 140               # measured, not assumed: see script()
 
 VOICE = """\
-You are writing the narration for a short film about a neural network learning
-to play a classic console game. It is published on a channel called %s, whose
-whole premise is that player two is a machine: the machine plays, the results
-get posted, and the running question is whether it is yet good enough to be
-worth a human sitting down opposite it.
+You are writing the narration for a short film on %s -- a channel whose whole
+premise is that player two is a machine. The human trains it, posts the
+results, and the running question is whether it is finally good enough to sit
+down opposite. This film is the try-out: the checkpoint that wins here becomes
+the opponent in a best-of-three against the human who trained it.
 
 Your voice: someone who knows both halves -- the machine learning and the
-console -- and finds them equally serious and equally absurd. Dry, exact,
-unimpressed by jargon. You explain a thing once, in plain words, and move on.
-You are funny the way a good documentary narrator is funny: by saying the true
-thing with perfect timing, never by announcing that something is remarkable.
+console -- and finds them equally serious and equally ridiculous. Dry, exact,
+completely unimpressed. You explain a thing once, in plain words, and move on.
 
-Write for the EAR. Short sentences next to long ones. No sentence that needs
-re-reading. No lists read aloud, no "firstly", no rhetorical question you then
-answer yourself, no "welcome back", no hype, no emoji. The audience are adults
-who played this game and can follow a real explanation."""
+BE ACTUALLY FUNNY. Not "playful", not "quirky". Funny is a true observation
+placed where it lands hardest, and it is usually the specific detail, not the
+joke-shaped sentence. Copy this register:
+
+  "It has no idea it is playing Tetris. It has no idea it is playing
+   anything. It is a function that looks at a wall of blocks and says
+   'seven'."
+
+  "Nobody told it holes are bad. It found that out the way the rest of us
+   did, by dying."
+
+  "Its reward for a thousand perfect decisions is one more block."
+
+  "Ten thousand steps in, it plays like someone who has had the rules
+   described to them over the phone."
+
+Rules for the jokes: never announce one, never explain one, never end a
+paragraph on an explanation when it could end on the observation. One dud
+lands worse than none, so if a line is not actually funny, make it plain and
+true instead. No puns on the game's name, no "little did it know", no
+addressing the audience, no rhetorical question you then answer.
+
+Write for the EAR. Vary the sentence length hard -- three words, then thirty.
+No sentence anyone has to re-read. No lists read aloud, no "firstly", no
+"welcome back", no hype, no emoji, no stage directions."""
 
 SCHEMA = {
     "type": "object",
@@ -111,7 +130,7 @@ def facts(game, card, states, cap):
 
 
 def write(game, body_seconds, card, states, cap, algorithm="", channel="",
-          wpm=WPM, **kw):
+          wpm=WPM, card_seconds_budget=22.0, **kw):
     """Ask a model for the script. Returns {"body": [...], "card": [...],
     "closing": str} or None.
 
@@ -135,39 +154,47 @@ def write(game, body_seconds, card, states, cap, algorithm="", channel="",
         "Training nudges it towards the presses that earned more reward, while "
         "stopping it changing too much in any one step.")}.get(algorithm, "")
 
+    games = (sum(card["stats"][n]["n"] for n in card["order"]) if card
+             else len(states))
+    winner = (card or {}).get("best") or ""
+    card_words = max(40, int(card_seconds_budget / 60.0 * wpm))
     prompt = (
         (VOICE % (channel or "this channel")) + "\n\n"
         "THE FILM\n"
         "Several games play side by side, sped up, each labelled with which "
-        "training checkpoint is playing it. They finish at different times and "
-        "freeze. Then a card of measured results appears and stays until the "
-        "end.\n\n"
-        "WHY IT EXISTS\n"
-        "This is an experiment, not a highlight reel. The same network was "
-        "saved at different points in its training and every copy was made to "
-        "play the same positions, to see whether it is actually getting better "
-        "-- and how close it is to being worth challenging a human.\n\n"
+        "training checkpoint is playing it. As each one loses, its panel dims "
+        "and the rest play on faster. When the last one loses, the film holds "
+        "on it, then a card of measured results appears and the film ends.\n\n"
+        "WHY IT EXISTS -- SAY THIS, IT IS THE POINT\n"
+        "This is a try-out, not a highlight reel. The same network was saved at "
+        "different points in its training, and every copy was made to play the "
+        "same starting positions, to find out which one is actually the best. "
+        "THE WINNER BECOMES THE OPPONENT: the human who trained it will play "
+        "that checkpoint three games, head to head, and we find out who wins. "
+        "The interesting part is that the newest checkpoint is not "
+        "automatically the best one -- more training is not the same as better "
+        "-- so this is how the opponent gets chosen rather than assumed.\n\n"
         "WHAT IS ACTUALLY HAPPENING\n%s\n%s\n\n"
-        "WRITE TWO PARTS.\n\n"
+        "WRITE THREE PARTS.\n\n"
         "'body' -- spoken over the GAMES. About %d words, in %d to %d "
-        "paragraphs of two to four sentences. Each paragraph is read as one "
-        "continuous take, and they run one after another, so they must follow "
-        "on. This part is the game's own story and the machine's: when the game "
-        "was made and by whom, what it did that was new, what it is remembered "
-        "for, how the people who are frighteningly good at it play; then what "
-        "this machine is, how it learned, and what it does not know. Jokes "
-        "belong here. NO NUMBERS FROM THE RESULTS IN THIS PART -- they are not "
-        "on screen yet.\n\n"
-        "'card' -- spoken ONLY over the results card, which is held for exactly "
-        "as long as this takes to say, so write what is worth saying and no "
-        "more: two to four paragraphs. This is where the measured numbers go. "
-        "Say what changed between checkpoints, name the units, and be honest "
-        "about what %d games cannot show. If a later checkpoint is worse than "
-        "an earlier one, say so plainly.\n\n"
-        "'closing' -- the last thing said, over the card. One or two sentences "
-        "that land the premise of %s: the machine is player two, this is how it "
-        "is coming along, and whether it is ready to be sat down opposite a "
-        "human. A real ending, not 'like and subscribe'.\n\n"
+        "paragraphs of two to four sentences, read one after another as one "
+        "continuous take, so they must follow on. Cover, in your own order: "
+        "what this is and what is being decided; the game's own history -- when "
+        "it was made, by whom, what it is remembered for, how the people who "
+        "are frighteningly good at it play; what this machine is and how it "
+        "learned; and what it has no idea about. This is where the jokes live. "
+        "NO RESULT NUMBERS IN THIS PART -- the card is not on screen yet.\n\n"
+        "'card' -- spoken over the results card. HARD LIMIT %d WORDS, one or "
+        "two short paragraphs, because the card is held only as long as this "
+        "takes and a still image with a long voice over it is not a video. "
+        "Say who won and by what number, name the units, say in one clause "
+        "what %d games cannot prove, and if a later checkpoint lost to an "
+        "earlier one say so plainly -- that is the most interesting thing on "
+        "the card.%s\n\n"
+        "'closing' -- the last line, over the card. One or two sentences. It "
+        "must land the challenge: that checkpoint is the opponent, three "
+        "games, against the human who trained it. Make it a line worth ending "
+        "on, not 'like and subscribe'.\n\n"
         "RULES\n"
         "- The ONLY numbers you may state about the training or the results are "
         "the ones listed above, with the units they are given with. Numbers "
@@ -175,17 +202,19 @@ def write(game, body_seconds, card, states, cap, algorithm="", channel="",
         "are confident is TRUE: a wrong date about a game this audience grew up "
         "with is worse than no date.\n"
         "- Do not describe what is on screen. Do not say 'as you can see'.\n"
-        "- Do not claim the agent is good or bad in general. It played %d games.\n"
+        "- Do not claim the agent is good or bad in general. It played %d "
+        "games.\n"
         "- Plain spoken prose, read aloud EXACTLY as written. No stage "
         "directions, no speaker labels, no field names, no markdown, no "
         "headings, no emoji, no timestamps.\n"
         "Return JSON: {\"body\": [\"...\", \"...\"], \"card\": [\"...\"], "
         "\"closing\": \"...\"}"
         % (facts(game, card, states, cap), how, words,
-           max(3, words // 90), max(4, words // 60),
-           sum(card["stats"][n]["n"] for n in card["order"]) if card else len(states),
-           channel or "the channel",
-           sum(card["stats"][n]["n"] for n in card["order"]) if card else len(states)))
+           max(3, words // 90), max(4, words // 60), card_words, games,
+           (" The winner on these games is '%s' -- that is the checkpoint that "
+            "gets played against, and it is what the card says, so do not "
+            "nominate a different one." % winner) if winner else "",
+           games))
 
     data = writer.write(prompt, SCHEMA, **kw)
     if not data:

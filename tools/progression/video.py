@@ -218,10 +218,13 @@ def drawtext(chain, labels):
     out, src = "", chain
     for k, (body, cx, cy, size) in enumerate(labels):
         dst = "[t%d]" % (k + 1) if k < len(labels) - 1 else "[final]"
+        # A string cx is an ffmpeg x EXPRESSION, used as-is -- that is how the
+        # handle sits against the right edge without knowing how wide it is.
+        x = cx if isinstance(cx, str) else "%d-text_w/2" % cx
         out += ("%sdrawtext=%stext='%s':fontcolor=black:fontsize=%d:box=1:boxcolor=white:"
-                "boxborderw=8:x=%d-text_w/2:y=%d%s;"
+                "boxborderw=8:x=%s:y=%d%s;"
                 % (src, ("fontfile=%s:" % path) if path else "",
-                   body.replace(":", "\\:").replace("'", ""), size, cx, cy, dst))
+                   body.replace(":", "\\:").replace("'", ""), size, x, cy, dst))
         src = dst
     return out.rstrip(";")
 
@@ -278,7 +281,8 @@ def remap(plan):
 
 
 def compose(cells, out_path, ncols=None, headers=None, still=False, still_at=8.0,
-            speed=SPEED, chart=None, chart_seconds=12.0, catch_up=1.0, hold=0.0):
+            speed=SPEED, chart=None, chart_seconds=12.0, catch_up=1.0, hold=0.0,
+            handle=""):
     """Every panel into one 1920x1080 frame, each frozen once its game ends.
 
     `cells` is a flat list in READING ORDER, each with a path, a size and a
@@ -367,6 +371,11 @@ def compose(cells, out_path, ncols=None, headers=None, still=False, still_at=8.0
     labels.append(("%gx speed" % speed if fastest <= speed * 1.01 else
                    "%gx speed, up to %.0fx as games end" % (speed, fastest),
                    1920 // 2, 1054, 16))
+    if handle:
+        # The channel, bottom right, on the same white plate as everything
+        # else. Right-aligned by expression so a longer handle does not run
+        # off the frame.
+        labels.append((handle, "w-text_w-26", 1046, 18))
     graph += ";" + drawtext("[vout]", labels)
 
     cmd = ["ffmpeg", "-nostdin", "-y", "-v", "error"] + inputs
@@ -414,7 +423,7 @@ def game_title(game):
     return game.split("-")[0] if "-" in game else game
 
 
-def build_chart(cells, game, path, order):
+def build_chart(cells, game, path, order, handle=""):
     """The closing card, built from the panels' own sidecar numbers.
 
     The headline is whatever the game reports FIRST -- lines for Tetris, score
@@ -437,7 +446,7 @@ def build_chart(cells, game, path, order):
         return None
     card = chart_card.build(rows, path, game=game_title(game),
                             metric="%s per game" % metric.title(),
-                            decision_word=work, order=order)
+                            decision_word=work, order=order, handle=handle)
     # What the numbers ARE, for anyone downstream that has to say them out
     # loud. Without this the narration called a lines-cleared mean "the
     # average placement count", which is a different number on the same card.
@@ -661,6 +670,10 @@ def main():
                         "measured rate of the voice you picked (kokoro 170, qwen 130), "
                         "because a wrong figure here is silence at the end or lines cut "
                         "off it")
+    p.add_argument("--handle", default=None,
+                   help="the channel handle burnt into the bottom right of the film "
+                        "and onto the results card (default: the watermark in "
+                        "studio.json). Pass an empty string to leave it off")
     p.add_argument("--channel", default=None,
                    help="the channel the narration is written for (default: the "
                         "watermark in studio.json)")
@@ -736,6 +749,9 @@ def main():
         print("wrote %s" % still_path)
         return
 
+    watermark = json.load(
+        open(os.path.join(ROOT, "studio.json"))).get("watermark", "")
+    handle = watermark if a.handle is None else a.handle
     out_dir = a.out_dir or run_folder(os.path.join(OUT, "runs"), game)
     os.makedirs(os.path.join(out_dir, "gameplays"), exist_ok=True)
     copy_gameplays(cells, out_dir)
@@ -743,7 +759,7 @@ def main():
     card = None
     if a.chart:
         card = build_chart(cells, a.title or game,
-                           os.path.join(out_dir, "chart.png"), labels)
+                           os.path.join(out_dir, "chart.png"), labels, handle)
 
     lengths = [duration(c["path"]) for c in cells]
     # At speed 1 this is what the catch-up plan adds up to; every other speed
@@ -752,8 +768,7 @@ def main():
     chart_seconds = a.chart_seconds if card else 0.0
     spoken = None
     if a.voice:
-        channel = a.channel or json.load(
-            open(os.path.join(ROOT, "studio.json"))).get("watermark", "")
+        channel = a.channel or handle or watermark
         spoken = say(game, card, rows, cap, unit_seconds / speed, out_dir, a.writer,
                      a.voice_model, a.voice_name, channel, a.wpm,
                      card_budget=a.chart_seconds)
@@ -785,7 +800,7 @@ def main():
     silent = os.path.join(out_dir, "grid.mp4")
     compose(cells, silent, ncols=ncols, headers=headers, speed=speed,
             chart=card and card["path"], chart_seconds=chart_seconds,
-            catch_up=a.catch_up, hold=a.hold)
+            catch_up=a.catch_up, hold=a.hold, handle=handle)
     print("wrote %s" % silent)
 
     if spoken:
@@ -794,7 +809,7 @@ def main():
                "cap": cap, "player": player, "speed": speed, "crop": a.crop,
                "pad": a.pad, "no_stats": bool(a.no_stats), "cols": ncols,
                "chart": bool(card), "chart_seconds": chart_seconds,
-               "catch_up": a.catch_up, "hold": a.hold,
+               "catch_up": a.catch_up, "hold": a.hold, "handle": handle,
                "grid_seconds": grid_seconds, "title": a.title,
                "channel": a.channel, "voice_model": a.voice_model,
                "voice_name": a.voice_name, "writer": a.writer, "wpm": a.wpm,

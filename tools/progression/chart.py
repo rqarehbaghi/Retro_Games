@@ -80,7 +80,7 @@ def summarise(rows):
 
 
 def build(results, out_path, game="", metric="", decision_word="decisions",
-          subtitle="", order=None):
+          subtitle="", order=None, handle=""):
     """`results` is one dict per panel: column, value, decisions, end_reason."""
     groups = {}
     for row in results:
@@ -96,6 +96,9 @@ def build(results, out_path, game="", metric="", decision_word="decisions",
     d.text((80, 64), (game or "Training progression").upper(), font=f_title, fill=INK)
     d.text((80, 124), subtitle or "Every figure measured from the games in this video",
            font=f_body, fill=DIM)
+    if handle:
+        d.text((W - 80 - d.textlength(handle, font=f_body), 74), handle,
+               font=f_body, fill=BAR)
     d.line((80, 176, W - 80, 176), fill=RULE, width=2)
 
     # ------------------------------------------------------------- chart --

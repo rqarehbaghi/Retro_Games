@@ -45,6 +45,10 @@ OUT = os.path.join(ROOT, "progression_out")
 PANELS = os.path.join(OUT, "panels")
 SPEED = 3.0
 HEADINGS = {"control": "Untrained control"}
+METRICS = 2                          # how the panel's numbers were measured;
+                                     # 2 counts HUD counter wraps. A panel
+                                     # measured by an older rule is re-rendered
+                                     # rather than compared against a newer one
 PANEL_SCALE = 2                      # nearest-neighbour upscale of the crop
 MARGIN = 6                           # game pixels kept around a declared grid
 CROP_PAD = 64                        # pixels of readouts kept beside it
@@ -439,10 +443,11 @@ def build_chart(cells, game, path, order, handle=""):
     The headline is whatever the game reports FIRST -- lines for Tetris, score
     for Mario -- and the second figure is the work it took, which is placements
     for one algorithm and env steps for the other. Neither is named here."""
-    rows, metric, work = [], "", "decisions"
+    rows, metric, work, missing = [], "", "decisions", []
     for cell in cells:
         stats = cell.get("stats") or []
         if not stats:
+            missing.append("%s / %s" % (cell["column"], cell["state"]))
             continue
         metric = metric or stats[0][0]
         if len(stats) > 1:
@@ -450,6 +455,11 @@ def build_chart(cells, game, path, order, handle=""):
         rows.append({"column": cell["column"], "value": stats[0][1],
                      "decisions": cell.get("decisions") or 0,
                      "end_reason": cell.get("end_reason")})
+    if missing:
+        # Loudly. A card that silently averages fewer games than the film
+        # showed is worse than no card.
+        print("  WARNING: %d of %d games have no numbers and are NOT on the "
+              "card: %s" % (len(missing), len(cells), ", ".join(missing)))
     if not rows:
         print("  (no panel numbers on disk: these panels were cached before the "
               "sidecars existed. Delete them to rebuild, or drop --chart)")
@@ -498,6 +508,7 @@ def render_one(job):
                           job["player"], job["mp4"], job["crop"], job["pad"],
                           not job["no_stats"])
     json.dump({"cap": job["cap"], "player": job["player"], "crop": job["crop"],
+               "metrics": METRICS,
                "end_reason": panel["end_reason"], "decisions": panel["decisions"],
                "stats": panel["stats"], "state": job["state"],
                "checkpoint": os.path.basename(job["checkpoint"])},
@@ -555,12 +566,25 @@ def render_panels(game, columns, rows, cap, player, cache, crop, pad, no_stats,
             key = panel_key(name, state, no_stats, pad)
             mp4 = os.path.join(cache, key + ".mp4")
             side = os.path.join(cache, key + ".json")
-            settings = {"cap": cap, "player": player, "crop": crop}
+            settings = {"cap": cap, "player": player, "crop": crop,
+                        "metrics": METRICS}
             cached = json.load(open(side)) if os.path.exists(side) else None
             stale = cached and [k for k, v in settings.items()
                                 if k in cached and cached[k] != v]
+            if cached and cached.get("metrics", 1) < METRICS:
+                # Panels measured by an older rule. Version 2 counts the wrap
+                # of a fixed-width HUD counter: without it a game that cleared
+                # 1057 lines was recorded as 57 and lost a tryout it had won.
+                stale = (stale or []) + ["measurement rule"]
             order.append((key, mp4, side, label, state))
-            if os.path.exists(mp4) and not stale:
+            if os.path.exists(mp4) and not os.path.exists(side):
+                # An mp4 with no numbers beside it is not a usable panel: it
+                # contributes a game to the film and nothing to the card, which
+                # is how a five-column chart quietly got built from twelve
+                # games instead of fifteen. It is also what a killed render
+                # leaves behind, so the video itself may be truncated.
+                print("re-rendering %s -- it has no numbers beside it" % key)
+            elif os.path.exists(mp4) and not stale:
                 print("cached panel %s" % key)
                 if cached and not all(k in cached for k in settings):
                     # Panels rendered before these were recorded. The numbers

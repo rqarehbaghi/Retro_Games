@@ -197,6 +197,15 @@ def duration(path):
     return float(out.stdout.strip())
 
 
+def rate_text(x):
+    """A speed as a viewer would write it: 1.8x, 8x, 48x.
+
+    --speed auto solves for whatever makes the games last as long as the
+    narration, which is a number like 1.76534, and printing that on screen
+    says "a machine wrote this caption" rather than telling anyone anything."""
+    return ("%.1f" % x).rstrip("0").rstrip(".")
+
+
 def fit_size(text, width, base, minimum=11):
     """Shrink a label until it fits the panel it names.
 
@@ -368,8 +377,9 @@ def compose(cells, out_path, ncols=None, headers=None, still=False, still_at=8.0
     # Say the rate honestly: with catch-up it is not one number, and a viewer
     # watching the last board suddenly move faster deserves to know why.
     fastest = max(rate for _end, rate in plan)
-    labels.append(("%gx speed" % speed if fastest <= speed * 1.01 else
-                   "%gx speed, up to %.0fx as games end" % (speed, fastest),
+    labels.append(("%sx speed" % rate_text(speed) if fastest <= speed * 1.01 else
+                   "%sx speed, up to %sx as games end"
+                   % (rate_text(speed), rate_text(fastest)),
                    1920 // 2, 1054, 16))
     if handle:
         # The channel, bottom right, on the same white plate as everything
@@ -761,15 +771,20 @@ def main():
             cell["label"] = ("%s  %s" % (cell["column"], name)) if name else cell["column"]
     headers = (labels, row_labels) if not a.cols else None
 
-    if a.still:
-        still_path = os.path.join(OUT, "progression_still.png")
-        compose(cells, still_path, ncols=ncols, headers=headers, still=True, speed=speed)
-        print("wrote %s" % still_path)
-        return
-
     watermark = json.load(
         open(os.path.join(ROOT, "studio.json"))).get("watermark", "")
     handle = watermark if a.handle is None else a.handle
+
+    if a.still:
+        still_path = os.path.join(OUT, "progression_still.png")
+        # The still exists to preview the film, so it is composed with the
+        # SAME plan -- otherwise its footer quotes a speed the film will not
+        # actually run at, and its panels are not dimmed where the film's are.
+        compose(cells, still_path, ncols=ncols, headers=headers, still=True,
+                speed=speed, catch_up=a.catch_up, hold=a.hold, handle=handle)
+        print("wrote %s" % still_path)
+        return
+
     out_dir = a.out_dir or run_folder(os.path.join(OUT, "runs"), game)
     os.makedirs(os.path.join(out_dir, "gameplays"), exist_ok=True)
     copy_gameplays(cells, out_dir)

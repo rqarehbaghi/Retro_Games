@@ -201,6 +201,10 @@ def duration(path):
     return float(out.stdout.strip())
 
 
+def _clock(t):
+    return "%d:%05.2f" % (int(t // 60), t % 60)
+
+
 def rate_text(x):
     """A speed as a viewer would write it: 1.8x, 8x, 48x.
 
@@ -750,6 +754,11 @@ def main():
                         "With --voice it is held for as long as the words written about "
                         "it, up to this -- anything longer is a still image with a "
                         "voice over it, which is not a video")
+    p.add_argument("--max-seconds", type=float, default=0.0,
+                   help="cap the FINISHED file at this many seconds. The card's share "
+                        "comes off first and the gameplay speed is solved so the whole "
+                        "thing lands on it; the script is written to that length too. "
+                        "Off by default, and it overrides --speed when given")
     p.add_argument("--hold", type=float, default=3.0,
                    help="seconds held on the final board, at real speed, after the last "
                         "game ends and before the card (default %(default)s). At 40x, "
@@ -897,14 +906,22 @@ def main():
                            os.path.join(out_dir, "chart.png"), labels, handle)
 
     lengths = [duration(c["path"]) for c in cells]
-    # At speed 1 this is what the catch-up plan adds up to; every other speed
-    # divides it, which is what makes --speed auto solvable in one step.
-    unit_seconds = rate_plan(lengths, 1.0, a.catch_up, a.hold)[1]
+    # At speed 1 this is what the catch-up plan adds up to for the GAMES, and
+    # every other speed divides it -- which is what makes a target length
+    # solvable in one step. The hold is deliberately excluded: it plays at real
+    # time and does not scale, so dividing it by the speed made a film asked to
+    # be 60 seconds come out 62.4.
+    unit_seconds = rate_plan(lengths, 1.0, a.catch_up, 0.0)[1]
     chart_seconds = a.chart_seconds if card else 0.0
     spoken = None
     if a.voice:
         channel = a.channel or handle or watermark
-        spoken = say(game, card, rows, cap, unit_seconds / speed, out_dir, a.writer,
+        # What the script is written TO: the length the gameplay will run.
+        # With --max-seconds that is decided in advance, so the words are
+        # sized for it rather than for a speed that is about to change.
+        body_target = (max(2.0, a.max_seconds - a.chart_seconds) if a.max_seconds
+                       else unit_seconds / speed + a.hold)
+        spoken = say(game, card, rows, cap, body_target, out_dir, a.writer,
                      a.voice_model, a.voice_name, channel, a.wpm,
                      card_budget=a.chart_seconds)
     if spoken:
@@ -912,18 +929,18 @@ def main():
         body, card_clips, _texts = spoken
         body_seconds = (sum(s for _p, s in body)
                         + narrate.BLOCK_GAP * max(0, len(body) - 1) + 0.6)
-        if auto_speed:
+        if auto_speed and not a.max_seconds:
             # The GAMEPLAY is cut to the narration, not the other way round.
             # This is what removes the long silences -- spacing sentences
             # further apart to cover the gap is what made them unnatural.
-            speed = max(1.0, unit_seconds / max(1.0, body_seconds))
+            speed = max(1.0, unit_seconds / max(1.0, body_seconds - a.hold))
             print("  [voice] speed set to %.2fx, so the games last %s -- the length "
                   "of the spoken part" % (speed, narrate.clock(body_seconds)))
-        elif body_seconds > unit_seconds / speed:
+        elif not a.max_seconds and body_seconds > unit_seconds / speed + a.hold:
             print("  (the spoken part runs %s but the games last %s at %gx, so the "
                   "end will be cut. --speed auto fits them to each other)"
                   % (narrate.clock(body_seconds),
-                     narrate.clock(unit_seconds / speed), speed))
+                     narrate.clock(unit_seconds / speed + a.hold), speed))
         if card:
             # A CEILING on how much is SAID over the card, not a guillotine
             # across the end of it. One run held the card 108 seconds because
@@ -939,6 +956,22 @@ def main():
             texts = list(_texts[:body_n]) + [_texts[body_n + i] for i in index]
             card_clips = kept
             spoken = (body, card_clips, texts)
+
+    if a.max_seconds:
+        # The FINISHED FILE is what is being limited, so the card's share comes
+        # off first and the games are fitted into what is left. Solved after
+        # the card's real length is known, which is why this is not simply
+        # another --speed.
+        target = max(2.0, a.max_seconds - chart_seconds - a.hold)
+        speed = max(1.0, unit_seconds / target)
+        if unit_seconds / speed < target - 1.0:
+            print("  (the games only fill %s of the %s asked for -- they are not "
+                  "long enough, and slower than real time is not on offer)"
+                  % (_clock(unit_seconds / speed + a.hold), _clock(a.max_seconds)))
+        else:
+            print("  length capped at %s: %sx speed for %s of games, plus %s of card"
+                  % (_clock(a.max_seconds), rate_text(speed),
+                     _clock(unit_seconds / speed + a.hold), _clock(chart_seconds)))
 
     grid_seconds = rate_plan(lengths, speed, a.catch_up, a.hold)[1]
     silent = os.path.join(out_dir, "grid.mp4")

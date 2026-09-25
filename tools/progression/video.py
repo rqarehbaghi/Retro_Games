@@ -558,7 +558,7 @@ def render_parallel(jobs, workers):
 
 
 def render_panels(game, columns, rows, cap, player, cache, crop, pad, no_stats,
-                  workers=1):
+                  workers=1, fresh=False):
     """Play every (checkpoint, state) pair, reusing anything already rendered.
 
     The cache is SHARED between runs -- a panel is minutes of emulator time --
@@ -581,7 +581,13 @@ def render_panels(game, columns, rows, cap, player, cache, crop, pad, no_stats,
                 # 1057 lines was recorded as 57 and lost a tryout it had won.
                 stale = (stale or []) + ["measurement rule"]
             order.append((key, mp4, side, label, state))
-            if os.path.exists(mp4) and not os.path.exists(side):
+            if fresh:
+                # --fresh: play everything again whatever is on disk. The
+                # cache is an optimisation, and there are times -- a changed
+                # checkpoint file, a suspicion about a number, plain doubt --
+                # when an optimisation is the last thing you want.
+                print("re-rendering %s -- --fresh" % key)
+            elif os.path.exists(mp4) and not os.path.exists(side):
                 # An mp4 with no numbers beside it is not a usable panel: it
                 # contributes a game to the film and nothing to the card, which
                 # is how a five-column chart quietly got built from twelve
@@ -806,6 +812,11 @@ def main():
                         "towards your core count, lower it if memory is tight")
     p.add_argument("--render-one", default=None,
                    help=argparse.SUPPRESS)      # worker mode, not for humans
+    p.add_argument("--fresh", action="store_true",
+                   help="ignore every cached panel and play all of them again, "
+                        "overwriting the cache. The alternative is --panels pointing "
+                        "at a new directory, which renders fresh AND leaves the "
+                        "existing cache untouched")
     p.add_argument("--panels", default=PANELS,
                    help="shared panel cache, reused across runs (default %(default)s)")
     p.add_argument("--out-dir", default=None,
@@ -869,7 +880,7 @@ def main():
     labels = [label for _p, _n, label in columns]
 
     panels = render_panels(game, columns, rows, cap, player, a.panels,
-                           a.crop, a.pad, a.no_stats, a.jobs)
+                           a.crop, a.pad, a.no_stats, a.jobs, a.fresh)
     cells = [panels[(c, r)] for r in rows for c in labels]
     ncols = a.cols or len(labels)
     if a.cols and len(rows) > 1:

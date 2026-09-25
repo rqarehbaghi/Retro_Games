@@ -409,23 +409,40 @@ def render_panels(game, columns, rows, cap, player, cache, crop, pad, no_stats):
             key = panel_key(name, state, no_stats, pad)
             mp4 = os.path.join(cache, key + ".mp4")
             side = os.path.join(cache, key + ".json")
-            if os.path.exists(mp4):
+            settings = {"cap": cap, "player": player, "crop": crop}
+            cached = json.load(open(side)) if os.path.exists(side) else None
+            stale = cached and [k for k, v in settings.items()
+                                if k in cached and cached[k] != v]
+            if os.path.exists(mp4) and not stale:
                 print("cached panel %s" % key)
+                if cached and not all(k in cached for k in settings):
+                    # Panels rendered before these were recorded. The numbers
+                    # in them are still whatever rule produced them, and there
+                    # is no way to find out from the file.
+                    print("   (predates the settings check -- delete it to be sure "
+                          "it was played under cap %d, player %d, crop %s)"
+                          % (cap, player, crop))
                 probe = subprocess.run(
                     ["ffprobe", "-v", "error", "-select_streams", "v", "-show_entries",
                      "stream=width,height", "-of", "csv=p=0", mp4],
                     capture_output=True, text=True, check=True).stdout.strip()
                 w, h = (int(v) for v in probe.split(",")[:2])
                 panel = {"path": mp4, "width": w, "height": h}
-                if os.path.exists(side):
-                    panel.update(json.load(open(side)))
+                panel.update(cached or {})
             else:
+                if stale:
+                    # The cap decides when a game is STOPPED and the player
+                    # decides whose board it is: a panel made under a different
+                    # one is a different experiment, and reusing it would put
+                    # two rules in the same grid and the same average.
+                    print("re-rendering %s -- it was made with a different %s"
+                          % (key, ", ".join(stale)))
                 print("rendering panel %s ..." % key)
                 panel = capture_panel(game, path, state, cap, player, mp4,
                                       crop, pad, not no_stats)
-                json.dump({"end_reason": panel["end_reason"],
-                           "decisions": panel["decisions"], "stats": panel["stats"],
-                           "checkpoint": os.path.basename(path), "state": state},
+                json.dump(dict(settings, end_reason=panel["end_reason"],
+                               decisions=panel["decisions"], stats=panel["stats"],
+                               checkpoint=os.path.basename(path), state=state),
                           open(side, "w"), indent=2)
                 print("   %s after %d decisions" % (panel["end_reason"], panel["decisions"]))
             panel["label"] = panel["column"] = label

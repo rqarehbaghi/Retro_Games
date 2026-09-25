@@ -40,31 +40,38 @@ CARD_LEAD = 0.4         # beat after the card appears before the voice returns
 WPM = 140               # measured, not assumed: see script()
 
 VOICE = """\
-You are writing the narration for a short film on %s -- a channel whose whole
-premise is that player two is a machine. The human trains it, posts the
-results, and the running question is whether it is finally good enough to sit
-down opposite. This film is the try-out: the checkpoint that wins here becomes
-the opponent in a best-of-three against the human who trained it.
+You are writing in the FIRST PERSON, as the person who built and trained this
+thing, talking to their own audience on %s. Not a narrator, not a documentary
+voice, not "the human who trained it" -- me. I say I. I trained it, I am
+showing you my own results, and at the end I am the one who has to sit down
+and play it.
 
-Your voice: someone who knows both halves -- the machine learning and the
-console -- and finds them equally serious and equally ridiculous. Dry, exact,
-completely unimpressed. You explain a thing once, in plain words, and move on.
+So: I made this. I chose the rewards, I left it running, I am as surprised as
+anyone by half of what it does. I am allowed to be proud of it and to take the
+mickey out of it in the same sentence, because it is mine. When it does
+something stupid, that is my fault and I will say so. When it beats me, that
+will also be my fault, which is worse.
+
+Write like someone talking to camera, not reading an essay. Contractions.
+Asides. The odd sentence that is just two words. You explain a thing once, in
+plain words, and move on.
 
 BE ACTUALLY FUNNY. Not "playful", not "quirky". Funny is a true observation
 placed where it lands hardest, and it is usually the specific detail, not the
-joke-shaped sentence. Copy this register:
+joke-shaped sentence. Copy this register, and note that it is ME speaking:
 
-  "It has no idea it is playing Tetris. It has no idea it is playing
-   anything. It is a function that looks at a wall of blocks and says
+  "It has no idea it's playing Tetris. It has no idea it's playing
+   anything. I built a function that stares at a wall of blocks and says
    'seven'."
 
-  "Nobody told it holes are bad. It found that out the way the rest of us
-   did, by dying."
+  "I never told it holes were bad. It worked that out the way I did, by
+   dying repeatedly."
 
-  "Its reward for a thousand perfect decisions is one more block."
+  "I gave it a reward for clearing lines. Its reward for a thousand perfect
+   decisions is one more block."
 
-  "Ten thousand steps in, it plays like someone who has had the rules
-   described to them over the phone."
+  "Ten thousand steps in, it played like someone who'd had the rules
+   explained to them over the phone. I have the footage. It's up there."
 
 Rules for the jokes: never announce one, never explain one, never end a
 paragraph on an explanation when it could end on the observation. One dud
@@ -184,17 +191,20 @@ def write(game, body_seconds, card, states, cap, algorithm="", channel="",
         "are frighteningly good at it play; what this machine is and how it "
         "learned; and what it has no idea about. This is where the jokes live. "
         "NO RESULT NUMBERS IN THIS PART -- the card is not on screen yet.\n\n"
-        "'card' -- spoken over the results card. HARD LIMIT %d WORDS, one or "
-        "two short paragraphs, because the card is held only as long as this "
-        "takes and a still image with a long voice over it is not a video. "
-        "Say who won and by what number, name the units, say in one clause "
-        "what %d games cannot prove, and if a later checkpoint lost to an "
-        "earlier one say so plainly -- that is the most interesting thing on "
-        "the card.%s\n\n"
-        "'closing' -- the last line, over the card. One or two sentences. It "
-        "must land the challenge: that checkpoint is the opponent, three "
-        "games, against the human who trained it. Make it a line worth ending "
-        "on, not 'like and subscribe'.\n\n"
+        "'card' -- spoken over the results card, which shows a bar per "
+        "checkpoint and a CROWN on the winner. HARD LIMIT %d WORDS, one or two "
+        "short paragraphs, because the card is held only as long as this takes "
+        "and a still image with a long voice over it is not a video. The FIRST "
+        "sentence must crown the winner by name and say its number -- that is "
+        "the sentence the whole film has been walking towards, so it goes "
+        "first and it does not hedge. Then, in one clause, what %d games "
+        "cannot prove; and if a later checkpoint lost to an earlier one, say "
+        "so, because I find that the most interesting thing here.%s\n\n"
+        "'closing' -- the last line, over the card. One or two sentences, and "
+        "it is ME making a promise: I am coming back to play that checkpoint, "
+        "three games, and I intend to win. Be specific and a bit cocky about "
+        "it -- I trained the thing, so losing to it would be humiliating in a "
+        "way worth watching. Not 'like and subscribe'.\n\n"
         "RULES\n"
         "- The ONLY numbers you may state about the training or the results are "
         "the ones listed above, with the units they are given with. Numbers "
@@ -254,6 +264,40 @@ def card_seconds(card, lead=CARD_LEAD, gap=BLOCK_GAP, tail=1.2):
     if not card:
         return 0.0
     return lead + sum(length for _p, length in card) + gap * (len(card) - 1) + tail
+
+
+def fit_card(clips, cap, lead=CARD_LEAD, gap=BLOCK_GAP, tail=1.2):
+    """Which card blocks fit the hold, and how long the hold must then be.
+
+    Capping the hold WITHOUT trimming the speech is how a card ended up
+    completely silent: the blocks ran past the end of the film and every one of
+    them was dropped, so the winner was never announced at all. Here the cap
+    decides how many blocks are kept, and the hold is then exactly what those
+    blocks need -- so there is never a card with nothing said over it.
+
+    Two blocks are MANDATORY and the cap does not get to drop them: the first,
+    which crowns the winner, and the last, which is the challenge. Those are
+    the two sentences the whole film exists to deliver. Everything between them
+    is what the cap trims, and if the two mandatory ones together need longer
+    than the cap, the card is held for them anyway -- a card that holds for the
+    trivia and drops the ending is exactly the wrong way round."""
+    if not clips:
+        return [], [], 0.0
+    if len(clips) <= 2:
+        return list(clips), list(range(len(clips))), card_seconds(clips, lead, gap, tail)
+    first, closing, middle = clips[0], clips[-1], clips[1:-1]
+    budget = cap - lead - tail - first[1] - closing[1] - gap
+    kept, index, used = [first], [0], 0.0
+    for i, clip in enumerate(middle, start=1):
+        need = clip[1] + gap
+        if used + need > budget:
+            break
+        kept.append(clip)
+        index.append(i)
+        used += need
+    kept.append(closing)
+    index.append(len(clips) - 1)
+    return kept, index, card_seconds(kept, lead, gap, tail)
 
 
 def build_track(placed, total, out_path, sample_rate=speech.SAMPLE_RATE):

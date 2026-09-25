@@ -745,7 +745,7 @@ def main():
                         "panels 4 then 2, and --cols 2 makes them 2x3")
     p.add_argument("--chart", action="store_true",
                    help="close the film with a stats card built from these games")
-    p.add_argument("--chart-seconds", type=float, default=22.0,
+    p.add_argument("--chart-seconds", type=float, default=28.0,
                    help="the MAXIMUM the results card is held (default %(default)s). "
                         "With --voice it is held for as long as the words written about "
                         "it, up to this -- anything longer is a still image with a "
@@ -925,11 +925,20 @@ def main():
                   % (narrate.clock(body_seconds),
                      narrate.clock(unit_seconds / speed), speed))
         if card:
-            # A CEILING, not a target. The card held for 108 seconds on one
-            # run because the writer had 108 seconds of things to say about
-            # it; the viewer was looking at a static image for most of a
-            # two-minute film.
-            chart_seconds = min(a.chart_seconds, narrate.card_seconds(card_clips))
+            # A CEILING on how much is SAID over the card, not a guillotine
+            # across the end of it. One run held the card 108 seconds because
+            # the writer had 108 seconds of things to say; the next capped the
+            # hold at 22 and dropped every card block for not fitting, so the
+            # winner was never announced. fit_card keeps what fits, always
+            # keeps the closing, and the hold is then exactly what those need.
+            kept, index, chart_seconds = narrate.fit_card(card_clips, a.chart_seconds)
+            if len(kept) < len(card_clips):
+                print("  (voice: %d of %d card lines did not fit the %gs card)"
+                      % (len(card_clips) - len(kept), len(card_clips), a.chart_seconds))
+            body_n = len(body)
+            texts = list(_texts[:body_n]) + [_texts[body_n + i] for i in index]
+            card_clips = kept
+            spoken = (body, card_clips, texts)
 
     grid_seconds = rate_plan(lengths, speed, a.catch_up, a.hold)[1]
     silent = os.path.join(out_dir, "grid.mp4")

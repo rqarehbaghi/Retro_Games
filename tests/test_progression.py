@@ -338,3 +338,30 @@ class CounterWrapTests(unittest.TestCase):
     def test_a_four_digit_counter_wraps_at_ten_thousand(self):
         gv = self.FakeVars({"score": {"source": "tiles", "length": 4}})
         self.assertEqual(runners.counter_modulus(gv, "score"), 10000)
+
+
+class CardFitTests(unittest.TestCase):
+    """A results card with nothing said over it is the one outcome that is
+    never acceptable: the winner goes unannounced."""
+
+    def test_the_winner_line_and_the_challenge_both_survive_a_tight_cap(self):
+        clips = [("win.wav", 22.5), ("mid.wav", 12.0), ("end.wav", 8.6)]
+        kept, index, hold = narrate.fit_card(clips, 22.0)
+        self.assertEqual(index[0], 0, "the winner line must be kept")
+        self.assertEqual(index[-1], len(clips) - 1, "the challenge must be kept")
+        self.assertNotIn(1, index, "the middle is what the cap trims")
+        self.assertGreater(hold, 22.0, "held long enough to say both, cap or not")
+
+    def test_everything_fits_when_there_is_room(self):
+        clips = [("a.wav", 9.0), ("b.wav", 7.0), ("c.wav", 6.0)]
+        kept, index, hold = narrate.fit_card(clips, 30.0)
+        self.assertEqual(index, [0, 1, 2])
+        self.assertAlmostEqual(hold, narrate.card_seconds(clips))
+
+    def test_the_hold_always_matches_what_is_kept(self):
+        clips = [("a.wav", 10.0), ("b.wav", 10.0), ("c.wav", 10.0), ("d.wav", 5.0)]
+        kept, _index, hold = narrate.fit_card(clips, 26.0)
+        self.assertAlmostEqual(hold, narrate.card_seconds(kept))
+
+    def test_no_card_means_no_hold(self):
+        self.assertEqual(narrate.fit_card([], 22.0), ([], [], 0.0))

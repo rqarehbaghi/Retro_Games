@@ -30,6 +30,7 @@ RULE = (48, 50, 58)
 BAR = (86, 196, 172)             # the trained columns
 BAR_CONTROL = (110, 112, 124)    # the untrained control, deliberately grey
 WHISKER = (232, 200, 108)
+GOLD = (240, 198, 88)      # the winner, and only the winner
 
 
 def _font(size, mono=False):
@@ -79,125 +80,95 @@ def summarise(rows):
             "capped": sum(1 for r in rows if r.get("end_reason") == "placement_cap")}
 
 
+def crown(d, cx, base, size, colour=GOLD):
+    """A crown, drawn rather than typed.
+
+    The glyph exists in some fonts and not others, and a missing glyph renders
+    as a box on the one frame of the film most likely to be screenshotted."""
+    w, h = size, size * 0.75
+    left, right, top, bottom = cx - w / 2, cx + w / 2, base - h, base
+    d.polygon([(left, bottom), (left, top + h * 0.25),
+               (left + w * 0.25, top + h * 0.62), (cx, top),
+               (right - w * 0.25, top + h * 0.62), (right, top + h * 0.25),
+               (right, bottom)], fill=colour)
+    for x in (left, cx, right):
+        r = size * 0.09
+        d.ellipse((x - r, top + h * 0.1 - r, x + r, top + h * 0.1 + r), fill=colour)
+
+
 def build(results, out_path, game="", metric="", decision_word="decisions",
           subtitle="", order=None, handle=""):
-    """`results` is one dict per panel: column, value, decisions, end_reason."""
+    """One picture, one question: which of these plays best?
+
+    Deliberately NOT a statistics page. An earlier version printed the mean,
+    the sample standard deviation, the range, the work per game and how every
+    game ended, in two tables -- which collided with each other, and which
+    asked a viewer who came for Tetris to read a spreadsheet. The numbers that
+    were dropped are still computed, because the narration is given them and
+    speaks the honest version out loud; they are simply not on the card.
+
+    `results` is one dict per panel: column, value, decisions, end_reason."""
     groups = {}
     for row in results:
         groups.setdefault(row["column"], []).append(row)
     names = [c for c in (order or sorted(groups)) if c in groups]
     stats = {name: summarise(groups[name]) for name in names}
+    best = max(names, key=lambda n: stats[n]["mean"]) if names else ""
+    unit = (metric or "points per game").split(" per ")[0].lower()
 
     img = Image.new("RGB", (W, H), BG)
     d = ImageDraw.Draw(img)
-    f_title, f_head = _title_font(34), _font(30)
-    f_body, f_small, f_num = _font(26), _font(20), _font(30, mono=True)
+    f_title, f_ask = _title_font(34), _font(38)
+    f_name, f_small, f_num = _font(30), _font(22), _font(44, mono=True)
+    f_win, f_win_big = _font(26), _font(46)
 
-    d.text((80, 64), (game or "Training progression").upper(), font=f_title, fill=INK)
-    d.text((80, 124), subtitle or "Every figure measured from the games in this video",
-           font=f_body, fill=DIM)
+    d.text((80, 58), (game or "Training progression").upper(), font=f_title, fill=INK)
     if handle:
-        d.text((W - 80 - d.textlength(handle, font=f_body), 74), handle,
-               font=f_body, fill=BAR)
-    d.line((80, 176, W - 80, 176), fill=RULE, width=2)
+        d.text((W - 80 - d.textlength(handle, font=f_name), 66), handle,
+               font=f_name, fill=BAR)
+    d.text((80, 128), subtitle or "Which one plays best?", font=f_ask, fill=DIM)
+    d.line((80, 196, W - 80, 196), fill=RULE, width=2)
 
-    # ------------------------------------------------------------- chart --
-    top, bottom, left = 290, 830, 130
-    width = 880
-    step = width // max(1, len(names))
-    bar_w = min(150, int(step * 0.5))
-    ceiling = max([stats[n]["max"] for n in names] + [1.0]) * 1.15
-    d.text((left, top - 74), metric or "Result per game", font=f_head, fill=INK)
-    d.text((left, top - 36),
-           "bar = mean     line = min to max     dot = one game", font=f_small, fill=DIM)
-    for i in range(5):                       # gridlines, drawn under the bars
-        y = bottom - int((bottom - top) * i / 4.0)
-        d.line((left, y, left + width, y), fill=RULE, width=1)
-        d.text((left - 78, y - 13), "%d" % round(ceiling * i / 4.0), font=f_small, fill=DIM)
+    # --------------------------------------------------------------- bars --
+    top, bottom, left, right = 300, 792, 150, W - 150
+    step = (right - left) // max(1, len(names))
+    bar_w = min(190, int(step * 0.56))
+    ceiling = max([stats[n]["mean"] for n in names] + [1.0]) * 1.28
+    d.line((left, bottom, right, bottom), fill=RULE, width=2)
     for i, name in enumerate(names):
         s = stats[name]
         cx = left + i * step + step // 2
-        h_mean = int((bottom - top) * s["mean"] / ceiling)
-        colour = BAR_CONTROL if name.lower().startswith("untrained") or name == "control" else BAR
-        d.rectangle((cx - bar_w // 2, bottom - h_mean, cx + bar_w // 2, bottom), fill=colour)
-        # The range, as a whisker, and every game as a dot: with a handful of
-        # start states the spread IS the story, and a bar alone hides that two
-        # runs of the same checkpoint can differ several times over.
-        y_lo = bottom - int((bottom - top) * s["min"] / ceiling)
-        y_hi = bottom - int((bottom - top) * s["max"] / ceiling)
-        d.line((cx, y_lo, cx, y_hi), fill=WHISKER, width=3)
-        for y in (y_lo, y_hi):
-            d.line((cx - 18, y, cx + 18, y), fill=WHISKER, width=3)
-        for j, row in enumerate(groups[name]):
-            y = bottom - int((bottom - top) * float(row["value"]) / ceiling)
-            dx = (j - (len(groups[name]) - 1) / 2.0) * 16      # spread, not stacked
-            d.ellipse((cx + dx - 5, y - 5, cx + dx + 5, y + 5), fill=INK)
-        label = "%.0f" % s["mean"]
-        d.text((cx - d.textlength(label, font=f_num) / 2, y_hi - 48), label,
-               font=f_num, fill=INK)
-        wrapped = name if len(name) < 16 else name.replace(" ", "\n", 1)
-        d.multiline_text((cx, bottom + 18), wrapped, font=f_body, fill=INK,
-                         anchor="ma", align="center", spacing=6)
-        note = "n=%d" % s["n"]
-        d.text((cx - d.textlength(note, font=f_small) / 2,
-                bottom + (58 if "\n" not in wrapped else 92)), note, font=f_small, fill=DIM)
+        h = int((bottom - top) * s["mean"] / ceiling)
+        winner = name == best
+        d.rectangle((cx - bar_w // 2, bottom - h, cx + bar_w // 2, bottom),
+                    fill=GOLD if winner else BAR)
+        value = "%.0f" % s["mean"]
+        d.text((cx - d.textlength(value, font=f_num) / 2, bottom - h - 62), value,
+               font=f_num, fill=GOLD if winner else INK)
+        if winner:
+            crown(d, cx, bottom - h - 78, 56)
+        label = name if len(name) < 14 else name.replace(" ", "\n", 1)
+        d.multiline_text((cx, bottom + 22), label, font=f_name,
+                         fill=INK if winner else DIM, anchor="ma", align="center",
+                         spacing=6)
 
-    # ------------------------------------------------------------- table --
-    # Names are as long as the user's --labels, so the numeric columns start
-    # well clear of them rather than at a guessed offset.
-    tx, ty = 1060, 290
-    name_w = 300
-    cols = [("mean", 0), ("sd", 120), ("range", 240), (decision_word[:9], 420)]
-    for head, dx in cols:
-        d.text((tx + name_w + dx, ty - 34), head, font=f_small, fill=DIM)
-    d.line((tx, ty - 2, W - 80, ty - 2), fill=RULE, width=1)
-    for i, name in enumerate(names):
-        s = stats[name]
-        y = ty + 24 + i * 56
-        d.text((tx, y), name if len(name) < 20 else name[:19] + "-", font=f_body, fill=INK)
-        d.text((tx + name_w, y), "%.0f" % s["mean"], font=f_num, fill=INK)
-        d.text((tx + name_w + 120, y), "-" if s["sd"] is None else "%.0f" % s["sd"],
-               font=f_num, fill=INK if s["sd"] is not None else DIM)
-        d.text((tx + name_w + 240, y), "%.0f-%.0f" % (s["min"], s["max"]),
-               font=f_num, fill=INK)
-        d.text((tx + name_w + 420, y), "%.0f" % s["decisions"], font=f_num, fill=INK)
-
-    ey = ty + 24 + len(names) * 56 + 64
-    d.text((tx, ey - 34), "how each game ended", font=f_small, fill=DIM)
-    d.line((tx, ey - 2, W - 80, ey - 2), fill=RULE, width=1)
-    for i, name in enumerate(names):
-        s = stats[name]
-        y = ey + 24 + i * 48
-        d.text((tx, y), name if len(name) < 20 else name[:19] + "-", font=f_body, fill=INK)
-        d.text((tx + name_w, y), "%d finished" % s["finished"], font=f_body, fill=INK)
-        if s["capped"]:
-            d.text((tx + name_w + 220, y), "%d hit the cap" % s["capped"],
-                   font=f_body, fill=WHISKER)
-
-    # ------------------------------------------------------------ footer --
-    # WHO WON, said once, on the card. The narration is told to cite this and
-    # nothing else as the answer, so the number on screen and the claim in the
-    # voice cannot drift apart.
-    best = max(names, key=lambda n: stats[n]["mean"]) if names else ""
+    # ------------------------------------------------------------- winner --
     if best:
-        d.rectangle((tx, H - 250, W - 80, H - 170), outline=BAR, width=2)
-        d.text((tx + 22, H - 236), "BEST ON THESE GAMES", font=f_small, fill=DIM)
-        d.text((tx + 22, H - 208), "%s  -  %.0f %s per game"
-               % (best, stats[best]["mean"], (metric or "").split()[0].lower()),
-               font=f_head, fill=BAR)
+        box = (150, 880, W - 150, 980)
+        d.rectangle(box, outline=GOLD, width=3)
+        crown(d, 208, 950, 46)
+        d.text((258, 898), "WINNER", font=f_win, fill=GOLD)
+        won = "%s  -  %.0f %s a game" % (best, stats[best]["mean"], unit)
+        d.text((W - 190 - d.textlength(won, font=f_win_big), 902), won,
+               font=f_win_big, fill=INK)
 
-    n_total = sum(stats[n]["n"] for n in names)
-    d.line((80, H - 130, W - 80, H - 130), fill=RULE, width=2)
-    d.text((80, H - 108),
-           "%d games, %d start states per column. Spread is across START STATES, "
-           "not repeats of one game." % (n_total, stats[names[0]]["n"] if names else 0),
-           font=f_small, fill=DIM)
-    d.text((80, H - 74),
-           "A run stopped by the cap had not finished, so it is counted apart from "
-           "the ones that played themselves out.", font=f_small, fill=DIM)
-    d.text((80, H - 40),
-           "An illustration of the training, at this sample size -- not a "
-           "measurement of how good the agent is.", font=f_small, fill=DIM)
+    # ----------------------------------------------------------- footnote --
+    n = stats[names[0]]["n"] if names else 0
+    # Below the winner box: above it, it ran into the column labels.
+    d.text((150, 1008),
+           "Average %s, over %d game%s each. One game can swing wildly, so treat "
+           "this as a snapshot rather than a verdict."
+           % (unit, n, "" if n == 1 else "s"), font=f_small, fill=DIM)
 
     img.save(out_path)
     return {"path": out_path, "stats": stats, "order": names, "best": best}

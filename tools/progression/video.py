@@ -558,11 +558,17 @@ def render_parallel(jobs, workers):
 
 
 def render_panels(game, columns, rows, cap, player, cache, crop, pad, no_stats,
-                  workers=1, fresh=False):
-    """Play every (checkpoint, state) pair, reusing anything already rendered.
+                  workers=1, use_cache=False):
+    """Play every (checkpoint, state) pair. FRESH unless asked otherwise.
 
-    The cache is SHARED between runs -- a panel is minutes of emulator time --
-    and each run copies the ones it used into its own folder afterwards."""
+    Reuse is opt-in, not the default. A cached panel is minutes of emulator
+    time saved and it was silently wrong twice -- once measured by a
+    superseded rule, once with no numbers beside it at all -- and both times
+    the film looked perfectly fine while the card was built on it. The default
+    is now the honest one and --cached is for when the wait matters more.
+
+    The cache is SHARED between runs, and each run copies the panels it used
+    into its own folder afterwards."""
     os.makedirs(cache, exist_ok=True)
     order, todo = [], []
     for path, name, label in columns:
@@ -581,20 +587,7 @@ def render_panels(game, columns, rows, cap, player, cache, crop, pad, no_stats,
                 # 1057 lines was recorded as 57 and lost a tryout it had won.
                 stale = (stale or []) + ["measurement rule"]
             order.append((key, mp4, side, label, state))
-            if fresh:
-                # --fresh: play everything again whatever is on disk. The
-                # cache is an optimisation, and there are times -- a changed
-                # checkpoint file, a suspicion about a number, plain doubt --
-                # when an optimisation is the last thing you want.
-                print("re-rendering %s -- --fresh" % key)
-            elif os.path.exists(mp4) and not os.path.exists(side):
-                # An mp4 with no numbers beside it is not a usable panel: it
-                # contributes a game to the film and nothing to the card, which
-                # is how a five-column chart quietly got built from twelve
-                # games instead of fifteen. It is also what a killed render
-                # leaves behind, so the video itself may be truncated.
-                print("re-rendering %s -- it has no numbers beside it" % key)
-            elif os.path.exists(mp4) and not stale:
+            if use_cache and os.path.exists(mp4) and os.path.exists(side) and not stale:
                 print("cached panel %s" % key)
                 if cached and not all(k in cached for k in settings):
                     # Panels rendered before these were recorded. The numbers
@@ -604,13 +597,20 @@ def render_panels(game, columns, rows, cap, player, cache, crop, pad, no_stats,
                           "it was played under cap %d, player %d, crop %s)"
                           % (cap, player, crop))
                 continue
-            if stale:
+            if use_cache and stale:
                 # The cap decides when a game is STOPPED and the player decides
                 # whose board it is: a panel made under a different one is a
                 # different experiment, and reusing it would put two rules in
                 # the same grid and the same average.
                 print("re-rendering %s -- it was made with a different %s"
                       % (key, ", ".join(stale)))
+            elif use_cache and os.path.exists(mp4) and not os.path.exists(side):
+                # An mp4 with no numbers beside it is not a usable panel: it
+                # contributes a game to the film and nothing to the card, which
+                # is how a five-column chart quietly got built from twelve
+                # games instead of fifteen. It is also what a killed render
+                # leaves behind, so the video itself may be truncated.
+                print("re-rendering %s -- it has no numbers beside it" % key)
             todo.append({"key": key, "game": game, "checkpoint": path, "state": state,
                          "cap": cap, "player": player, "mp4": mp4, "side": side,
                          "crop": crop, "pad": pad, "no_stats": bool(no_stats)})
@@ -812,11 +812,13 @@ def main():
                         "towards your core count, lower it if memory is tight")
     p.add_argument("--render-one", default=None,
                    help=argparse.SUPPRESS)      # worker mode, not for humans
-    p.add_argument("--fresh", action="store_true",
-                   help="ignore every cached panel and play all of them again, "
-                        "overwriting the cache. The alternative is --panels pointing "
-                        "at a new directory, which renders fresh AND leaves the "
-                        "existing cache untouched")
+    p.add_argument("--cached", action="store_true",
+                   help="REUSE panels already rendered under the same rules, instead "
+                        "of playing every game again. Off by default: reuse has been "
+                        "silently wrong more than once, and a film built on a stale "
+                        "panel looks perfectly fine. Use it when the wait matters "
+                        "more than the certainty -- re-rendering the card or the "
+                        "narration, say, where the games have not changed")
     p.add_argument("--panels", default=PANELS,
                    help="shared panel cache, reused across runs (default %(default)s)")
     p.add_argument("--out-dir", default=None,
@@ -880,7 +882,7 @@ def main():
     labels = [label for _p, _n, label in columns]
 
     panels = render_panels(game, columns, rows, cap, player, a.panels,
-                           a.crop, a.pad, a.no_stats, a.jobs, a.fresh)
+                           a.crop, a.pad, a.no_stats, a.jobs, a.cached)
     cells = [panels[(c, r)] for r in rows for c in labels]
     ncols = a.cols or len(labels)
     if a.cols and len(rows) > 1:

@@ -93,6 +93,61 @@ SCHEMA = {
     "required": ["body", "card", "closing"],
 }
 
+# Two hosts. `who` is 1 for the person who trained it and 2 for the co-host,
+# and it decides which voice speaks the turn.
+TURN = {
+    "type": "object",
+    "properties": {"who": {"type": "integer"}, "text": {"type": "string"}},
+    "required": ["who", "text"],
+}
+PODCAST_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "body": {"type": "array", "items": TURN},
+        "card": {"type": "array", "items": TURN},
+        "closing": TURN,
+    },
+    "required": ["body", "card", "closing"],
+}
+
+PODCAST_VOICE = """\
+You are writing a two-person conversation for %s -- a channel whose whole
+premise is that player two is a machine. It is NOT a narrated documentary with
+a guest. It is two people talking, and the film plays under them.
+
+HOST 1 is the person who built and trained this thing. First person: I trained
+it, I chose the rewards, I left it running overnight, and at the end I am the
+one who has to sit down and play the winner. Proud of it and merciless about
+it in the same breath, because it is theirs.
+
+HOST 2 has not seen the results and asks what the audience is thinking. Sharp,
+funny, slightly sceptical, not a stooge -- pushes back, spots the thing that
+does not add up, refuses to be impressed on request. Knows games, does not
+know the machine learning, and will not pretend to.
+
+How real conversation sounds, and what to copy:
+
+  1: "Ten thousand steps in it played like someone who'd had the rules
+      explained over the phone."
+  2: "And that's the good one?"
+  1: "That's the worst one. It gets alarming later."
+
+  2: "So it knows holes are bad."
+  1: "It knows nothing. I never told it holes were bad."
+  2: "Then how -"
+  1: "It worked it out the way I did. By dying, repeatedly, for a very long
+      time."
+
+Rules. Turns are SHORT -- one to three sentences, often one. They answer each
+other rather than taking it in turns to monologue; a turn that could be said
+without hearing the previous one is a bad turn. No names spoken ("Well, Bob"),
+no "welcome to the show", no "that's a great question", no sign-off, no
+laughing written out, no stage directions. Contractions throughout. Nobody
+recaps what was just said.
+
+Be ACTUALLY funny -- a true observation placed where it lands, usually a
+specific detail. Never announce a joke, never explain one."""
+
 
 def duration(path):
     out = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
@@ -136,8 +191,31 @@ def facts(game, card, states, cap):
     return "\n".join(lines)
 
 
+def podcast_prompt(prompt):
+    """The same brief, for two people instead of one.
+
+    Everything about the film, the experiment and the measured numbers is
+    identical -- only the voice section and the shape of the answer change, so
+    there is one source of truth for what is true."""
+    head, _, rest = prompt.partition("\n\nTHE FILM\n")
+    return (PODCAST_VOICE % (head.split("on ", 1)[-1].split(" --")[0]
+                             if " -- " in head else "this channel")
+            + "\n\nTHE FILM\n" + rest
+            + "\n\nEVERY entry in 'body' and 'card', and 'closing', is a TURN: "
+              "{\"who\": 1 or 2, \"text\": \"...\"}. 1 is the person who trained "
+              "it, 2 is the co-host. They must alternate most of the time, and "
+              "the paragraph counts above are turn counts instead -- turns are "
+              "shorter, so use more of them for the same number of words. The "
+              "'card' turns are the two of them reading the result; the FIRST "
+              "card turn crowns the winner by name with its number. 'closing' "
+              "is HOST 1, making the promise to come back and play it."
+              "\nReturn JSON: {\"body\": [{\"who\": 1, \"text\": \"...\"}, "
+              "{\"who\": 2, \"text\": \"...\"}], \"card\": [...], "
+              "\"closing\": {\"who\": 1, \"text\": \"...\"}}")
+
+
 def write(game, body_seconds, card, states, cap, algorithm="", channel="",
-          wpm=WPM, card_seconds_budget=22.0, **kw):
+          wpm=WPM, card_seconds_budget=22.0, podcast=False, **kw):
     """Ask a model for the script. Returns {"body": [...], "card": [...],
     "closing": str} or None.
 
@@ -226,13 +304,29 @@ def write(game, body_seconds, card, states, cap, algorithm="", channel="",
             "nominate a different one." % winner) if winner else "",
            games))
 
-    data = writer.write(prompt, SCHEMA, **kw)
+    if podcast:
+        prompt = podcast_prompt(prompt)
+    data = writer.write(prompt, PODCAST_SCHEMA if podcast else SCHEMA, **kw)
     if not data:
         return None
     clean = writer.clean_spoken
-    out = {"body": [clean(t) for t in data.get("body", []) if clean(t)],
-           "card": [clean(t) for t in data.get("card", []) if clean(t)],
-           "closing": clean(data.get("closing", ""))}
+
+    def turns(items):
+        """A turn is {who, text}; a monologue block is a bare string. Both
+        come back as (text, who) so everything downstream is identical."""
+        out = []
+        for item in items or []:
+            if isinstance(item, dict):
+                text, who = clean(item.get("text", "")), int(item.get("who", 1) or 1)
+            else:
+                text, who = clean(item), 1
+            if text:
+                out.append((text, 2 if who == 2 else 1))
+        return out
+
+    closing = data.get("closing") or ""
+    out = {"body": turns(data.get("body")), "card": turns(data.get("card")),
+           "closing": (turns([closing]) or [("", 1)])[0]}
     return out if (out["body"] or out["card"]) else None
 
 

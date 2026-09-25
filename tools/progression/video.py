@@ -666,7 +666,8 @@ def copy_gameplays(cells, folder):
 
 
 def say(game, card, states, cap, body_seconds, folder, writer_backend,
-        voice_model, voice_name, channel, wpm, take="", card_budget=22.0):
+        voice_model, voice_name, channel, wpm, take="", card_budget=22.0,
+        podcast=False):
     """Write the script and render it to audio. Returns (body, card, texts).
 
     Deliberately BEFORE the video is composed: the closing card is then held
@@ -681,7 +682,8 @@ def say(game, card, states, cap, body_seconds, folder, writer_backend,
     print("  [voice] asking %s for a script ..." % writer_backend)
     script = narrate.write(game_title(game), body_seconds, card, states, cap,
                            algorithm=algorithm, channel=channel, wpm=wpm,
-                           card_seconds_budget=card_budget, backend=writer_backend)
+                           card_seconds_budget=card_budget, podcast=podcast,
+                           backend=writer_backend)
     if not script:
         print("  (no script: the writer returned nothing)")
         return None
@@ -690,16 +692,41 @@ def say(game, card, states, cap, body_seconds, folder, writer_backend,
 
 
 def speak_script(script, folder, voice_model, voice_name, take=""):
-    """Render a script to audio: the body, then the card part and the closing."""
-    print("  [voice] speaking %d body and %d card paragraphs with %s ..."
-          % (len(script["body"]), len(script["card"]) + bool(script.get("closing")),
-             voice_model))
+    """Render a script to audio: the body, then the card part and the closing.
+
+    A script entry is (text, who) -- who being 1 or 2 -- and `voice_name` may
+    be one name or two separated by a comma. With two, turn 2 is spoken by the
+    second voice and the thing becomes a conversation; with one, both speak
+    with the same voice and it is the monologue it always was."""
+    names = [n.strip() for n in (voice_name or "").split(",") if n.strip()]
+    hosts = names or [None]
+
+    def turn(item):
+        """Scripts written before two hosts existed are bare strings, and
+        --respeak has to keep working on those runs."""
+        if isinstance(item, str):
+            return (item, 1)
+        return (item[0], int(item[1]) if len(item) > 1 else 1)
+
+    def voices(turns):
+        return [hosts[min(who, len(hosts)) - 1] for _text, who in turns]
+
+    body_turns = [turn(t) for t in script["body"]]
+    card_turns = [turn(t) for t in script["card"]]
+    closing = script.get("closing")
+    if closing and turn(closing)[0]:
+        card_turns.append(turn(closing))
+    print("  [voice] speaking %d body and %d card turns with %s (%s) ..."
+          % (len(body_turns), len(card_turns), voice_model, ", ".join(
+              n or speech.KOKORO_DEFAULT for n in hosts)))
+
     blocks = os.path.join(folder, "narration_blocks%s" % take)
-    body = speech.speak(script["body"], blocks, backend=voice_model, voice=voice_name)
-    card_text = list(script["card"]) + ([script["closing"]] if script.get("closing") else [])
-    card_clips = speech.speak(card_text, os.path.join(blocks, "card"),
-                              backend=voice_model, voice=voice_name)
-    return body, card_clips, list(script["body"]) + card_text
+    body = speech.speak([t for t, _w in body_turns], blocks, backend=voice_model,
+                        voice=voices(body_turns) if len(hosts) > 1 else hosts[0])
+    card_clips = speech.speak([t for t, _w in card_turns], os.path.join(blocks, "card"),
+                              backend=voice_model,
+                              voice=voices(card_turns) if len(hosts) > 1 else hosts[0])
+    return body, card_clips, [t for t, _w in body_turns + card_turns]
 
 
 def main():
@@ -783,8 +810,16 @@ def main():
                         "and it sends the script to a third party)")
     p.add_argument("--voice-name", default=None,
                    help="the speaker: a Kokoro voice such as %s, a Qwen preset, a piper "
-                        ".onnx path, or an ElevenLabs voice id"
+                        ".onnx path, or an ElevenLabs voice id. TWO names separated by "
+                        "a comma makes it a conversation -- the first voice is the "
+                        "person who trained the thing, the second is the co-host"
                         % ", ".join(speech.KOKORO_VOICES[:3]))
+    p.add_argument("--podcast", action="store_true",
+                   help="write the narration as two people talking rather than one "
+                        "person narrating: the one who trained it, and a co-host who "
+                        "asks what the audience is thinking and is not easily "
+                        "impressed. Give --voice-name two names so they sound like "
+                        "two people")
     p.add_argument("--wpm", type=int, default=0,
                    help="words per minute used to size the script. The default is the "
                         "measured rate of the voice you picked (kokoro 170, qwen 130), "
@@ -936,7 +971,7 @@ def main():
                        else unit_seconds / speed + a.hold)
         spoken = say(game, card, rows, cap, body_target, out_dir, a.writer,
                      a.voice_model, a.voice_name, channel, a.wpm,
-                     card_budget=a.chart_seconds)
+                     card_budget=a.chart_seconds, podcast=a.podcast)
     if spoken:
         from tools.progression import narrate
         body, card_clips, _texts = spoken
@@ -1000,6 +1035,7 @@ def main():
                "pad": a.pad, "no_stats": bool(a.no_stats), "cols": ncols,
                "chart": bool(card), "chart_seconds": chart_seconds,
                "catch_up": a.catch_up, "hold": a.hold, "handle": handle,
+               "podcast": bool(a.podcast),
                "grid_seconds": grid_seconds, "title": a.title,
                "channel": a.channel, "voice_model": a.voice_model,
                "voice_name": a.voice_name, "writer": a.writer, "wpm": a.wpm,
@@ -1030,9 +1066,10 @@ def finish_voice(out_dir, silent, spoken, grid_seconds, take=""):
     placed = narrate.schedule(body, card_clips, grid_seconds)
     kept = [b for b in placed if b[1] <= total + 0.05]
     if len(kept) < len(placed):
-        print("  (voice: %d block%s ran past the end of the film and were dropped. "
+        lost = len(placed) - len(kept)
+        print("  (voice: %d block%s ran past the end of the film and %s dropped. "
               "--renarrate asks for a shorter script; the film itself is unchanged)"
-              % (len(placed) - len(kept), "" if len(placed) - len(kept) == 1 else "s"))
+              % (lost, "" if lost == 1 else "s", "was" if lost == 1 else "were"))
     wav = os.path.join(out_dir, "narration%s.wav" % take)
     narrate.build_track(kept, total, wav)
     narrate.mux(silent, wav, os.path.join(out_dir, "narrated%s.mp4" % take))
@@ -1073,7 +1110,8 @@ def regenerate(a):
         spoken = say(run["game"], card, run["states"], run["cap"], grid_seconds,
                      out_dir, a.writer, voice_model, voice_name,
                      a.channel or run.get("channel") or "", a.wpm, take,
-                     card_budget=run.get("chart_seconds") or a.chart_seconds)
+                     card_budget=run.get("chart_seconds") or a.chart_seconds,
+                     podcast=a.podcast or bool(run.get("podcast")))
         if not spoken:
             sys.exit("the writer returned nothing; the existing film is untouched")
     else:

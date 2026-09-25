@@ -155,7 +155,7 @@ class _FixSpeedDtype:
 
 # ------------------------------------------------------------------ kokoro --
 def _speak_kokoro(blocks, out_dir, voice=None, speed=1.0, verbose=True):
-    """One wav per block, one voice for the whole run.
+    """One wav per block. One voice for the whole run, or one PER BLOCK.
 
     Both packages split a long block into chunks themselves and return them in
     order; they are joined here so a block is a single continuous file. The
@@ -164,13 +164,19 @@ def _speak_kokoro(blocks, out_dir, voice=None, speed=1.0, verbose=True):
     import numpy as np
     import soundfile as sf
 
-    voice = voice or KOKORO_DEFAULT
+    # The voice is a name, or a list of names the same length as the blocks --
+    # one speaker per turn, which is what makes two people talking possible
+    # without loading the model twice.
+    per_block = voice if isinstance(voice, (list, tuple)) else None
+    voice = (voice if isinstance(voice, str) else None) or KOKORO_DEFAULT
     try:
         from kokoro import KPipeline
-        pipeline = KPipeline(lang_code=voice[0])
+        pipelines = {}
 
-        def render(text):
-            chunks = [a for _gs, _ps, a in pipeline(text, voice=voice, speed=speed)]
+        def render(text, who):
+            pipe = pipelines.get(who[0]) or pipelines.setdefault(
+                who[0], KPipeline(lang_code=who[0]))
+            chunks = [a for _gs, _ps, a in pipe(text, voice=who, speed=speed)]
             return (np.concatenate([np.asarray(c, dtype="float32") for c in chunks]),
                     SAMPLE_RATE) if chunks else (None, SAMPLE_RATE)
     except ImportError:
@@ -186,24 +192,26 @@ def _speak_kokoro(blocks, out_dir, voice=None, speed=1.0, verbose=True):
                 "model-files-v1.1/voices-v1.0.bin")
         engine = Kokoro(model, voices)
         engine.sess = _FixSpeedDtype(engine.sess)
-        # lang follows the voice's own first letter: a = American, b = British.
-        lang = "en-gb" if voice.startswith("b") else "en-us"
 
-        def render(text):
-            samples, rate = engine.create(text, voice=voice, speed=speed, lang=lang)
+        def render(text, who):
+            # lang follows the voice's own first letter: a = American, b =
+            # British, so two hosts can be from different places.
+            lang = "en-gb" if who.startswith("b") else "en-us"
+            samples, rate = engine.create(text, voice=who, speed=speed, lang=lang)
             return np.asarray(samples, dtype="float32"), rate
 
     out = []
     for i, text in enumerate(blocks):
-        audio, rate = render(text)
+        audio, rate = render(text, per_block[i] if per_block else voice)
         if audio is None or not len(audio):
             continue
         path = os.path.join(out_dir, "block_%02d.wav" % i)
         sf.write(path, audio, rate)
         out.append(path)
         if verbose:
-            print("    [%2d/%2d] %.1fs  %s"
-                  % (i + 1, len(blocks), len(audio) / float(rate), text[:58]))
+            print("    [%2d/%2d] %-10s %.1fs  %s"
+                  % (i + 1, len(blocks), per_block[i] if per_block else voice,
+                     len(audio) / float(rate), text[:46]))
     return out
 
 
@@ -280,6 +288,9 @@ def speak(blocks, out_dir, backend=DEFAULT, voice=None, speed=1.0, verbose=True)
     if not available(backend):
         raise RuntimeError("voice backend %r is not installed here" % backend)
     os.makedirs(out_dir, exist_ok=True)
-    paths = SPEAKERS[backend]([b for b in blocks if b and b.strip()],
+    keep = [i for i, b in enumerate(blocks) if b and b.strip()]
+    if isinstance(voice, (list, tuple)):
+        voice = [voice[i] for i in keep]
+    paths = SPEAKERS[backend]([blocks[i] for i in keep],
                               out_dir, voice=voice, speed=speed, verbose=verbose)
     return [(p, seconds(p)) for p in paths]

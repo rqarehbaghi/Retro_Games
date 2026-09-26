@@ -77,6 +77,36 @@ def spec_for(game, player=0, state=None):
     return TrainingSpec(game, overrides)
 
 
+SAMPLE_EVERY = 30            # a policy game's timeline, when nothing changes
+FPS = 60.0                   # panels are written at 60fps, one frame per
+                             # emulator frame, so frames counted == video time
+
+
+class Clock:
+    """How far into the PANEL VIDEO we are, counted in frames written.
+
+    Not emulator steps and not wall time: the panel skips animation frames
+    internally and plays back at a speed decided much later, so the only
+    honest clock for cutting is the one the video itself keeps."""
+
+    def __init__(self, fps):
+        self.frames, self.fps = 0, fps
+
+    def tick(self):
+        self.frames += 1
+
+    @property
+    def seconds(self):
+        return self.frames / self.fps
+
+
+def _number(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def counter_modulus(gv, *names):
     """When does this counter roll over, according to its OWN declaration?
 
@@ -137,12 +167,19 @@ def run_afterstate(spec, checkpoint, state, cap, player, on_frame):
     core = env.unwrapped
     obs, info = env.reset()
     box = {"stats": [("LINES", 0), ("PIECES", 0)]}
+    # Every frame the tap emits is a frame of the panel video, so counting
+    # them IS the clock of that video -- which is what lets an event be cut to
+    # later, to the frame, without guessing.
+    clock = Clock(FPS)
     on_frame(np.asarray(core.env.unwrapped.render()), box)
-    core.env = FrameTap(core.env, lambda frame: on_frame(frame, box))
+    clock.tick()
+    core.env = FrameTap(core.env, lambda frame: (clock.tick(), on_frame(frame, box)))
 
     lines0 = raw_previous = int(info.get(lines_var, 0) or 0)
     modulus = counter_modulus(gv, lines_var, "lines")
-    wraps = 0
+    height_var = next((v for v in ("max_height", "height", "stack_height")
+                       if v in info), "")
+    timeline, last_total, wraps = [], 0, 0
     decisions, pending, end = 0, False, "placement_cap"
     while cap <= 0 or decisions < cap:
         action = None
@@ -163,16 +200,28 @@ def run_afterstate(spec, checkpoint, state, cap, player, on_frame):
         if modulus and raw < raw_previous - modulus // 2:
             wraps += 1
         raw_previous = raw
-        box["stats"] = [("LINES", wraps * modulus + raw - lines0),
-                        ("PIECES", decisions)]
+        total = wraps * modulus + raw - lines0
+        box["stats"] = [("LINES", total), ("PIECES", decisions)]
         if info.get("afterstate_ready", True):
+            if pending:
+                # One entry per PLACEMENT, at the moment it finished: what it
+                # cleared, where the stack stands, how fast the game has got.
+                # This is what an edit is cut from.
+                timeline.append({"i": decisions, "t": round(clock.seconds, 3),
+                                 "v": total, "d": total - last_total,
+                                 "h": _number(info.get(height_var)),
+                                 "lvl": _number(info.get("level"))})
+                last_total = total
             pending = False
         if term or trunc:
             end = "game_over" if term else "truncated"
             break
     last = np.asarray(core.env.unwrapped.render())
     env.close()
-    return {"end_reason": end, "decisions": decisions, "stats": box["stats"], "last": last}
+    timeline.append({"i": decisions, "t": round(clock.seconds, 3), "v": last_total,
+                     "d": 0, "end": end})
+    return {"end_reason": end, "decisions": decisions, "stats": box["stats"],
+            "last": last, "timeline": timeline}
 
 
 def run_policy(spec, checkpoint, state, cap, player, on_frame):
@@ -195,8 +244,11 @@ def run_policy(spec, checkpoint, state, cap, player, on_frame):
 
     obs = vec.reset()
     box = {"stats": []}
+    clock = Clock(FPS)
     on_frame(np.asarray(core.env.unwrapped.render()), box)
-    core.env = FrameTap(core.env, lambda frame: on_frame(frame, box))
+    clock.tick()
+    core.env = FrameTap(core.env, lambda frame: (clock.tick(), on_frame(frame, box)))
+    timeline, last_total = [], 0
 
     decisions, end = 0, "placement_cap"
     while cap <= 0 or decisions < cap:
@@ -212,12 +264,23 @@ def run_policy(spec, checkpoint, state, cap, player, on_frame):
         info = infos[0] if len(infos) else {}
         box["stats"] = (_stats_from_info(info, spec.report_stats or [], player)
                         or [("STEPS", decisions)])
+        # A policy decides every step, so one entry per step would be a
+        # timeline the length of the film. Sampled instead, and whenever the
+        # headline number MOVES -- which is where the interesting moments are.
+        total = box["stats"][0][1] if box["stats"] else decisions
+        if total != last_total or decisions % SAMPLE_EVERY == 0:
+            timeline.append({"i": decisions, "t": round(clock.seconds, 3),
+                             "v": total, "d": total - last_total})
+            last_total = total
         if dones[0]:
             end = "truncated" if info.get("TimeLimit.truncated") else "game_over"
             break
     last = np.asarray(core.env.unwrapped.render())
     vec.close()
-    return {"end_reason": end, "decisions": decisions, "stats": box["stats"], "last": last}
+    timeline.append({"i": decisions, "t": round(clock.seconds, 3), "v": last_total,
+                     "d": 0, "end": end})
+    return {"end_reason": end, "decisions": decisions, "stats": box["stats"],
+            "last": last, "timeline": timeline}
 
 
 def run(game, checkpoint, state, cap, player, on_frame):

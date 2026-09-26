@@ -193,7 +193,7 @@ def capture_panel(game, checkpoint, state, cap, player, path, crop, pad=CROP_PAD
     result = runners.run(game, checkpoint, state, cap, player, writer)
     panel = writer.finish(result["last"], {"stats": result["stats"]}, result["end_reason"])
     panel.update({"end_reason": result["end_reason"], "decisions": result["decisions"],
-                  "stats": result["stats"]})
+                  "stats": result["stats"], "timeline": result.get("timeline") or []})
     return panel
 
 
@@ -575,6 +575,11 @@ def render_one(job):
     panel = capture_panel(job["game"], job["checkpoint"], job["state"], job["cap"],
                           job["player"], job["mp4"], job["crop"], job["pad"],
                           not job["no_stats"])
+    # Its own file: a long game is thousands of entries, and the sidecar is
+    # read to build a card on every run whether or not anything is being cut.
+    if panel.get("timeline"):
+        json.dump(panel["timeline"],
+                  open(os.path.splitext(job["side"])[0] + "_timeline.json", "w"))
     json.dump({"cap": job["cap"], "player": job["player"], "crop": job["crop"],
                "metrics": METRICS,
                "end_reason": panel["end_reason"], "decisions": panel["decisions"],

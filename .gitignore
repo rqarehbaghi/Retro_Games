@@ -26,6 +26,8 @@ font_sheet.png
 integrations/**/rs_*.state
 recordings/
 human_demos/
+# Voice-cloning references are private biometric media, never repository data.
+voice_references/
 progress_reels/
 *.bk2
 *.mp4

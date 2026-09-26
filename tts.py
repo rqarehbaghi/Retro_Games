@@ -91,18 +91,22 @@ def speak_lines(lines, out_dir, model=None, model_name=DEFAULT_MODEL,
     import soundfile as sf
     model = model or load(model_name)
     os.makedirs(out_dir, exist_ok=True)
+    if isinstance(speaker, (list, tuple)) and len(speaker) != len(lines):
+        raise ValueError("one Qwen speaker is required per narration block")
     out = []
     for i, item in enumerate(lines):
         text = item["text"].strip()
         if not text:
             continue
+        who = speaker[i] if isinstance(speaker, (list, tuple)) else speaker
         path = os.path.join(out_dir, "line_%03d.wav" % i)
         wavs, sr = model.generate_custom_voice(
-            text=text, language=language, speaker=speaker, instruct=voice)
+            text=text, language=language, speaker=who, instruct=voice)
         sf.write(path, wavs[0], sr)
         out.append((item.get("anchor"), path, bool(item.get("closing"))))
         if verbose:
-            print("    [%2d/%2d] %s" % (i + 1, len(lines), text[:64]))
+            print("    [%2d/%2d] %-10s %s"
+                  % (i + 1, len(lines), who, text[:50]))
     return out
 
 

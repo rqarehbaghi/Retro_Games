@@ -8,6 +8,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from tools.progression import (chart, ids, narrate, report, runners, select,  # noqa: E402
                                 speech, short, video)
+import tts as studio_tts  # noqa: E402
 
 BASE = dict(checkpoint_sha="a", state_sha="b", cfg_hash="c", commit="d", rom="e",
             player=2, players=2, deterministic=True, placement_cap=500)
@@ -247,6 +248,30 @@ class SpeechBackendTests(unittest.TestCase):
             self.skipTest("piper is installed here")
         with self.assertRaises(RuntimeError):
             speech.speak(["hello"], "/tmp", backend="piper")
+
+    def test_qwen_rejects_a_partial_per_block_speaker_list(self):
+        # This check happens before model inference. A two-host script must not
+        # silently turn into one host or pass a Python list as Qwen's speaker.
+        with self.assertRaisesRegex(ValueError, "one Qwen speaker"):
+            studio_tts.speak_lines([{"text": "one"}, {"text": "two"}], "/tmp",
+                                   model=object(), speaker=["Ryan"])
+
+    def test_qwen_uses_the_declared_speaker_for_each_podcast_turn(self):
+        import numpy as np
+
+        class FakeModel:
+            calls = []
+
+            def generate_custom_voice(self, **kw):
+                self.calls.append(kw["speaker"])
+                return [np.zeros(16, dtype="float32")], 24000
+
+        model = FakeModel()
+        with tempfile.TemporaryDirectory() as out:
+            studio_tts.speak_lines([{"text": "host one"}, {"text": "host two"}],
+                                   out, model=model, speaker=["Ryan", "Vivian"],
+                                   verbose=False)
+        self.assertEqual(model.calls, ["Ryan", "Vivian"])
 
 
 if __name__ == "__main__":

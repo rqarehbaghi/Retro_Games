@@ -299,9 +299,17 @@ class CatchUpTests(unittest.TestCase):
         # An unescaped comma is a FILTER SEPARATOR in a filtergraph: ffmpeg
         # went looking for a filter called 'min(T' and the render died.
         expr = video.remap(video.rate_plan(self.LENGTHS, 8.0, 6.0)[0])
-        self.assertIn("\,", expr)
+        self.assertIn("\\,", expr)
         self.assertNotIn("min(T,", expr)
         self.assertTrue(expr.startswith("setpts=("))
+
+    def test_python_event_clock_matches_the_piecewise_rate_plan(self):
+        plan, _out = video.rate_plan(self.LENGTHS, 8.0, catch_up=6.0)
+        self.assertAlmostEqual(video.output_time(plan, 100.0), 12.5)
+        self.assertAlmostEqual(video.output_time(plan, 120.0),
+                               100.0 / 8.0 + 20.0 / (8.0 * 4.0 / 3.0))
+        self.assertAlmostEqual(video.output_time(plan, 900.0),
+                               video.rate_plan(self.LENGTHS, 8.0, 6.0)[1])
 
 
 class HoldTests(unittest.TestCase):
@@ -407,61 +415,81 @@ class LayoutTests(unittest.TestCase):
 
 
 class ShortCutTests(unittest.TestCase):
-    """The short is an EDIT, so what it must get right is order and rhythm."""
+    """The short must preserve the race, including uncertainty at its end."""
 
-    def panel(self, key, value, seconds=200.0, events=None):
+    def panel(self, key, end, reason="game_over", events=None):
+        timeline = events or [
+            {"i": 1, "t": 10.0, "v": 1, "d": 1},
+            {"i": 2, "t": float(end), "v": 1, "d": 0, "end": reason},
+        ]
         return {"key": key, "path": key + ".mp4", "width": 152, "height": 224,
-                "seconds": seconds, "value": value, "label": key.split("_")[0],
-                "timeline": events or [{"i": 1, "t": 10.0, "v": 4, "d": 4, "h": 6, "lvl": 1},
-                                       {"i": 2, "t": 40.0, "v": 5, "d": 1, "h": 14, "lvl": 2},
-                                       {"i": 3, "t": 90.0, "v": 5, "d": 0, "end": "game_over"}]}
+                "seconds": float(end) + 0.5, "label": key, "timeline": timeline,
+                "end_reason": reason, "stats": [["LINES", 1], ["PIECES", 2]]}
 
-    def test_cuts_land_on_the_beat_grid(self):
-        self.assertAlmostEqual(short.beat(2.7, 120), 2.5)
-        self.assertAlmostEqual(short.beat(0.1, 120), 0.5, msg="never shorter than a beat")
-        self.assertAlmostEqual(short.beat(2.7, 90), 2.0 / 3 * 4)
+    def test_transition_is_quantised_to_half_beats(self):
+        self.assertAlmostEqual(short.beat_transition(0.44, 120), 0.5)
+        self.assertAlmostEqual(short.beat_transition(0.01, 120), 0.25)
 
-    def test_a_tetris_outranks_a_single(self):
-        panel = self.panel("200k_a", 500)
-        picks = short.moments(panel)
-        self.assertEqual(picks[0]["cleared"], 4, "the four-line clear comes first")
+    def test_spotlight_order_is_the_real_elimination_order(self):
+        result = short.plan([self.panel("late", 90), self.panel("early", 40)],
+                            30.0, card_seconds=6.0)
+        self.assertEqual([p["keys"] for p in result["phases"]],
+                         [["early"], ["late"]])
+        self.assertEqual(result["survivors"], ["late"])
+        self.assertEqual(result["outcome"], "LAST SURVIVOR")
 
-    def test_moments_are_spread_out(self):
-        crowd = [{"i": i, "t": 10.0 + i * 0.5, "v": i, "d": 4, "h": 5, "lvl": 1}
-                 for i in range(6)]
-        picks = short.moments(self.panel("a_b", 1, events=crowd))
-        self.assertEqual(len(picks), 1, "six clears within three seconds is one moment")
+    def test_nominal_phases_meet_at_the_mapped_death_frame(self):
+        result = short.plan([self.panel("one", 40), self.panel("two", 90)],
+                            30.0, card_seconds=6.0)
+        self.assertAlmostEqual(result["phases"][0]["end"],
+                               result["phases"][1]["start"])
+        self.assertGreater(result["phases"][0]["show_end"],
+                           result["phases"][0]["end"], "the dissolve overlaps")
+        self.assertLess(result["phases"][1]["show_start"],
+                        result["phases"][1]["start"], "the dissolve overlaps")
 
-    def test_the_hero_is_the_best_game_of_the_best_checkpoint(self):
-        panels = [self.panel("10k_s1", 40), self.panel("10k_s2", 60),
-                  self.panel("200k_s1", 900), self.panel("200k_s2", 300)]
-        picked = short.pick_games(panels, 2)
-        self.assertEqual(picked[0]["key"], "200k_s1")
-        self.assertTrue(picked[1]["key"].startswith("10k"), "the foil is an early one")
+    def test_a_cap_is_not_presented_as_a_game_over(self):
+        result = short.plan([self.panel("lost", 40),
+                             self.panel("capped", 90, "placement_cap")])
+        self.assertEqual(result["outcome"], "SURVIVED TO CAP")
+        self.assertEqual(result["survivors"], ["capped"])
 
-    def test_the_hook_is_the_hero_alone_and_the_foil_is_dropped_at_the_turn(self):
-        hero, foil = self.panel("200k_a", 900), self.panel("10k_b", 40)
-        plan = short.plan([hero, foil], 30.0, card_seconds=6.0)
-        first = plan["shots"][0]
-        self.assertEqual(len(first["sources"]), 1, "the hook shows one board, not two")
-        self.assertEqual(first["sources"][0][0]["key"], "200k_a")
-        two_up = [i for i, s in enumerate(plan["shots"]) if len(s["sources"]) == 2]
-        self.assertTrue(two_up, "the setup shows both")
-        after = plan["shots"][max(two_up) + 1:]
-        self.assertTrue(all(len(s["sources"]) == 1 for s in after),
-                        "once the turn lands, the foil does not come back")
+    def test_differently_timed_caps_are_tied_not_ranked_by_render_time(self):
+        result = short.plan([self.panel("cap_b", 70, "placement_cap"),
+                             self.panel("cap_a", 50, "placement_cap")])
+        self.assertEqual(result["outcome"], "TIED AT CAP")
+        self.assertEqual(result["survivors"], ["cap_a", "cap_b"])
+        self.assertEqual(len(result["phases"]), 1)
 
-    def test_shots_shorten_towards_the_climax(self):
-        plan = short.plan([self.panel("200k_a", 900), self.panel("10k_b", 40)],
-                          45.0, card_seconds=6.0)
-        tail = [s["length"] for s in plan["shots"][-4:]]
-        self.assertLessEqual(tail[-1], tail[0], "the ramp runs long to short")
-        self.assertTrue(all(abs(s["length"] * 2 - round(s["length"] * 2)) < 1e-6
-                            for s in plan["shots"]), "every shot is a whole beat")
+    def test_truncation_is_refused_as_incomplete_evidence(self):
+        with self.assertRaisesRegex(ValueError, "truncated panels"):
+            short.plan([self.panel("incomplete", 50, "truncated")])
 
-    def test_the_cut_fits_the_length_asked_for(self):
-        plan = short.plan([self.panel("200k_a", 900), self.panel("10k_b", 40)],
-                          60.0, card_seconds=8.0)
-        body = sum(s["length"] for s in plan["shots"])
-        self.assertLessEqual(body + 8.0, 60.5)
-        self.assertGreater(body, 40.0, "it must not come in far under")
+    def test_simultaneous_final_games_are_tied_not_arbitrarily_ranked(self):
+        result = short.plan([self.panel("b", 90.0), self.panel("a", 90.01)])
+        self.assertEqual(result["outcome"], "TIED SURVIVORS")
+        self.assertEqual(result["survivors"], ["b", "a"])
+        self.assertEqual(len(result["phases"]), 1)
+
+    def test_non_monotonic_timeline_is_refused(self):
+        panel = self.panel("bad", 20, events=[
+            {"i": 1, "t": 10.0}, {"i": 2, "t": 9.0, "end": "game_over"}])
+        with self.assertRaisesRegex(ValueError, "non-monotonic"):
+            short.plan([panel])
+
+    def test_total_length_matches_the_request(self):
+        result = short.plan([self.panel("one", 40), self.panel("two", 90)],
+                            60.0, card_seconds=8.0, hold=3.0)
+        self.assertAlmostEqual(result["seconds"], 60.0, places=5)
+        self.assertAlmostEqual(result["body_seconds"], 52.0, places=5)
+
+    def test_grow_expressions_escape_filtergraph_commas(self):
+        tile = {"x": 10, "y": 20, "w": 100, "h": 140}
+        spot = {"x": 50, "y": 80, "w": 500, "h": 700}
+        phase = {"show_start": 2.0, "fade_in": 0.5}
+        scale = short._scale_filter(tile, spot, phase, True)
+        position = short._overlay_position(tile, spot, phase, True)
+        self.assertIn("eval=frame", scale)
+        self.assertIn("eval=frame", position)
+        self.assertIn("min(1\\,max(0\\,", scale)
+        self.assertNotIn("min(1,max(0,", scale)

@@ -37,13 +37,11 @@ matplotlib
 # measured slower and failed 3 of 18 encodes (see overlays.py).
 
 # ------------------------------------------------- writers (pick any ONE) --
-# The writer produces captions, upload copy and narration. `auto` cascades:
-# Claude Code CLI (a Pro/Max SUBSCRIPTION, installed with npm, not pip) ->
-# Claude API (prepaid CREDITS, needs the package below) -> Gemini -> Ollama
-# (local, free, installed with its own script). Only the two API paths are pip
-# packages, and both are optional.
-anthropic                    # only for --writer claude
-# google-genai               # only for --writer gemini
+# No writer needs a pip package or separately billed API. setup.sh installs the
+# Codex CLI; authenticate it inside WSL with `codex login --device-auth` to use
+# the existing ChatGPT subscription. Ollama remains the local free fallback:
+# `curl -fsSL https://ollama.com/install.sh | sh`, then
+# `ollama pull qwen3:30b-a3b`.
 
 # ------------------------------------------------------- voice (optional) --
 # Only for --voice. Nothing below is needed to render a silent video.

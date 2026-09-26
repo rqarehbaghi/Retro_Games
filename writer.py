@@ -1,39 +1,52 @@
 #!/usr/bin/env python3
 """
-Write the captions, commentary and descriptions with a local LLM.
+Write the captions, commentary and descriptions with a model.
 
 Everything studio.py says is otherwise drawn from hardcoded pools, which is
 fine for one video and obvious by the fifth: the same eight jokes in rotation,
 the same description under every upload. This hands the writing to a model
-running on your own machine instead, so each run is written fresh against what
-actually happened in THAT run.
+instead, so each run is written fresh against what actually happened in THAT
+run.
 
-    python studio.py --game <id>                     # claude-code, the default
-    python studio.py --game <id> --writer claude     # the Messages API
-    python studio.py --game <id> --writer ollama     # a model on this machine
+    python studio.py --game <id>                    # ChatGPT through Codex (default)
+    python studio.py --game <id> --writer auto      # ChatGPT, then Ollama
+    python studio.py --game <id> --writer ollama    # a model on this machine
 
-THREE BACKENDS, and the difference is what they bill against:
+TWO BACKENDS, AND NEITHER CAN BILL AN API.
 
-    claude-code   shells out to `claude -p`, which runs against a Claude Pro or
-                  Max SUBSCRIPTION. Nothing extra to install or pay for if you
-                  already have Claude Code. No schema-constrained decoding, so
-                  the JSON is asked for in the prompt and dug back out.
-    claude        the Messages API, billed by prepaid CREDITS -- a separate
-                  product from the subscription. Constrained decoding.
-    ollama        a model on this machine. Free, offline, and noticeably
-                  blunter than either of the above.
+    chatgpt   shells out to the Codex CLI, which runs against an existing
+              ChatGPT SUBSCRIPTION. Nothing metered, nothing prepaid.
+    ollama    a model on this machine. Free, offline, and blunter.
 
-NOTHING IS REQUIRED. With no --writer, or with Ollama not running, or if the
-model returns something unparseable, studio.py uses its tables exactly as
-before. A model that is merely unavailable must never cost you a recording you
-have already played, so every entry point here returns None on any failure and
-the caller falls back.
+That is the whole list on purpose. Every metered path -- the OpenAI Responses
+API, the Anthropic Messages API, Gemini -- was removed rather than left
+configurable, because a writer that CAN quietly start billing eventually does.
+"auto" is chatgpt then ollama and nothing else; a named backend is pinned and
+never falls through, so the provider cannot change underneath a run.
 
-WHY OLLAMA. It is one install, it serves an HTTP API on localhost, it needs no
-Python dependency here (urllib is enough), and it supports GRAMMAR-CONSTRAINED
-decoding: passing a JSON schema as `format` restricts the sampler to tokens
-that can legally continue a valid document, so a small model cannot wander off
-and produce prose where a list was wanted.
+SETTING UP CHATGPT, once, inside WSL:
+
+    curl -fsSL https://chatgpt.com/codex/install.sh | sh
+    codex login --device-auth
+    codex login status            # must say: Logged in using ChatGPT
+
+It is called in an EMPTY temporary directory with a read-only sandbox, so the
+agent has no repository to read and nothing it could modify. --output-schema
+constrains the final message and -o writes only that message to a file, which
+is what gets parsed; the conversation itself is discarded. stdin is closed:
+with a pipe attached and never closed, "codex exec" waits on stdin forever
+and the call dies on its timeout instead of running.
+
+ONE WRITER MUST BE AVAILABLE before Studio records. The preflight checks that
+up front, so a missing login or local server cannot cost a gameplay recording.
+Every entry point still returns None on a per-call failure so callers can keep
+the already-rendered media and report that its writing needs to be retried.
+
+WHY OLLAMA for the local tier. One install, an HTTP API on localhost, no
+Python dependency here (urllib is enough), and GRAMMAR-CONSTRAINED decoding:
+passing a JSON schema as "format" restricts the sampler to tokens that can
+legally continue a valid document, so a small model cannot wander off and
+produce prose where a list was wanted.
 
     sudo apt-get install -y zstd     # the installer unpacks with it and
                                      # stops with an error if it is missing
@@ -41,8 +54,8 @@ and produce prose where a list was wanted.
     ollama pull qwen3:30b-a3b        # see MODEL_NOTES below; ~18GB download
 
 On WSL2, systemd is often not running, so the installer's service never
-starts and nothing is listening. Run `ollama serve` in its own terminal.
-`ollama ps` then says whether a loaded model is on the GPU or has fallen back
+starts and nothing is listening. Run ``ollama serve`` in its own terminal.
+``ollama ps`` then says whether a loaded model is on the GPU or has fallen back
 to CPU -- on CPU a 30B model is far too slow to be worth waiting for, and
 studio.py will simply appear to hang rather than fail.
 
@@ -54,27 +67,18 @@ import json
 import os
 import re
 import shutil
+import subprocess
+import tempfile
 import urllib.error
 import urllib.request
 
-BACKENDS = ("claude-code", "claude", "gemini", "ollama", "auto")
-DEFAULT_BACKEND = "auto"
+BACKENDS = ("chatgpt", "ollama", "auto")
+DEFAULT_BACKEND = "chatgpt"
+AUTO_BACKENDS = ("chatgpt", "ollama")
 
 DEFAULT_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
 DEFAULT_MODEL = "qwen3:30b-a3b"
-CLAUDE_MODEL = "claude-opus-4-8"
-GEMINI_MODEL = "gemini-3.6-flash"
-DEFAULT_GEMINI_MODELS = ("gemini-3.6-flash", "gemini-flash-latest", "gemini-2.5-flash-lite")
 
-# Effort sets how much the model spends thinking and answering. The API
-# default is "high"; "medium" is a deliberate step down, because writing
-# captions is not an intelligence-sensitive task and the ceiling here is the
-# voice rather than the reasoning. low | medium | high | xhigh | max.
-#
-# On Opus 4.8 specifically, NOT passing a `thinking` parameter means no
-# thinking at all, which is the cheapest this gets -- unlike Opus 5, where
-# thinking is on unless disabled.
-CLAUDE_EFFORT = "medium"
 TIMEOUT = 600      # a 14B writing a full commentary track is not quick
 
 MODEL_NOTES = """\
@@ -196,346 +200,185 @@ def generate(prompt, schema, model=DEFAULT_MODEL, host=DEFAULT_HOST,
     return None
 
 
-DEFAULT_CLI = "claude"
-
-# Where the native installer puts it, and the usual reason it is not found: on
-# Ubuntu and WSL ~/.local/bin is frequently missing from PATH.
-CLI_HINTS = (
-    "~/.local/bin/claude",
-    "~/.claude/local/claude",
-    "/usr/local/bin/claude",
-)
+CODEX_CLI = "codex"
+CODEX_TIMEOUT = 300
 
 
-def find_cli(name=DEFAULT_CLI):
-    """The Claude Code binary, by PATH lookup or at a known install location."""
+def find_cli(name=CODEX_CLI):
+    """Where the Codex CLI is, including the place its installer puts it.
+
+    A login shell would have ~/.local/bin on PATH; a subprocess spawned from a
+    render pipeline often does not, and the backend would look uninstalled."""
     found = shutil.which(name)
     if found:
         return found
-    if os.sep in name or "/" in name:
-        expanded = os.path.expanduser(name)
-        return expanded if os.path.exists(expanded) else None
-    for hint in CLI_HINTS:
-        expanded = os.path.expanduser(hint)
-        if os.path.exists(expanded):
-            return expanded
-    return None
+    candidate = os.path.expanduser(os.path.join("~", ".local", "bin", name))
+    return candidate if os.path.exists(candidate) else None
 
 
-def claude_code_available(name=DEFAULT_CLI):
-    """Is the Claude Code CLI reachable?"""
-    return find_cli(name) is not None
+def _chatgpt_env():
+    """Environment that cannot select an API/service credential by accident."""
+    env = os.environ.copy()
+    for name in ("OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN",
+                 "OPENAI_FEDERATION_RULE_ID", "OPENAI_IDENTITY_TOKEN_FILE"):
+        env.pop(name, None)
+    return env
 
 
-def generate_claude_code(prompt, schema, verbose=True, timeout=300,
-                         cli=DEFAULT_CLI, model=None, **_kw):
-    """One generation through the Claude Code CLI. Parsed object, or None.
+def chatgpt_available(name=CODEX_CLI, timeout=20):
+    """Installed AND logged in.
 
-    This is the path that costs nothing extra: `claude -p` runs against a
-    Claude Pro or Max SUBSCRIPTION, while the Messages API is a separate
-    product billed by prepaid credits. A subscription does not include API
-    credits and an API balance does not include a subscription -- so with Pro
-    and no credits, this is the way to reach a frontier model.
-
-    No schema-constrained decoding here, unlike the API and Ollama paths, so
-    the schema goes in the prompt and the answer is dug out of whatever comes
-    back. _strip_thinking already handles prose either side of the JSON."""
-    import subprocess
-    binary = find_cli(cli)
-    if binary is None:
-        if verbose:
-            print(f"  (writer: no Claude Code CLI found as {cli!r})")
-        return None
-    ask = (VOICE + "\n\n" + prompt +
-           "\n\nRespond with ONLY the JSON object described above. No preamble,"
-           "\nno explanation, no markdown fence. It is parsed by a program.")
+    Both halves matter: the binary being present says nothing about whether a
+    ChatGPT session is attached, and a logged-out CLI fails per call, slowly,
+    after a recording has already been made."""
+    cli = find_cli(name)
+    if not cli:
+        return False
     try:
-        cmd = [binary, "-p", ask, "--output-format", "json"]
+        done = subprocess.run([cli, "login", "status"], capture_output=True,
+                              text=True, timeout=timeout,
+                              stdin=subprocess.DEVNULL, env=_chatgpt_env())
+    except Exception:                                             # noqa: BLE001
+        return False
+    status = (done.stdout or "") + "\n" + (done.stderr or "")
+    return done.returncode == 0 and "Logged in using ChatGPT" in status
+
+
+def generate_chatgpt(prompt, schema, verbose=True, timeout=CODEX_TIMEOUT,
+                     cli=CODEX_CLI, model=None, **_kw):
+    """Ask the Codex CLI, on the ChatGPT subscription. None on any failure.
+
+    Run in an EMPTY temporary directory with a read-only sandbox: the agent
+    gets no repository to read, nothing it could modify, and no session files
+    left behind. --output-schema constrains the final message and -o writes
+    only that message, so the answer is read from a file rather than scraped
+    out of a transcript.
+
+    stdin is closed deliberately. With a pipe attached and never closed,
+    "codex exec" prints "Reading additional input from stdin..." and waits
+    there until the timeout kills it -- measured, not guessed."""
+    path = find_cli(cli)
+    if not path:
+        if verbose:
+            print("  (writer: the Codex CLI is not installed)")
+        return None
+    work = tempfile.mkdtemp(prefix="codex-work-")
+    box = tempfile.mkdtemp(prefix="codex-out-")
+    schema_file = os.path.join(box, "schema.json")
+    answer_file = os.path.join(box, "last.json")
+    try:
+        with open(schema_file, "w", encoding="utf-8") as fh:
+            json.dump(schema, fh)
+        cmd = [path, "exec", "--skip-git-repo-check", "--ephemeral",
+               "--ignore-user-config", "--color", "never",
+               "-c", 'forced_login_method="chatgpt"',
+               "-s", "read-only", "-C", work,
+               "--output-schema", schema_file, "-o", answer_file]
         if model:
-            cmd += ["--model", model]
-        result = subprocess.run(
-            cmd,
-            capture_output=True, text=True, timeout=timeout)
-        if result.returncode != 0:
+            cmd += ["-m", model]
+        cmd.append(VOICE + "\n\n" + prompt)
+        done = subprocess.run(cmd, capture_output=True, text=True,
+                              timeout=timeout, stdin=subprocess.DEVNULL,
+                              cwd=work, env=_chatgpt_env())
+        if done.returncode != 0:
             if verbose:
-                print("  (writer: claude CLI exited %d: %s)"
-                      % (result.returncode, (result.stderr or "").strip()[:200]))
+                print("  (writer: codex exec exited %d: %s)"
+                      % (done.returncode, (done.stderr or "").strip()[:200]))
             return None
-        # --output-format json wraps the answer in a metadata envelope; the
-        # model's own output is the `result` field.
-        envelope = json.loads(result.stdout)
-        return json.loads(_strip_thinking(envelope.get("result", "")))
+        if not os.path.exists(answer_file):
+            if verbose:
+                print("  (writer: codex exec wrote no final message)")
+            return None
+        with open(answer_file, encoding="utf-8") as fh:
+            text = fh.read().strip()
+        if not text:
+            return None
+        return json.loads(text)
     except subprocess.TimeoutExpired:
         if verbose:
-            print(f"  (writer: claude CLI did not answer within {timeout}s)")
-    except (KeyError, ValueError) as exc:
-        if verbose:
-            print(f"  (writer: claude CLI returned nothing usable: {exc})")
-    except Exception as exc:                                   # noqa: BLE001
-        if verbose:
-            print(f"  (writer: {exc.__class__.__name__}: {exc})")
-    return None
-
-
-def claude_available():
-    """Is the anthropic SDK importable? Credentials are resolved by the SDK."""
-    try:
-        import anthropic                                       # noqa: F401
-        return True
-    except ImportError:
-        return False
-
-
-def generate_claude(prompt, schema, model=CLAUDE_MODEL, effort=CLAUDE_EFFORT,
-                    verbose=True, **_kw):
-    """One structured generation through the Anthropic API. Parsed object or None.
-
-    output_config.format is the API's structured-output mode: it constrains the
-    response to the schema, so the first text block is valid JSON against it.
-    The same guarantee Ollama's `format` gives locally.
-
-    Credentials come from the SDK's own resolution -- ANTHROPIC_API_KEY, or a
-    profile from `ant auth login` -- so nothing here handles a key."""
-    try:
-        import anthropic
-    except ImportError:
-        if verbose:
-            print("  (writer: the anthropic SDK is not installed -- pip install anthropic)")
+            print("  (writer: codex exec timed out after %ds)" % timeout)
         return None
-
-    strict = dict(schema)
-    strict.setdefault("additionalProperties", False)
-    try:
-        client = anthropic.Anthropic()
-        response = client.messages.create(
-            model=model,
-            max_tokens=16000,
-            system=VOICE,
-            messages=[{"role": "user", "content": prompt}],
-            output_config={"effort": effort,
-                           "format": {"type": "json_schema", "schema": strict}},
-        )
-        if response.stop_reason == "refusal":
-            if verbose:
-                print("  (writer: the request was declined)")
-            return None
-        text = next(b.text for b in response.content if b.type == "text")
-        return json.loads(text)
-    except Exception as exc:                                   # noqa: BLE001
+    except Exception as exc:                                      # noqa: BLE001
         if verbose:
-            print(f"  (writer: {exc.__class__.__name__}: {exc})")
-    return None
-
-
-def _gemini_schema(node):
-    """Convert a JSON-Schema dict into the OpenAPI subset Gemini wants.
-
-    Gemini's response schema (both the legacy SDK and the REST responseSchema)
-    is an OpenAPI 3.0 subset: the type is an UPPERCASE enum (STRING, OBJECT,
-    ARRAY, NUMBER, INTEGER, BOOLEAN) and only a few keywords are understood.
-    The schemas in this file are ordinary lower-case JSON Schema, which the
-    google-genai SDK converts on its own but the other two paths do not -- so
-    without this they would 400 and silently fall through, enforcing nothing.
-    Unknown keywords are dropped rather than passed on, since Gemini rejects
-    the whole schema if it sees one it does not support."""
-    if not isinstance(node, dict):
-        return node
-    out = {}
-    t = node.get("type")
-    if isinstance(t, str):
-        out["type"] = t.upper()
-    if "enum" in node:
-        out["enum"] = node["enum"]
-    if "description" in node:
-        out["description"] = node["description"]
-    if "properties" in node:
-        out["properties"] = {k: _gemini_schema(v)
-                             for k, v in node["properties"].items()}
-    if "required" in node:
-        out["required"] = node["required"]
-    if "items" in node:
-        out["items"] = _gemini_schema(node["items"])
-    return out
-
-
-def gemini_available():
-    """Is a Google Gemini API key configured in the environment?"""
-    return bool(os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"))
-
-
-def _call_gemini_model(prompt, schema, model, api_key, verbose=True, timeout=120):
-    """Attempt a single Gemini model generation using SDKs or REST."""
-    # 1. Try google-genai SDK
-    try:
-        from google import genai
-        from google.genai import types
-        client = genai.Client(api_key=api_key)
-        resp = client.models.generate_content(
-            model=model,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                system_instruction=VOICE,
-                response_mime_type="application/json",
-                response_schema=schema,
-            ),
-        )
-        if resp and resp.text:
-            return json.loads(_strip_thinking(resp.text))
-    except ImportError:
-        pass
-    except Exception as exc:
-        if verbose:
-            print(f"  (writer: google-genai ({model}) failed: {exc})")
-
-    # 2. Try google.generativeai (legacy) SDK
-    try:
-        import google.generativeai as genai
-        genai.configure(api_key=api_key)
-        m = genai.GenerativeModel(
-            model, system_instruction=VOICE,
-            generation_config={"response_mime_type": "application/json",
-                               "response_schema": _gemini_schema(schema)})
-        resp = m.generate_content(prompt)
-        if resp and resp.text:
-            return json.loads(_strip_thinking(resp.text))
-    except ImportError:
-        pass
-    except Exception as exc:
-        if verbose:
-            print(f"  (writer: google-generativeai ({model}) failed: {exc})")
-
-    # 3. Direct REST API fallback (no pip dependencies required)
-    try:
-        url = (f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-               f"?key={api_key}")
-        payload = {
-            "system_instruction": {"parts": [{"text": VOICE}]},
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {"responseMimeType": "application/json",
-                                 "responseSchema": _gemini_schema(schema)}
-        }
-        req = urllib.request.Request(
-            url,
-            data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"}
-        )
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = json.load(resp)
-            text = data["candidates"][0]["content"]["parts"][0]["text"]
-            return json.loads(_strip_thinking(text))
-    except Exception as exc:
-        if verbose:
-            print(f"  (writer: gemini REST ({model}) failed: {exc})")
-
-    return None
-
-
-def generate_gemini(prompt, schema, model=None, verbose=True, timeout=120, **_kw):
-    """One generation through Google Gemini via SDK or REST.
-
-    Supports GEMINI_API_KEY and GOOGLE_API_KEY, with automatic fallback
-    across modern Gemini models if the primary model is deprecated or busy."""
-    api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
-    if not api_key:
-        if verbose:
-            print("  (writer: neither GEMINI_API_KEY nor GOOGLE_API_KEY is set in environment)")
+            print("  (writer: codex exec failed: %s)" % exc)
         return None
+    finally:
+        for folder in (work, box):
+            shutil.rmtree(folder, ignore_errors=True)
 
-    models_to_try = [model] if model else []
-    for m in DEFAULT_GEMINI_MODELS:
-        if m not in models_to_try:
-            models_to_try.append(m)
 
-    for m in models_to_try:
-        res = _call_gemini_model(prompt, schema, m, api_key, verbose=verbose, timeout=timeout)
-        if res is not None:
-            return res
+def cascade_order(value=None):
+    """The order "auto" tries, validated.
 
+    A list, so the order is stated in one place rather than implied by the
+    shape of an if-chain -- but a SHORT list, and every name in it has to be a
+    backend that cannot bill."""
+    if value is None:
+        names = list(AUTO_BACKENDS)
+    elif isinstance(value, str):
+        names = [part.strip() for part in value.split(",") if part.strip()]
+    else:
+        names = [str(part).strip() for part in value if str(part).strip()]
+    invalid = [name for name in names if name not in BACKENDS or name == "auto"]
+    if invalid:
+        raise ValueError("unknown writer backend in cascade: %s" % ", ".join(invalid))
+    if len(set(names)) != len(names):
+        raise ValueError("writer cascade contains a duplicate backend")
+    if not names:
+        raise ValueError("writer cascade cannot be empty")
+    return names
+
+
+def backend_available(name, **kw):
+    """Cheap preflight, run before a recording starts rather than after."""
+    if name == "chatgpt":
+        return chatgpt_available(kw.get("cli", CODEX_CLI))
+    if name == "ollama":
+        return available(kw.get("host", DEFAULT_HOST))
+    return False
+
+
+def _write_one(name, prompt, schema, **kw):
+    if name == "chatgpt":
+        return generate_chatgpt(prompt, schema, verbose=False,
+                                cli=kw.get("cli", CODEX_CLI),
+                                model=kw.get("chatgpt_model"),
+                                timeout=kw.get("chatgpt_timeout", CODEX_TIMEOUT))
+    if name == "ollama":
+        return generate(prompt, schema, model=kw.get("model", DEFAULT_MODEL),
+                        host=kw.get("host", DEFAULT_HOST), seed=kw.get("seed"),
+                        think=kw.get("think", True), verbose=False)
     return None
 
 
 def write(prompt, schema, backend=DEFAULT_BACKEND, **kw):
-    """Dispatch to whichever backend was asked for, with automatic cascade support."""
+    """Dispatch to one pinned backend, or to the two-step automatic cascade."""
     verbose = kw.get("verbose", True)
-    # Naming a backend pins it.  Falling through from an explicitly selected
-    # subscription/API backend can change billing and privacy expectations;
-    # only ``auto`` cascades unless a programmatic caller deliberately opts in.
-    cascade = backend == "auto" or bool(kw.get("cascade", False))
+    if backend not in BACKENDS:
+        raise ValueError("unknown writer backend: %s" % backend)
+    if backend == "auto":
+        order = cascade_order(kw.get("cascade_order"))
+    else:
+        # A named backend is PINNED and never falls through. Silently changing
+        # which model wrote something is not a detail: it changes the voice of
+        # the video and, with any metered provider, who pays for it.
+        order = [backend]
 
-    # 1. Claude Code CLI
-    if backend in ("auto", "claude-code"):
-        if claude_code_available(kw.get("cli", DEFAULT_CLI)):
-            res = generate_claude_code(prompt, schema, verbose=False,
-                                       cli=kw.get("cli", DEFAULT_CLI),
-                                       model=kw.get("claude_model"))
-            if res:
-                if verbose:
-                    print("  [writer] generated successfully using Claude Code")
-                return res
-            elif verbose and backend == "claude-code":
-                print("  [writer] Claude Code failed or returned empty output.")
-        elif verbose and backend == "claude-code":
-            print("  [writer] Claude Code CLI is not available.")
-
-        if not cascade and backend == "claude-code":
-            return None
-
-    # 2. Anthropic Claude API
-    if backend in ("auto", "claude-code", "claude"):
-        if os.environ.get("ANTHROPIC_API_KEY"):
-            res = generate_claude(prompt, schema,
-                                  model=kw.get("claude_model", CLAUDE_MODEL),
-                                  effort=kw.get("claude_effort", CLAUDE_EFFORT),
-                                  verbose=False)
-            if res:
-                if verbose:
-                    print("  [writer] generated successfully using Anthropic API")
-                return res
-            elif verbose:
-                print("  [writer] Anthropic API failed or credits exhausted.")
-        elif verbose and backend == "claude":
-            print("  [writer] ANTHROPIC_API_KEY is not set.")
-
-        if not cascade and backend == "claude":
-            return None
-
-    # 3. Google Gemini (Google Cloud / AI Studio)
-    if backend in ("auto", "claude-code", "claude", "gemini"):
-        if gemini_available():
-            if verbose and backend in ("claude-code", "claude"):
-                print("  [writer] Falling back to Google Gemini...")
-            res = generate_gemini(prompt, schema,
-                                  model=kw.get("gemini_model"),
-                                  verbose=verbose)
-            if res:
-                if verbose:
-                    print("  [writer] generated successfully using Google Gemini")
-                return res
-            elif verbose:
-                print("  [writer] Google Gemini generation failed.")
-        elif verbose and backend == "gemini":
-            print("  [writer] Neither GEMINI_API_KEY nor GOOGLE_API_KEY is set.")
-
-        if not cascade and backend == "gemini":
-            return None
-
-    # 4. Offline local LLM (Ollama)
-    if verbose and backend in ("auto", "claude-code", "claude", "gemini"):
-        print("  [writer] Falling back to offline LLM (Ollama)...")
-
-    res = generate(prompt, schema,
-                   model=kw.get("model", DEFAULT_MODEL),
-                   host=kw.get("host", DEFAULT_HOST),
-                   seed=kw.get("seed"),
-                   think=kw.get("think", True),
-                   verbose=verbose)
-    if res:
+    labels = {"chatgpt": "ChatGPT (Codex CLI)", "ollama": "offline LLM (Ollama)"}
+    for name in order:
+        if not backend_available(name, **kw):
+            if verbose:
+                print("  [writer] %s is not available." % labels[name])
+            continue
+        result = _write_one(name, prompt, schema, **kw)
+        if result is not None:
+            if verbose:
+                print("  [writer] generated successfully using %s" % labels[name])
+            return result
         if verbose:
-            print("  [writer] generated successfully using offline LLM (Ollama)")
-        return res
-
+            print("  [writer] %s failed or returned empty output." % labels[name])
     if verbose:
-        print("  [writer] All LLM backends failed or are unavailable.")
+        print("  [writer] All requested LLM backends failed or are unavailable.")
     return None
 
 

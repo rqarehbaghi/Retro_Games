@@ -7,12 +7,14 @@
 # It installs the system packages pip cannot, makes ./venv, installs
 # requirements.txt, fetches the font, and finishes by running the doctor, which
 # is the thing that actually tells you whether this machine can run the
-# project. Two things it deliberately does NOT do:
+# project. Three things it deliberately does NOT do:
 #
 #   ROMs      copyrighted, never in git. Put yours in ROMs/ and run
 #             `python tools/import_fixer.py` afterwards.
 #   the voice ~350MB of weights that most runs do not need. `bash
 #             tools/get_kokoro.sh` when you want --voice.
+#   login      Codex authentication opens a browser/device flow. The CLI is
+#             installed below; run `codex login --device-auth` yourself.
 #
 # Re-running is safe: every step checks before it acts.
 set -euo pipefail
@@ -29,7 +31,7 @@ if [ "$SKIP_APT" != "1" ]; then
     # libgl1 libglu1-mesa freeglut3-dev mesa-utils  OpenGL, for the play window
     # espeak-ng  phonemes for some TTS paths (kokoro-onnx bundles its own)
     sudo apt install -y python3 python3-venv python3-pip build-essential cmake \
-        ffmpeg git fonts-dejavu-core libglu1-mesa libgl1 freeglut3-dev mesa-utils
+        curl ffmpeg git fonts-dejavu-core libglu1-mesa libgl1 freeglut3-dev mesa-utils
 else
     echo "==> Skipping apt (SKIP_APT=1)"
 fi
@@ -43,6 +45,19 @@ echo "==> Virtual environment (./venv)"
 echo ""
 echo "==> Fonts"
 bash tools/get_fonts.sh || echo "  (font download failed -- DejaVu will be used instead)"
+
+echo ""
+echo "==> ChatGPT writer (Codex CLI)"
+if command -v codex >/dev/null 2>&1; then
+    codex --version
+else
+    curl -fsSL https://chatgpt.com/codex/install.sh | sh
+fi
+if ! codex login status >/dev/null 2>&1; then
+    echo "  Codex is installed but not logged in. After setup, run:"
+    echo "    codex login --device-auth"
+    echo "    codex login status"
+fi
 
 echo ""
 echo "==> GPU video encoding (optional, never fatal)"
@@ -59,16 +74,20 @@ Next, in order:
 
   source venv/bin/activate
 
-  # 1. ROMs are not in git. Put yours in ROMs/ and import them:
+  # 1. Attach the writer to the existing ChatGPT subscription inside WSL:
+  codex login --device-auth
+  codex login status   # must say: Logged in using ChatGPT
+
+  # 2. ROMs are not in git. Put yours in ROMs/ and import them:
   python tools/import_fixer.py
 
-  # 2. Play, record and cut a video in one command:
+  # 3. Play, record and cut a video in one command:
   python studio.py --game SuperMarioBros3-Nes-v0
 
-  # 3. Train an agent (its algorithm and rewards come from games.json):
+  # 4. Train an agent (its algorithm and rewards come from games.json):
   python train.py --game TetrisTime-Nes-v0 --describe
 
-  # 4. Optional, only for spoken narration (~350MB):
+  # 5. Optional, only for spoken narration (~350MB):
   bash tools/get_kokoro.sh
 ----------------------------------------------------------------------
 NEXT

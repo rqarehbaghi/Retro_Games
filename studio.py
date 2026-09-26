@@ -910,11 +910,11 @@ def main():
     parser.add_argument("--overlay-videos", action="store_true", help="Also render the videos with the overlay burnt in -- title, watermark and captions -- as _16x9.mp4 and _9x16.mp4 beside the clean ones. OFF by default: only the clean 16:9 and 9:16 masters are rendered. This only controls rendering; captions are written either way. Cannot be combined with --no-captions.")
     parser.add_argument("--no-captions", action="store_true", help="Turn off the timed commentary captions. Cannot be combined with --overlay-videos, which needs them.")
     parser.add_argument("--level", default=cfg.get("level"), help="Where in the game this run is, e.g. World 1-1. Shown after the game name in the title. Set it once as the level key in studio.json.")
-    parser.add_argument("--writer", choices=writer.BACKENDS, default=cfg.get("writer", writer.DEFAULT_BACKEND), help="Who writes the captions, commentary and descriptions. 'auto' cascades: Claude Code -> Anthropic API -> Gemini -> Ollama. 'gemini' calls Google Gemini (GEMINI_API_KEY); 'claude' calls Anthropic API; 'ollama' runs locally. (default: %(default)s)")
-    parser.add_argument("--writer-cli", default=cfg.get("writer_cli", writer.DEFAULT_CLI), help="Path to the Claude Code binary for --writer claude-code, if it is not on PATH. Also looked for at ~/.local/bin/claude and ~/.claude/local/claude. (default: %(default)s)")
-    parser.add_argument("--claude-model", default=cfg.get("claude_model", writer.CLAUDE_MODEL), help="Claude model for --writer claude. (default: %(default)s)")
-    parser.add_argument("--claude-effort", choices=("low", "medium", "high", "xhigh", "max"), default=cfg.get("claude_effort", writer.CLAUDE_EFFORT), help="How hard the Claude model works: low, medium, high, xhigh or max. Lower spends fewer tokens. Writing captions is not intelligence-sensitive, so the default is a step below the API's own. (default: %(default)s)")
-    parser.add_argument("--gemini-model", default=cfg.get("gemini_model", writer.GEMINI_MODEL), help="Gemini model for --writer gemini. (default: %(default)s)")
+    parser.add_argument("--writer", choices=writer.BACKENDS, default=cfg.get("writer", writer.DEFAULT_BACKEND), help="Who writes captions, commentary and descriptions: ChatGPT through the authenticated Codex CLI, local Ollama, or auto (ChatGPT then Ollama). Neither path uses a separately billed API. (default: %(default)s)")
+    parser.add_argument("--writer-cascade", default=cfg.get("writer_cascade", ",".join(writer.AUTO_BACKENDS)), help="Comma-separated order used only by --writer auto. The supported order contains only chatgpt and ollama. (default: %(default)s)")
+    parser.add_argument("--writer-cli", default=cfg.get("writer_cli", writer.CODEX_CLI), help="Path to the Codex CLI for --writer chatgpt. WSL must have its own installation and authenticated ChatGPT login. (default: %(default)s)")
+    parser.add_argument("--chatgpt-model", default=cfg.get("chatgpt_model"), help="Optional Codex model override for --writer chatgpt. Empty uses the subscription CLI's current default.")
+    parser.add_argument("--chatgpt-timeout", type=int, default=cfg.get("chatgpt_timeout", writer.CODEX_TIMEOUT), help="Maximum seconds allowed for one Codex writer request. (default: %(default)s)")
     parser.add_argument("--writer-model", default=cfg.get("writer_model", writer.DEFAULT_MODEL), help="Ollama model for --writer ollama. See writer.py for what fits a 24GB card. (default: %(default)s)")
     parser.add_argument("--no-think", action="store_true", help="Turn off reasoning on the ollama backend. It is ON by default -- a thinking model with thinking disabled writes noticeably worse, and it was disabled for a parsing bug that is since fixed.")
     parser.add_argument("--writer-host", default=cfg.get("writer_host", writer.DEFAULT_HOST), help="Where Ollama is listening. (default: %(default)s)")
@@ -930,6 +930,10 @@ def main():
     parser.add_argument("--paste-block", metavar="DIR", default=None, help="Print the copy-paste block for an already staged folder (or a metadata.json) and exit. A normal run also writes it to paste.txt.")
     parser.add_argument("--print-upload-plan", action="store_true", help="Explain what can and cannot be automated per platform, then exit")
     args = parser.parse_args()
+    try:
+        args.writer_cascade = writer.cascade_order(args.writer_cascade)
+    except ValueError as exc:
+        parser.error(str(exc))
     # Checked here, before anything is played, so a bad combination never
     # costs a recording.
     if args.overlay_videos and args.no_captions:
@@ -1022,40 +1026,40 @@ def main():
     # Checked HERE, before a single frame is played. Every word on the video is
     # written by a model now, so an unreachable one means an unusable run --
     # and finding that out after playing a level would cost the recording.
-    if args.writer == "claude-code":
-        if not writer.claude_code_available(args.writer_cli):
-            sys.exit(
-                f"No Claude Code CLI found as {args.writer_cli!r}.\n\n"
-                "  It runs against a Claude Pro/Max subscription rather than API\n"
-                "  credits, so there is nothing to buy -- but the binary has to be\n"
-                "  reachable from THIS shell. A Claude Code installed on Windows is\n"
-                "  not on the WSL PATH; WSL needs its own.\n\n"
-                "    curl -fsSL https://claude.ai/install.sh | bash\n"
-                "    export PATH=" + chr(34) + "$HOME/.local/bin:$PATH" + chr(34) + "   # the usual WSL omission\n"
-                "    claude   # log in once\n\n"
-                "  Already installed somewhere else?  --writer-cli /path/to/claude\n"
-                "  Or skip it:  --writer ollama (local, free) / --writer claude (API).")
-    elif args.writer == "claude":
-        if not writer.claude_available():
-            sys.exit("--writer claude needs the Anthropic SDK:\n"
-                     "  pip install anthropic\n"
-                     "  then set ANTHROPIC_API_KEY, or run: ant auth login\n\n"
-                     "  NOTE this is the Messages API, billed by prepaid credits --\n"
-                     "  a Claude Pro subscription does NOT include them. If you have\n"
-                     "  Pro and no credits, use --writer claude-code instead.")
-    elif not writer.available(args.writer_host):
+    if args.writer == "chatgpt" and not writer.chatgpt_available(args.writer_cli):
+        sys.exit(
+            "--writer chatgpt needs an authenticated Codex CLI inside WSL.\n\n"
+            "  curl -fsSL https://chatgpt.com/codex/install.sh | sh\n"
+            "  codex login --device-auth\n"
+            "  codex login status   # must say: Logged in using ChatGPT")
+    elif args.writer == "ollama" and not writer.available(args.writer_host):
         sys.exit(
             f"No Ollama server at {args.writer_host}.\n"
             f"  All captions, commentary and descriptions are written by a\n"
             f"  model -- there are no built-in phrases to fall back on.\n\n"
             f"  Start one:   ollama serve\n"
             f"  Get a model: ollama pull {args.writer_model}\n"
-            f"  Or use the API instead:  --writer claude")
-    elif args.writer_model not in writer.installed_models(args.writer_host):
+            f"  Or use the ChatGPT subscription: --writer chatgpt")
+    elif (args.writer == "ollama" and
+          args.writer_model not in writer.installed_models(args.writer_host)):
         sys.exit(
             f"Ollama is running but {args.writer_model!r} is not pulled.\n"
             f"  ollama pull {args.writer_model}\n"
             f"  python studio.py --list-writer-models")
+    elif args.writer == "auto":
+        ready = []
+        for name in args.writer_cascade:
+            if name == "ollama":
+                if (writer.available(args.writer_host) and
+                        args.writer_model in writer.installed_models(args.writer_host)):
+                    ready.append(name)
+            elif writer.backend_available(name, host=args.writer_host,
+                                          cli=args.writer_cli):
+                ready.append(name)
+        if not ready:
+            sys.exit("No backend in the writer cascade is available: %s. Log the "
+                     "Codex CLI into ChatGPT or start Ollama."
+                     % ", ".join(args.writer_cascade))
 
     # OFF by default. The spoken commentary is the least finished part of the
     # pipeline, and leaving it on costs a model call and a synthesis pass on
@@ -1229,15 +1233,17 @@ def main():
     # what guarantees that rather than trusting the server's default.
     seed = random.randrange(1 << 31)
     ai = dict(backend=args.writer, model=args.writer_model,
-              gemini_model=args.gemini_model,
-              claude_model=args.claude_model, claude_effort=args.claude_effort,
+              chatgpt_model=args.chatgpt_model,
+              chatgpt_timeout=args.chatgpt_timeout,
               host=args.writer_host, cli=args.writer_cli, seed=seed,
-              think=not args.no_think)
+              think=not args.no_think, cascade_order=args.writer_cascade)
+    cascade_names = {"chatgpt": "ChatGPT (Codex CLI)", "ollama": "Ollama"}
     in_use = {
-        "auto": "auto cascade (Claude Code -> Claude API -> Gemini -> Ollama)",
-        "gemini": "%s (Google Gemini API)" % args.gemini_model,
-        "claude": "%s, effort %s" % (args.claude_model, args.claude_effort),
-        "claude-code": "%s via subscription" % args.claude_model,
+        "auto": "auto cascade (%s)" % " -> ".join(
+            cascade_names[name] for name in args.writer_cascade),
+        "chatgpt": "%s%s" % (
+            "ChatGPT through Codex CLI",
+            " (%s)" % args.chatgpt_model if args.chatgpt_model else ""),
     }.get(args.writer, args.writer_model)
     # Name what is being written: with --no-captions only the upload copy is,
     # and a bare "Writing with ..." read as if captions were being made.
@@ -1380,9 +1386,8 @@ def main():
         print("  WARNING: no description came back -- paste.txt will be EMPTY.")
         print(f"           Retry just the writing: python studio.py --game {args.game} \\")
         print(f"             --from-mp4 {os.path.join(folder, os.path.basename(native))}")
-        print( "           A smaller model often manages captions and commentary")
-        print( "           but not the long description; --writer claude-code is")
-        print( "           the fallback that reliably does.")
+        print( "           If ChatGPT was unavailable, retry after `codex login status`,")
+        print( "           or use --writer ollama with a pulled local model.")
     meta = build_metadata(args.game, effective_players, events, title, args.watermark,
                           written_copy, level=args.level, duration_s=duration,
                           model=in_use)

@@ -63,7 +63,9 @@ python restyle.py ./studio_out/<folder>
 - `studio.py` — orchestrates: play → scan events → write → render → speak
 - `play_engine.py` — unified pygame interactive gameplay engine (P1/P2 human, AI model, pads, cold boot)
 - `render_bk2.py` — unified emulator replay renderer to MP4 with reward shape correction
-- `writer.py` — every prompt and all four LLM backends (`claude-code`, `claude`, `gemini`, `ollama`) plus the `auto` cascade
+- `writer.py` — every prompt and the two non-API writer backends: ChatGPT
+  through the authenticated Codex CLI, and local Ollama. `auto` tries them in
+  that order; no separately billed writer API exists.
 - `overlays.py` — all rendering; both studio and restyle go through `render_spec`
 - `tts.py` — Qwen3-TTS speech and the ducking mux
 - `restyle.py` — re-render from an edited `overlays.json`
@@ -106,7 +108,11 @@ python restyle.py ./studio_out/<folder>
   `--cols` reflows the panels into any shape, `--chart` closes on a stats card
   built from those same games (`chart.py`), and `--voice` writes and speaks a
   narration about the game and the training rather than the gameplay
-  (`narrate.py`) -- off by default, like the studio pipeline's.
+  (`narrate.py`) -- off by default, like the studio pipeline's. `short.py`
+  turns a completed run into a 9:16 elimination film: every game remains in a
+  bottom roster, the next true game-over is spotlighted, finished games dim,
+  and the final survivor receives an honest crown card. Capped games are
+  censored survivors rather than deaths; truncated panels are refused.
 
 ## Facts that cost real effort to establish
 
@@ -227,28 +233,30 @@ is KEYBOARD ONLY, so a pad is silently ignored. `--gamepad` routes single
 player through the pygame window instead, which reads both. Separately, WSL2
 cannot see a USB device at all until `usbipd-win` attaches it from Windows.
 
-## The four writer backends, and what they bill
+## The writer backends
 
-`--writer` in `studio.json`. **A Claude Pro subscription and the Messages API
-are separate products** — Pro does not include API credits, and a Console
-organisation starts at a zero balance. A 400 "credit balance is too low" means
-exactly that, not a broken key.
+There are exactly two, and neither uses a separately billed API:
 
-The default is now `auto`, which cascades in order and takes the first that
-answers: Claude Code (subscription) → Claude API (credits) → Gemini
-(`GEMINI_API_KEY`) → Ollama (local). Name a single backend to pin it.
-
-| Backend | Bills against | Constrained JSON |
+| Backend | Uses | Constrained JSON |
 |---|---|---|
-| `auto` (default) | whichever tier below answers first | per the tier it lands on |
-| `claude-code` | the Pro/Max **subscription**, via `claude -p` | no — asked for in the prompt |
-| `claude` | prepaid API **credits** | yes — API structured output |
-| `gemini` | Google **Gemini API** (`GEMINI_API_KEY`) | yes — schema enforced on all three of its own paths (google-genai SDK, legacy SDK, and direct REST), each fed the same schema converted to Gemini's uppercase OpenAPI subset |
-| `ollama` | nothing, runs locally | yes — Ollama `format` |
+| `chatgpt` (default) | the existing ChatGPT subscription through `codex exec` | yes — Codex `--output-schema` |
+| `ollama` | a local model; no account and no usage bill | yes — Ollama `format` |
+| `auto` | ChatGPT first, then Ollama | per the tier it lands on |
 
-Also: an exported `ANTHROPIC_API_KEY` silently overrides an OAuth profile AND
-Claude Code's own login. If auth looks wrong, check `env | grep -i anthropic`
-first.
+A named backend is pinned and never falls through. `auto` is the only setting
+that may switch, and its complete cascade is `chatgpt,ollama`.
+
+Install and authenticate the Codex CLI **inside WSL** once:
+
+```bash
+curl -fsSL https://chatgpt.com/codex/install.sh | sh
+codex login --device-auth
+codex login status            # must say: Logged in using ChatGPT
+```
+
+The ChatGPT writer runs from an empty temporary directory, with an ephemeral
+session and a read-only sandbox. It cannot inspect or modify the repository.
+`tools/doctor.py` verifies both the installation and login before a recording.
 
 ## Tuning, in order of how often it is wanted
 
@@ -258,7 +266,7 @@ first.
 | Caption style specifically | the worked examples in `captions()` — models copy samples harder than they follow adjectives |
 | Colour, size, position | `style` in `studio.json`, or per-caption in a staged `overlays.json` |
 | The voice's sound | `voice_describe` in `studio.json` — plain words, not a preset |
-| Cost | `claude_effort` (`low`…`max`) before `claude_model` |
+| Local writer quality/speed | `writer_model` (Ollama model) |
 | One video's wording | edit `overlays.json`, run `restyle.py` |
 
 ## House rules

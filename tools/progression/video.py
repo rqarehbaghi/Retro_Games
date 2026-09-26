@@ -39,6 +39,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
+import writer as text_writer                                      # noqa: E402
 from tools.progression import chart as chart_card, runners, speech   # noqa: E402
 
 OUT = os.path.join(ROOT, "progression_out")
@@ -322,6 +323,26 @@ def remap(plan):
         terms.append("max(0\\,min(T\\,%.3f)-%.3f)/%.4f" % (end, start, rate))
         start = end
     return "setpts=(%s)/TB" % "+".join(terms)
+
+
+def output_time(plan, source_time):
+    """Map one source-clock timestamp through a ``rate_plan``.
+
+    ``remap`` performs this calculation inside ffmpeg.  Editors also need the
+    same answer in Python so an overlay can change at the exact output frame
+    where a source event occurs.  Keeping the arithmetic beside ``remap``
+    prevents the two clocks from quietly drifting apart.
+    """
+    elapsed, start = 0.0, 0.0
+    target = max(0.0, float(source_time))
+    for end, rate in plan:
+        stop = min(target, end)
+        if stop > start:
+            elapsed += (stop - start) / rate
+        if target <= end:
+            return elapsed
+        start = end
+    return elapsed
 
 
 def compose(cells, out_path, ncols=None, headers=None, still=False, still_at=8.0,
@@ -736,7 +757,7 @@ def copy_gameplays(cells, folder):
 
 def say(game, card, states, cap, body_seconds, folder, writer_backend,
         voice_model, voice_name, channel, wpm, take="", card_budget=22.0,
-        podcast=False):
+        podcast=False, writer_options=None):
     """Write the script and render it to audio. Returns (body, card, texts).
 
     Deliberately BEFORE the video is composed: the closing card is then held
@@ -752,7 +773,7 @@ def say(game, card, states, cap, body_seconds, folder, writer_backend,
     script = narrate.write(game_title(game), body_seconds, card, states, cap,
                            algorithm=algorithm, channel=channel, wpm=wpm,
                            card_seconds_budget=card_budget, podcast=podcast,
-                           backend=writer_backend)
+                           backend=writer_backend, **(writer_options or {}))
     if not script:
         print("  (no script: the writer returned nothing)")
         return None
@@ -799,6 +820,11 @@ def speak_script(script, folder, voice_model, voice_name, take=""):
 
 
 def main():
+    try:
+        with open(os.path.join(ROOT, "studio.json"), encoding="utf-8") as handle:
+            studio_cfg = json.load(handle)
+    except (OSError, ValueError):
+        studio_cfg = {}
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--game", default=None,
@@ -870,9 +896,30 @@ def main():
     p.add_argument("--voice", action="store_true",
                    help="write and speak a narration: the game's history, what the agent "
                         "is, and -- only over the card -- what the numbers say")
-    p.add_argument("--writer", default="auto",
-                   help="which LLM writes the narration "
-                        "(auto|claude-code|claude|gemini|ollama)")
+    p.add_argument("--writer", choices=text_writer.BACKENDS,
+                   default=studio_cfg.get("writer", text_writer.DEFAULT_BACKEND),
+                   help="which writer produces narration: ChatGPT through Codex, "
+                        "local Ollama, or auto (ChatGPT then Ollama)")
+    p.add_argument("--writer-cascade",
+                   default=studio_cfg.get("writer_cascade",
+                                          ",".join(text_writer.AUTO_BACKENDS)),
+                   help="comma-separated order used only by --writer auto")
+    p.add_argument("--writer-cli",
+                   default=studio_cfg.get("writer_cli", text_writer.CODEX_CLI),
+                   help="Codex CLI path for the ChatGPT subscription writer")
+    p.add_argument("--chatgpt-model", default=studio_cfg.get("chatgpt_model"),
+                   help="optional Codex model override; empty uses its default")
+    p.add_argument("--chatgpt-timeout", type=int,
+                   default=studio_cfg.get("chatgpt_timeout", text_writer.CODEX_TIMEOUT),
+                   help="seconds allowed for one ChatGPT writer request")
+    p.add_argument("--writer-model",
+                   default=studio_cfg.get("writer_model", text_writer.DEFAULT_MODEL),
+                   help="local Ollama model")
+    p.add_argument("--writer-host",
+                   default=studio_cfg.get("writer_host", text_writer.DEFAULT_HOST),
+                   help="Ollama server URL")
+    p.add_argument("--no-think", action="store_true",
+                   help="disable reasoning on the local Ollama writer")
     p.add_argument("--voice-model", default=speech.DEFAULT,
                    help="which TTS speaks it: kokoro (default, local, free, one fixed "
                         "voice), qwen (the studio pipeline's), piper, elevenlabs (PAID, "
@@ -940,6 +987,19 @@ def main():
                    help="write a NEW script for a finished run, speak it and remux. "
                         "The gameplay and the card are reused as they are")
     a = p.parse_args()
+    try:
+        a.writer_cascade = text_writer.cascade_order(a.writer_cascade)
+    except ValueError as exc:
+        p.error(str(exc))
+    a.writer_options = {
+        "cascade_order": a.writer_cascade,
+        "cli": a.writer_cli,
+        "chatgpt_model": a.chatgpt_model,
+        "chatgpt_timeout": a.chatgpt_timeout,
+        "model": a.writer_model,
+        "host": a.writer_host,
+        "think": not a.no_think,
+    }
 
     if a.render_one:
         # A worker: play exactly one panel and exit. The parent reads the
@@ -1046,7 +1106,8 @@ def main():
                        else unit_seconds / speed + a.hold)
         spoken = say(game, card, rows, cap, body_target, out_dir, a.writer,
                      a.voice_model, a.voice_name, channel, a.wpm,
-                     card_budget=a.chart_seconds, podcast=a.podcast)
+                     card_budget=a.chart_seconds, podcast=a.podcast,
+                     writer_options=a.writer_options)
     if spoken:
         from tools.progression import narrate
         body, card_clips, _texts = spoken
@@ -1115,6 +1176,11 @@ def main():
                "grid_seconds": grid_seconds, "title": a.title,
                "channel": a.channel, "voice_model": a.voice_model,
                "voice_name": a.voice_name, "writer": a.writer, "wpm": a.wpm,
+               "writer_cascade": a.writer_cascade,
+               "writer_cli": a.writer_cli,
+               "chatgpt_model": a.chatgpt_model,
+               "chatgpt_timeout": a.chatgpt_timeout,
+               "writer_model": a.writer_model, "writer_host": a.writer_host,
                "panels": a.panels},
               open(os.path.join(out_dir, "run.json"), "w"), indent=2)
     print("\nrun folder: %s" % out_dir)
@@ -1187,7 +1253,8 @@ def regenerate(a):
                      out_dir, a.writer, voice_model, voice_name,
                      a.channel or run.get("channel") or "", a.wpm, take,
                      card_budget=run.get("chart_seconds") or a.chart_seconds,
-                     podcast=a.podcast or bool(run.get("podcast")))
+                     podcast=a.podcast or bool(run.get("podcast")),
+                     writer_options=a.writer_options)
         if not spoken:
             sys.exit("the writer returned nothing; the existing film is untouched")
     else:

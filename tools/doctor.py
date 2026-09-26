@@ -12,6 +12,7 @@ REQUIRED things exit non-zero. OPTIONAL ones are features you may not want --
 a writer backend, a voice, a GPU -- and only print what they would unlock.
 """
 import importlib
+import json
 import os
 import shutil
 import subprocess
@@ -127,22 +128,37 @@ def main():
         pass
 
     print("\nWRITERS (needed for captions and narration -- any ONE will do)")
+    import writer
+    try:
+        with open(os.path.join(ROOT, "studio.json"), encoding="utf-8") as handle:
+            writer_cfg = json.load(handle)
+    except (OSError, ValueError):
+        writer_cfg = {}
+    ollama_host = writer_cfg.get("writer_host", writer.DEFAULT_HOST)
+    ollama_model = writer_cfg.get("writer_model", writer.DEFAULT_MODEL)
+    codex_cli = writer_cfg.get("writer_cli", writer.CODEX_CLI)
     writers = []
-    if shutil.which("claude"):
-        writers.append("claude-code")
-        report(OK, "claude CLI", "billed to the Claude subscription")
+    codex = writer.find_cli(codex_cli)
+    if writer.chatgpt_available(codex_cli):
+        writers.append("chatgpt")
+        report(OK, "ChatGPT writer", "Codex CLI is installed and logged in")
+    elif codex:
+        report(MEH, "ChatGPT writer", "Codex CLI is installed but not logged in",
+               "codex login --device-auth && codex login status")
     else:
-        report(MEH, "claude CLI", "not installed", "npm i -g @anthropic-ai/claude-code")
-    for env, name, note in (("ANTHROPIC_API_KEY", "Claude API", "prepaid API credits"),
-                            ("GEMINI_API_KEY", "Gemini API", "Google AI Studio key")):
-        if os.environ.get(env):
-            writers.append(name)
-            report(OK, name, note)
+        report(MEH, "ChatGPT writer", "Codex CLI is not installed inside WSL",
+               "curl -fsSL https://chatgpt.com/codex/install.sh | sh")
+    if writer.available(ollama_host):
+        models = writer.installed_models(ollama_host)
+        if ollama_model in models:
+            writers.append("ollama")
+            report(OK, "ollama", "local model %s is ready" % ollama_model)
         else:
-            report(MEH, name, "%s is not set -- %s" % (env, note))
-    if shutil.which("ollama"):
-        writers.append("ollama")
-        report(OK, "ollama", "local and free")
+            report(MEH, "ollama", "server is running but %s is not pulled"
+                   % ollama_model, "ollama pull %s" % ollama_model)
+    elif shutil.which("ollama"):
+        report(MEH, "ollama", "installed but its local server is not reachable",
+               "ollama serve")
     else:
         report(MEH, "ollama", "not installed -- the free local writer",
                "curl -fsSL https://ollama.com/install.sh | sh")

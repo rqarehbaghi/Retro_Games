@@ -49,17 +49,16 @@ python tools/import_fixer.py
 
 3. AI WRITER & CAPTION GENERATION
 --------------------------------------------------------------------------------
-# Auto Cascade (DEFAULT): Claude Code subscription -> Anthropic API -> Gemini -> Ollama
+# Default: the existing ChatGPT subscription through Codex CLI
+python studio.py --game SuperMarioBros3-Nes-v0 --writer chatgpt
+
+# Auto fallback: ChatGPT subscription -> local Ollama. No separately billed API.
 python studio.py --game SuperMarioBros3-Nes-v0 --writer auto
 
-# Force Google Gemini (requires GEMINI_API_KEY environment variable)
-python studio.py --game SuperMarioBros3-Nes-v0 --writer gemini --gemini-model gemini-2.5-flash
-
-# Force Claude Code CLI (uses existing Claude subscription)
-python studio.py --game SuperMarioBros3-Nes-v0 --writer claude-code
-
-# Force Claude API (requires ANTHROPIC_API_KEY)
-python studio.py --game SuperMarioBros3-Nes-v0 --writer claude --claude-model claude-opus-4-8
+# One-time WSL setup for the ChatGPT writer
+curl -fsSL https://chatgpt.com/codex/install.sh | sh
+codex login --device-auth
+codex login status  # must say: Logged in using ChatGPT
 
 # Force Local Ollama (Free, runs offline on local GPU)
 python studio.py --game SuperMarioBros3-Nes-v0 --writer ollama --writer-model qwen3:30b-a3b

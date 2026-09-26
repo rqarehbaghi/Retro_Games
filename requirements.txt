@@ -47,7 +47,7 @@ matplotlib
 # Only for --voice. Nothing below is needed to render a silent video.
 soundfile                    # reads and writes the spoken wavs
 
-# Kokoro-82M, Apache-2.0, local and free. The RECOMMENDED voice: its speakers
+# Kokoro-82M, Apache-2.0, local and free. The lightweight fallback: its speakers
 # are fixed embeddings, so a paragraph in the middle of a film sounds like the
 # one at the start. Two packages exist for the same model -- the PyTorch one
 # (`kokoro`) requires Python < 3.13 and pulls its own torch, so this is the
@@ -55,8 +55,10 @@ soundfile                    # reads and writes the spoken wavs
 # separate ~350MB download: bash tools/get_kokoro.sh
 kokoro-onnx
 
-# Qwen3-TTS, Apache-2.0, ~4GB, needs a CUDA GPU. What the studio pipeline
-# speaks with. It pulls its OWN torch, which can move the one training is
-# pinned to -- check `pip install --dry-run` before letting it, or put it in a
-# separate venv (see tts.py).
-# qwen-tts
+# Chatterbox, MIT licensed, local and free. It can use its built-in voice or a
+# reference WAV the owner has permission to clone. This replaces Qwen3-TTS;
+# keeping both is impossible under their current exact Transformers pins.
+chatterbox-tts
+# Chatterbox's PerTh watermark package still imports pkg_resources. Setuptools
+# 81+ removed it; Torch only requires >=77, so this overlap keeps both valid.
+setuptools>=77,<81

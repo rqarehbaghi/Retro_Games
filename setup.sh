@@ -40,6 +40,12 @@ echo ""
 echo "==> Virtual environment (./venv)"
 [ -d venv ] || python3 -m venv venv
 ./venv/bin/pip install --upgrade pip
+# Qwen3-TTS and Chatterbox pin incompatible Transformers versions. Chatterbox
+# is the supported narrator; remove the old optional backend before resolving
+# requirements so an existing checkout upgrades as cleanly as a fresh one.
+if ./venv/bin/pip show qwen-tts >/dev/null 2>&1; then
+    ./venv/bin/pip uninstall -y qwen-tts
+fi
 ./venv/bin/pip install -r requirements.txt
 
 echo ""

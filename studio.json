@@ -32,11 +32,12 @@
       "border_w": 0
     }
   },
-  "_voice": "OFF by default -- pass --voice, or set voice true here. Without it no commentary script is written at all, which saves one of the three writer calls a run makes. With it you get narration.txt, narration.wav, voice/ and *_narrated.mp4. voice_speaker is a FIXED preset (Vivian, Serena, Ono_Anna, Sohee are female; Ryan, Eric, Dylan, Aiden, Uncle_Fu male) and must stay fixed, because the VoiceDesign model invents a new voice per call and made every sentence a different person.",
-  "voice_model": "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
-  "voice_describe": "Commentate live, reacting to what you are watching rather than reading. Warm and conversational, with real variation in pitch and energy. Never flat, never a newsreader.",
+  "_voice": "OFF by default -- pass --voice, or set voice true here. Chatterbox runs locally and uses its built-in voice unless voice_reference points to a clean WAV you own or have permission to clone. voice_exaggeration controls emotion; start at 0.5.",
+  "voice_model": "chatterbox",
+  "voice_reference": "",
+  "voice_exaggeration": 0.5,
+  "voice_cfg_weight": 0.5,
   "_timing": "Captions land on the exact frame their event was logged -- every value the event scan reads changes as the thing happens. caption_offset shifts all of them by a fixed number of seconds if a whole run reads late or early; it is 0 by default and nothing is adjusted unless you set it.",
   "caption_offset": 0.0,
-  "voice": false,
-  "voice_speaker": "Vivian"
+  "voice": false
 }

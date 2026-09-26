@@ -249,29 +249,38 @@ class SpeechBackendTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             speech.speak(["hello"], "/tmp", backend="piper")
 
-    def test_qwen_rejects_a_partial_per_block_speaker_list(self):
+    def test_chatterbox_rejects_a_partial_per_block_reference_list(self):
         # This check happens before model inference. A two-host script must not
-        # silently turn into one host or pass a Python list as Qwen's speaker.
-        with self.assertRaisesRegex(ValueError, "one Qwen speaker"):
+        # silently turn into one host or pass an ambiguous reference list.
+        with self.assertRaisesRegex(ValueError, "one Chatterbox reference"):
             studio_tts.speak_lines([{"text": "one"}, {"text": "two"}], "/tmp",
-                                   model=object(), speaker=["Ryan"])
+                                   model=object(), speaker=["host.wav"])
 
-    def test_qwen_uses_the_declared_speaker_for_each_podcast_turn(self):
+    def test_chatterbox_uses_the_declared_reference_for_each_podcast_turn(self):
         import numpy as np
 
         class FakeModel:
             calls = []
+            sr = 24000
 
-            def generate_custom_voice(self, **kw):
-                self.calls.append(kw["speaker"])
-                return [np.zeros(16, dtype="float32")], 24000
+            def generate(self, _text, **kw):
+                self.calls.append(kw["audio_prompt_path"])
+                return np.zeros((1, 16), dtype="float32")
 
         model = FakeModel()
         with tempfile.TemporaryDirectory() as out:
+            one, two = os.path.join(out, "host-one.wav"), os.path.join(out, "host-two.wav")
+            import soundfile as sf
+            sf.write(one, np.zeros(6 * 8000, dtype="float32"), 8000)
+            sf.write(two, np.zeros(6 * 8000, dtype="float32"), 8000)
             studio_tts.speak_lines([{"text": "host one"}, {"text": "host two"}],
-                                   out, model=model, speaker=["Ryan", "Vivian"],
+                                   out, model=model, speaker=[one, two],
                                    verbose=False)
-        self.assertEqual(model.calls, ["Ryan", "Vivian"])
+        self.assertEqual(model.calls, [one, two])
+
+    def test_chatterbox_podcast_requires_two_reference_wavs_up_front(self):
+        with self.assertRaisesRegex(ValueError, "needs two reference WAVs"):
+            speech.validate_voice("chatterbox", None, podcast=True)
 
 
 if __name__ == "__main__":

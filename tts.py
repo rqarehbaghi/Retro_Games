@@ -1,60 +1,31 @@
 #!/usr/bin/env python3
-"""
-Speak the narration script, locally, with Qwen3-TTS.
+"""Speak the narration script locally with Chatterbox.
 
 narration.txt is a timed script and nothing more -- there is no audio in the
 pipeline without this. This renders each line, places it at its timestamp, and
 ducks the game audio underneath so the commentary sits on top of the music
 rather than fighting it.
 
-    pip install -U qwen-tts soundfile
+    pip install -U chatterbox-tts soundfile
     python studio.py --game <id> --voice
 
-WHY QWEN3-TTS. Apache 2.0 (so a monetised channel is fine), open weights, about
-4GB, and it runs on any 8GB+ card -- comfortable on the same GPU already doing
-the training. More to the point it does VOICE DESIGN: the voice is described in
-words rather than chosen from a list, which suits a commentator persona that is
-supposed to sound like one specific unimpressed person.
+WHY CHATTERBOX. It is local, MIT licensed, and its zero-shot voice cloning
+preserves the rhythm and identity of a real reference recording rather than
+selecting a generic synthetic preset. A run may use the built-in voice, one
+reference WAV throughout, or one reference per podcast turn. Only use audio
+you own or have permission to clone.
 
-    Qwen3-TTS-12Hz-1.7B-VoiceDesign    voice from a description  <- default
-    Qwen3-TTS-12Hz-1.7B-CustomVoice    named preset voices
-    Qwen3-TTS-12Hz-1.7B-Base           cloning from reference audio
-    Qwen3-TTS-12Hz-0.6B-*              lighter, faster, less expressive
-
-TORCH CONFLICTS. qwen-tts pulls its own torch, and this project already has one
-pinned by stable-baselines3. If installing it moves your torch and training
-starts failing, put the TTS in its own venv and run --voice from there against
-an already staged folder, rather than unpinning training.
+Chatterbox and the trainer share the installed Torch. Stable-Baselines3 does
+not use Transformers, so the media dependency does not enter the RL code path.
 """
 import os
 import subprocess
 
 SAMPLE_RATE = 24000
-DEFAULT_MODEL = "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"
-
-# A FIXED speaker, which is the whole point of using CustomVoice here.
-# VoiceDesign invents a new voice from the description on every call, so a
-# per-line render came out sounding like a different person each sentence --
-# reported as "nothing cohesive". CustomVoice keeps one speaker identity and
-# still takes a per-line `instruct`, so the delivery can change while the
-# person does not.
-#
-# Female presets: Vivian, Serena, Ono_Anna, Sohee.
-# Male presets:   Ryan, Eric, Dylan, Aiden, Uncle_Fu.
-DEFAULT_SPEAKER = "Vivian"
-
-# How the fixed speaker should sound. This is an instruction ON TOP of the
-# preset voice, not a description of a new one.
-DEFAULT_VOICE = (
-    "Commentate live, reacting to what you are watching rather than reading. "
-    "Warm and conversational, with real variation in pitch and energy. Never "
-    "flat, never a newsreader."
-)
-
-# Per-line tone hints were removed. They gave a different instruct on every
-# call, and a model handing back the hint alongside the text meant the voice
-# read "tone amused" out loud. One instruction for the whole run is both more
-# consistent and has nothing to leak.
+DEFAULT_MODEL = "chatterbox"
+DEFAULT_SPEAKER = ""                 # optional reference WAV
+DEFAULT_EXAGGERATION = 0.5
+DEFAULT_CFG_WEIGHT = 0.5
 
 
 # How far the game audio drops while a line is being spoken. Full silence loses
@@ -65,48 +36,72 @@ DUCK_TO = 0.25
 
 def available():
     try:
-        import qwen_tts        # noqa: F401
+        import chatterbox      # noqa: F401
         import soundfile       # noqa: F401
         return True
-    except ImportError:
+    except Exception:          # noqa: BLE001 -- a broken Torch install is unavailable
         return False
 
 
-def load(model_name=DEFAULT_MODEL, device="cuda:0"):
+def load(model_name=DEFAULT_MODEL, device=None):
     """Load the model once; it is far too slow to load per line."""
     import torch
-    from qwen_tts import Qwen3TTSModel
-    return Qwen3TTSModel.from_pretrained(
-        model_name, device_map=device, dtype=torch.bfloat16)
+    from chatterbox.tts import ChatterboxTTS
+    if model_name not in (None, "", DEFAULT_MODEL):
+        raise ValueError("unknown Chatterbox model %r" % model_name)
+    device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+    return ChatterboxTTS.from_pretrained(device=device)
+
+
+def validate_reference(reference):
+    """Validate one optional clone source before model loading or gameplay."""
+    if not reference:
+        return
+    if not os.path.isfile(reference):
+        raise ValueError("Chatterbox reference WAV does not exist: %s" % reference)
+    import soundfile as sf
+    if sf.info(reference).duration < 5.0:
+        raise ValueError("Chatterbox reference WAV must be at least 5 seconds: %s"
+                         % reference)
 
 
 def speak_lines(lines, out_dir, model=None, model_name=DEFAULT_MODEL,
-                voice=DEFAULT_VOICE, speaker=DEFAULT_SPEAKER,
-                language="English", verbose=True):
+                speaker=DEFAULT_SPEAKER, exaggeration=DEFAULT_EXAGGERATION,
+                cfg_weight=DEFAULT_CFG_WEIGHT, verbose=True, **_ignored):
     """Render each narration line to its own wav. Returns [(at, path)].
 
     Per line rather than one long read, because each line has a timestamp it
     has to land on -- a single render would drift out of sync with the run
     within about fifteen seconds."""
+    import numpy as np
     import soundfile as sf
-    model = model or load(model_name)
     os.makedirs(out_dir, exist_ok=True)
     if isinstance(speaker, (list, tuple)) and len(speaker) != len(lines):
-        raise ValueError("one Qwen speaker is required per narration block")
+        raise ValueError("one Chatterbox reference is required per narration block")
+    references = list(speaker) if isinstance(speaker, (list, tuple)) else None
+    for reference in references or ([speaker] if speaker else []):
+        validate_reference(reference)
+    model = model or load(model_name)
     out = []
     for i, item in enumerate(lines):
         text = item["text"].strip()
         if not text:
             continue
-        who = speaker[i] if isinstance(speaker, (list, tuple)) else speaker
+        who = references[i] if references is not None else (speaker or None)
         path = os.path.join(out_dir, "line_%03d.wav" % i)
-        wavs, sr = model.generate_custom_voice(
-            text=text, language=language, speaker=who, instruct=voice)
-        sf.write(path, wavs[0], sr)
+        wav = model.generate(text, audio_prompt_path=who,
+                             exaggeration=float(exaggeration),
+                             cfg_weight=float(cfg_weight))
+        if hasattr(wav, "detach"):
+            audio = wav.detach().cpu().numpy()
+        else:
+            audio = np.asarray(wav)
+        sf.write(path, np.asarray(audio).squeeze(), model.sr)
         out.append((item.get("anchor"), path, bool(item.get("closing"))))
         if verbose:
-            print("    [%2d/%2d] %-10s %s"
-                  % (i + 1, len(lines), who, text[:50]))
+            print("    [%2d/%2d] %-18s %s"
+                  % (i + 1, len(lines), os.path.basename(who) if who else "built-in",
+                     text[:42]))
     return out
 
 

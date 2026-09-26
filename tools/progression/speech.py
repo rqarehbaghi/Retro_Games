@@ -1,9 +1,8 @@
 """Which voice speaks the narration, and how consistent it stays.
 
-The pipeline's own Qwen3-TTS was rendered ONE SENTENCE PER CALL, which is what
-made it sound like a machine reading a list: every call is a fresh inference,
-so pitch, pace and emphasis reset at each full stop, and the joins land on
-silence rather than on breath. Two things fix that, and this module does both:
+Speech rendered ONE SENTENCE PER CALL sounds like a machine reading a list:
+pitch, pace and emphasis reset at each full stop, and the joins land on silence
+rather than on breath. Two things fix that, and this module does both:
 
   1. A BLOCK, not a line. A whole paragraph goes to the model in one call, so
      the sentences inside it are spoken as one thought, with the model's own
@@ -18,8 +17,8 @@ Backends, with what each one costs:
               blocks. The recommended default for narration. Chunks long text
               itself and keeps one voice across the chunks.
               pip install "kokoro>=0.9.4" soundfile   (plus: apt install espeak-ng)
-    qwen      Qwen3-TTS CustomVoice, Apache-2.0, local, free, ~4GB. What the
-              studio pipeline uses. Expressive, but drifts between calls.
+    chatterbox  Chatterbox, MIT, local and free. Uses its built-in voice or a
+              reference WAV per host. The recommended realistic narrator.
     piper     Piper, MIT, local, free, tiny and fast. Flat but utterly
               consistent -- the safe fallback on a machine with no GPU.
     elevenlabs  PAID, and it sends the script to a third party. Only used if
@@ -32,21 +31,43 @@ import os
 import subprocess
 
 SAMPLE_RATE = 24000
-DEFAULT = "kokoro"
+DEFAULT = "chatterbox"
 
 # How fast each voice actually speaks. The script is sized from this, so a
 # wrong figure is silence at the end of the film or lines cut off it.
 #
-# kokoro and qwen are MEASURED on rendered blocks on this machine (kokoro:
-# 17 words in 5.72s and 13 in 4.78s; qwen: 3:07 of speech for a ~300 word
-# script). piper and elevenlabs are not measured here and take the general
-# default -- check one block and correct them rather than trusting these.
-WPM = {"kokoro": 170, "qwen": 130}
+# Kokoro is measured on rendered blocks on this machine (17 words in 5.72s and
+# 13 in 4.78s). Chatterbox starts from the general estimate until its first
+# complete narration is measured here.
+WPM = {"kokoro": 170, "chatterbox": 140}
 DEFAULT_WPM = 140
+_CHATTERBOX_MODEL = None
 
 
 def words_per_minute(backend):
     return WPM.get(backend, DEFAULT_WPM)
+
+
+def validate_voice(backend, voice=None, podcast=False):
+    """Refuse bad voice inputs before an emulator run spends real time."""
+    if backend != "chatterbox":
+        return
+    references = [part.strip() for part in (voice or "").split(",") if part.strip()]
+    if podcast and len(references) != 2:
+        raise ValueError("Chatterbox podcast mode needs two reference WAVs in "
+                         "--voice-name host1.wav,host2.wav")
+    if not podcast and len(references) > 1:
+        raise ValueError("Chatterbox monologue mode accepts one reference WAV")
+    if not references:
+        return                              # the built-in voice is valid
+    import soundfile as sf
+    for reference in references:
+        if not os.path.isfile(reference):
+            raise ValueError("Chatterbox reference WAV does not exist: %s" % reference)
+        info = sf.info(reference)
+        if info.duration < 5.0:
+            raise ValueError("Chatterbox reference WAV must be at least 5 seconds: %s"
+                             % reference)
 
 # Kokoro's voices are named embeddings. a = American English, b = British.
 # The first letter after that is the gender. These are the ones worth trying
@@ -95,13 +116,12 @@ def available(backend=DEFAULT):
             return all(kokoro_files())
         except Exception:                                          # noqa: BLE001
             return False
-    if backend == "qwen":
-        # find_spec rather than import: importing qwen_tts loads the whole
-        # stack and prints a flash-attn banner, which is a lot of noise for a
-        # yes/no question asked before every run.
+    if backend == "chatterbox":
+        # find_spec rather than import: importing a TTS stack loads Torch and
+        # model helpers just for a yes/no check before every run.
         import importlib.util
         return all(importlib.util.find_spec(m) is not None
-                   for m in ("qwen_tts", "soundfile"))
+                   for m in ("chatterbox", "soundfile"))
     if backend == "piper":
         return bool(_which("piper"))
     if backend == "elevenlabs":
@@ -215,18 +235,19 @@ def _speak_kokoro(blocks, out_dir, voice=None, speed=1.0, verbose=True):
     return out
 
 
-# -------------------------------------------------------------------- qwen --
-def _speak_qwen(blocks, out_dir, voice=None, speed=1.0, verbose=True):
-    """The studio pipeline's voice, but a block at a time rather than a line."""
+# -------------------------------------------------------------- chatterbox --
+def _speak_chatterbox(blocks, out_dir, voice=None, speed=1.0, verbose=True):
+    """The studio pipeline's Chatterbox model, one continuous podcast turn per block."""
     import tts
+    global _CHATTERBOX_MODEL
     lines = [{"text": t} for t in blocks]
-    model = None
-    try:
-        model = tts.load()
-    except Exception as exc:                                       # noqa: BLE001
-        print("  [voice] GPU load failed (%s), falling back to CPU" % exc)
-        model = tts.load(device="cpu")
-    clips = tts.speak_lines(lines, out_dir, model=model,
+    if _CHATTERBOX_MODEL is None:
+        try:
+            _CHATTERBOX_MODEL = tts.load()
+        except Exception as exc:                                   # noqa: BLE001
+            print("  [voice] GPU load failed (%s), falling back to CPU" % exc)
+            _CHATTERBOX_MODEL = tts.load(device="cpu")
+    clips = tts.speak_lines(lines, out_dir, model=_CHATTERBOX_MODEL,
                             speaker=voice or tts.DEFAULT_SPEAKER, verbose=verbose)
     return [path for _at, path, _closing in clips]
 
@@ -276,7 +297,7 @@ def _speak_elevenlabs(blocks, out_dir, voice=None, speed=1.0, verbose=True):
     return out
 
 
-SPEAKERS = {"kokoro": _speak_kokoro, "qwen": _speak_qwen,
+SPEAKERS = {"kokoro": _speak_kokoro, "chatterbox": _speak_chatterbox,
             "piper": _speak_piper, "elevenlabs": _speak_elevenlabs}
 
 

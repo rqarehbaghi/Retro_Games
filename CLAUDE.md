@@ -67,7 +67,7 @@ python restyle.py ./studio_out/<folder>
   through the authenticated Codex CLI, and local Ollama. `auto` tries them in
   that order; no separately billed writer API exists.
 - `overlays.py` — all rendering; both studio and restyle go through `render_spec`
-- `tts.py` — Qwen3-TTS speech and the ducking mux
+- `tts.py` — local Chatterbox speech/voice cloning and the ducking mux
 - `restyle.py` — re-render from an edited `overlays.json`
 - `games.json` — verified RAM addresses per game, with the evidence for each
 - `train.py` — the GENERIC trainer: one CLI for any game, with everything
@@ -190,11 +190,11 @@ an earlier version silently dropped the end of a line that nearly fit.
 variable fonts as, literally, `Ubuntu[wdth,wght].ttf`, and `[` `]` `,` are
 filtergraph structure.
 
-**The TTS speaker must stay FIXED.** Qwen3-TTS's VoiceDesign model invents a
-new voice from the description on every call, so rendering line by line made
-every sentence sound like a different person. Use `CustomVoice` with a named
-preset (`voice_speaker`) — it keeps one speaker identity and still accepts a
-per-line `instruct`, so the delivery varies while the person does not.
+**The TTS speaker must stay FIXED.** Chatterbox uses its built-in voice when no
+reference is provided, or clones one clean reference WAV for each host. Use the
+same authorized reference throughout a run; changing it between arbitrary
+lines makes the narrator sound like a different person. Podcast mode may use
+two references, one fixed WAV per host.
 
 **The spoken commentary is OFF by default.** It is the least finished part of the pipeline and the owner has parked it; `--voice` turns it on. Without it no script is even requested, which saves one of the three model calls a run makes. Everything below still applies when it is on.
 
@@ -268,7 +268,8 @@ session and a read-only sandbox. It cannot inspect or modify the repository.
 | Tone of everything | `VOICE` in `writer.py` — one system prompt, all three artifacts |
 | Caption style specifically | the worked examples in `captions()` — models copy samples harder than they follow adjectives |
 | Colour, size, position | `style` in `studio.json`, or per-caption in a staged `overlays.json` |
-| The voice's sound | `voice_describe` in `studio.json` — plain words, not a preset |
+| The voice's identity | `voice_reference` in `studio.json` — a clean authorized WAV, or empty for Chatterbox's built-in voice |
+| The voice's emotion | `voice_exaggeration` in `studio.json` — 0.5 is the natural starting point |
 | Local writer quality/speed | `writer_model` (Ollama model) |
 | One video's wording | edit `overlays.json`, run `restyle.py` |
 

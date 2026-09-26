@@ -920,10 +920,11 @@ def main():
     parser.add_argument("--writer-host", default=cfg.get("writer_host", writer.DEFAULT_HOST), help="Where Ollama is listening. (default: %(default)s)")
     parser.add_argument("--list-writer-models", action="store_true", help="Show which Ollama models are installed, with notes on what suits a 24GB card, then exit")
     parser.add_argument("--no-voice", action="store_true", help="Force the spoken commentary off even when studio.json turns it on.")
-    parser.add_argument("--voice", action="store_true", help="Write a spoken commentary script and speak it over the videos. OFF by default -- without it no narration is written at all, which also saves a model call. Speak the narration and lay it over the videos, ducking the game audio under it. Needs qwen-tts (pip install -U qwen-tts soundfile) and a GPU. Without it narration.txt is written but nothing is spoken.")
-    parser.add_argument("--voice-model", default=cfg.get("voice_model", tts.DEFAULT_MODEL), help="Qwen3-TTS model for --voice. (default: %(default)s)")
-    parser.add_argument("--voice-speaker", default=cfg.get("voice_speaker", tts.DEFAULT_SPEAKER), help="Which preset voice speaks. It must stay FIXED across a run -- Vivian, Serena, Ono_Anna and Sohee are female, Ryan, Eric, Dylan, Aiden and Uncle_Fu male. (default: %(default)s)")
-    parser.add_argument("--voice-describe", default=cfg.get("voice_describe", tts.DEFAULT_VOICE), help="How the commentator should sound, in plain words -- Qwen3-TTS designs the voice from this rather than picking a preset. Set it once as voice_describe in studio.json.")
+    parser.add_argument("--voice", action="store_true", help="Write and speak commentary with local Chatterbox, then duck the game audio underneath. OFF by default. Chatterbox uses its built-in voice unless --voice-reference names a WAV you own or have permission to clone.")
+    parser.add_argument("--voice-model", default=cfg.get("voice_model", tts.DEFAULT_MODEL), help="Local TTS engine for --voice. Chatterbox is the supported engine. (default: %(default)s)")
+    parser.add_argument("--voice-reference", "--voice-speaker", dest="voice_reference", default=cfg.get("voice_reference", tts.DEFAULT_SPEAKER), help="Optional clean reference WAV for the commentator. --voice-speaker is retained as a compatibility alias. (default: built-in voice)")
+    parser.add_argument("--voice-exaggeration", type=float, default=cfg.get("voice_exaggeration", tts.DEFAULT_EXAGGERATION), help="Chatterbox emotion strength; 0.5 is natural, larger is more dramatic. (default: %(default)s)")
+    parser.add_argument("--voice-cfg-weight", type=float, default=cfg.get("voice_cfg_weight", tts.DEFAULT_CFG_WEIGHT), help="Chatterbox guidance strength. (default: %(default)s)")
     parser.add_argument("--caption-offset", type=float, default=cfg.get("caption_offset", 0.0), help="Shift every caption by this many seconds. Use it only for a SYSTEMATIC lag -- if one caption is on the wrong moment the model picked the wrong event and this will not help. (default: %(default)s)")
     parser.add_argument("--brief", metavar="DIR", default=None,
                         help="Rebuild UPLOAD_BRIEF.md for an already staged folder and exit. A normal run writes it too.")
@@ -1067,9 +1068,15 @@ def main():
     # "voice": true in studio.json makes that the default again.
     args.voice = (args.voice or cfg.get("voice", False)) and not args.no_voice
     if args.voice and not tts.available():
-        sys.exit("--voice needs Qwen3-TTS:\n"
-                 "  pip install -U qwen-tts soundfile\n"
-                 "  (about 4GB of weights download on first use)")
+        sys.exit("--voice needs local Chatterbox:\n"
+                 "  pip uninstall -y qwen-tts\n"
+                 "  pip install -U chatterbox-tts soundfile\n"
+                 "  (model weights download on first use)")
+    if args.voice:
+        try:
+            tts.validate_reference(args.voice_reference)
+        except ValueError as exc:
+            sys.exit(str(exc))
 
     bk2_path = None
 
@@ -1359,12 +1366,14 @@ def main():
         # After the videos are rendered, not before: the speech is laid over
         # finished files, so a TTS failure costs the commentary track and
         # nothing else.
-        print(f"Speaking {len(written_narr)} lines as {args.voice_speaker} ...")
+        shown_voice = args.voice_reference or "Chatterbox built-in voice"
+        print(f"Speaking {len(written_narr)} lines as {shown_voice} ...")
         try:
             clips = tts.speak_lines(written_narr, os.path.join(folder, "voice"),
                                     model_name=args.voice_model,
-                                    voice=args.voice_describe,
-                                    speaker=args.voice_speaker)
+                                    speaker=args.voice_reference,
+                                    exaggeration=args.voice_exaggeration,
+                                    cfg_weight=args.voice_cfg_weight)
             track, placed = tts.build_track(
                 clips, duration, os.path.join(folder, "narration.wav"))
             write_narration(placed)

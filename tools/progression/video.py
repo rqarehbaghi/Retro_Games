@@ -927,12 +927,12 @@ def main():
     p.add_argument("--no-think", action="store_true",
                    help="disable reasoning on the local Ollama writer")
     p.add_argument("--voice-model", default=speech.DEFAULT,
-                   help="which TTS speaks it: kokoro (default, local, free, one fixed "
-                        "voice), qwen (the studio pipeline's), piper, elevenlabs (PAID, "
+                   help="which TTS speaks it: chatterbox (default, local voice cloning), "
+                        "kokoro (local and lightweight), piper, elevenlabs (PAID, "
                         "and it sends the script to a third party)")
     p.add_argument("--voice-name", default=None,
-                   help="the speaker: a Kokoro voice such as %s, a Qwen preset, a piper "
-                        ".onnx path, or an ElevenLabs voice id. TWO names separated by "
+                   help="the speaker: a Chatterbox reference WAV, a Kokoro voice such as "
+                        "%s, a piper .onnx path, or an ElevenLabs voice id. TWO names separated by "
                         "a comma makes it a conversation -- the first voice is the "
                         "person who trained the thing, the second is the co-host"
                         % ", ".join(speech.KOKORO_VOICES[:3]))
@@ -944,7 +944,7 @@ def main():
                         "two people")
     p.add_argument("--wpm", type=int, default=0,
                    help="words per minute used to size the script. The default is the "
-                        "measured rate of the voice you picked (kokoro 170, qwen 130), "
+                        "measured or initial rate of the voice you picked, "
                         "because a wrong figure here is silence at the end or lines cut "
                         "off it")
     p.add_argument("--background", choices=("black", "blur"), default="black",
@@ -1054,6 +1054,11 @@ def main():
         sys.exit("voice backend %r is not installed here.\n"
                  "kokoro:  pip install \"kokoro>=0.9.4\" soundfile   "
                  "(and: sudo apt install espeak-ng)" % a.voice_model)
+    if a.voice and not a.still:
+        try:
+            speech.validate_voice(a.voice_model, a.voice_name, a.podcast)
+        except ValueError as exc:
+            sys.exit(str(exc))
 
     columns = []
     for i, spec_name in enumerate(names):

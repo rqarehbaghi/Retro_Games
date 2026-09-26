@@ -6,7 +6,8 @@ import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from tools.progression import chart, ids, narrate, report, runners, select, speech, video  # noqa: E402
+from tools.progression import (chart, ids, narrate, report, runners, select,  # noqa: E402
+                                speech, short, video)
 
 BASE = dict(checkpoint_sha="a", state_sha="b", cfg_hash="c", commit="d", rom="e",
             player=2, players=2, deterministic=True, placement_cap=500)
@@ -403,3 +404,64 @@ class LayoutTests(unittest.TestCase):
             return min(cell_w / w, cell_h / h) ** 2 * w * h
 
         self.assertEqual(chosen, max(range(1, 7), key=area))
+
+
+class ShortCutTests(unittest.TestCase):
+    """The short is an EDIT, so what it must get right is order and rhythm."""
+
+    def panel(self, key, value, seconds=200.0, events=None):
+        return {"key": key, "path": key + ".mp4", "width": 152, "height": 224,
+                "seconds": seconds, "value": value, "label": key.split("_")[0],
+                "timeline": events or [{"i": 1, "t": 10.0, "v": 4, "d": 4, "h": 6, "lvl": 1},
+                                       {"i": 2, "t": 40.0, "v": 5, "d": 1, "h": 14, "lvl": 2},
+                                       {"i": 3, "t": 90.0, "v": 5, "d": 0, "end": "game_over"}]}
+
+    def test_cuts_land_on_the_beat_grid(self):
+        self.assertAlmostEqual(short.beat(2.7, 120), 2.5)
+        self.assertAlmostEqual(short.beat(0.1, 120), 0.5, msg="never shorter than a beat")
+        self.assertAlmostEqual(short.beat(2.7, 90), 2.0 / 3 * 4)
+
+    def test_a_tetris_outranks_a_single(self):
+        panel = self.panel("200k_a", 500)
+        picks = short.moments(panel)
+        self.assertEqual(picks[0]["cleared"], 4, "the four-line clear comes first")
+
+    def test_moments_are_spread_out(self):
+        crowd = [{"i": i, "t": 10.0 + i * 0.5, "v": i, "d": 4, "h": 5, "lvl": 1}
+                 for i in range(6)]
+        picks = short.moments(self.panel("a_b", 1, events=crowd))
+        self.assertEqual(len(picks), 1, "six clears within three seconds is one moment")
+
+    def test_the_hero_is_the_best_game_of_the_best_checkpoint(self):
+        panels = [self.panel("10k_s1", 40), self.panel("10k_s2", 60),
+                  self.panel("200k_s1", 900), self.panel("200k_s2", 300)]
+        picked = short.pick_games(panels, 2)
+        self.assertEqual(picked[0]["key"], "200k_s1")
+        self.assertTrue(picked[1]["key"].startswith("10k"), "the foil is an early one")
+
+    def test_the_hook_is_the_hero_alone_and_the_foil_is_dropped_at_the_turn(self):
+        hero, foil = self.panel("200k_a", 900), self.panel("10k_b", 40)
+        plan = short.plan([hero, foil], 30.0, card_seconds=6.0)
+        first = plan["shots"][0]
+        self.assertEqual(len(first["sources"]), 1, "the hook shows one board, not two")
+        self.assertEqual(first["sources"][0][0]["key"], "200k_a")
+        two_up = [i for i, s in enumerate(plan["shots"]) if len(s["sources"]) == 2]
+        self.assertTrue(two_up, "the setup shows both")
+        after = plan["shots"][max(two_up) + 1:]
+        self.assertTrue(all(len(s["sources"]) == 1 for s in after),
+                        "once the turn lands, the foil does not come back")
+
+    def test_shots_shorten_towards_the_climax(self):
+        plan = short.plan([self.panel("200k_a", 900), self.panel("10k_b", 40)],
+                          45.0, card_seconds=6.0)
+        tail = [s["length"] for s in plan["shots"][-4:]]
+        self.assertLessEqual(tail[-1], tail[0], "the ramp runs long to short")
+        self.assertTrue(all(abs(s["length"] * 2 - round(s["length"] * 2)) < 1e-6
+                            for s in plan["shots"]), "every shot is a whole beat")
+
+    def test_the_cut_fits_the_length_asked_for(self):
+        plan = short.plan([self.panel("200k_a", 900), self.panel("10k_b", 40)],
+                          60.0, card_seconds=8.0)
+        body = sum(s["length"] for s in plan["shots"])
+        self.assertLessEqual(body + 8.0, 60.5)
+        self.assertGreater(body, 40.0, "it must not come in far under")

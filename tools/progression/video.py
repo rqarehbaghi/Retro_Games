@@ -52,6 +52,8 @@ METRICS = 2                          # how the panel's numbers were measured;
 PANEL_SCALE = 2                      # nearest-neighbour upscale of the crop
 MARGIN = 6                           # game pixels kept around a declared grid
 CROP_PAD = 64                        # pixels of readouts kept beside it
+BLUR_DOWNSCALE = 8                   # blur at 1/8 size: same look, a third of
+BLUR_SIGMA = 20                      # the render cost (overlays.py measured it)
 END_FRAMES = 30                      # how long the end label is held
 END_LABELS = {"game_over": "GAME OVER", "placement_cap": "CAP REACHED",
               "truncated": "TRUNCATED"}
@@ -201,6 +203,31 @@ def duration(path):
     return float(out.stdout.strip())
 
 
+def best_grid(n, panel_w, panel_h, width, height, gutter=48):
+    """How many across, so the panels come out as BIG as they can.
+
+    The answer depends on the panel's own shape and on the canvas, and
+    intuition gets it wrong: two Tetris wells in a 1080x1920 phone frame are
+    bigger STACKED (652x960 each) than side by side (540x794), because side by
+    side wastes the height. The same function then serves a wide Mario frame
+    and a 16:9 canvas without knowing which game it is looking at.
+
+    Every arrangement that fits n panels is tried and the one with the largest
+    rendered panel wins."""
+    best, best_area = 1, 0.0
+    for cols in range(1, n + 1):
+        rows = int(math.ceil(n / float(cols)))
+        cell_w = (width - (cols - 1) * gutter) / float(cols)
+        cell_h = (height - (rows - 1) * gutter) / float(rows)
+        if cell_w <= 0 or cell_h <= 0:
+            continue
+        scale = min(cell_w / panel_w, cell_h / panel_h)
+        area = (scale * panel_w) * (scale * panel_h)
+        if area > best_area:
+            best, best_area = cols, area
+    return best
+
+
 def _clock(t):
     return "%d:%05.2f" % (int(t // 60), t % 60)
 
@@ -299,8 +326,17 @@ def remap(plan):
 
 def compose(cells, out_path, ncols=None, headers=None, still=False, still_at=8.0,
             speed=SPEED, chart=None, chart_seconds=12.0, catch_up=1.0, hold=0.0,
-            handle=""):
-    """Every panel into one 1920x1080 frame, each frozen once its game ends.
+            handle="", size=(1920, 1080), background="black", target=0.0):
+    """Every panel into one frame, each frozen once its game ends.
+
+    `size` is the canvas, so the same panels compose to 1920x1080 or to
+    1080x1920 without anything here knowing which is which. `background` is
+    black, or "blur" for the studio pipeline's look: the composed grid itself,
+    scaled to fill, blurred, with the sharp grid laid over it.
+
+    `target` forces the finished length in seconds, which is how the vertical
+    cut -- usually fewer panels, so naturally shorter -- ends at the same
+    moment as the landscape one and can share its narration.
 
     `cells` is a flat list in READING ORDER, each with a path, a size and a
     `label`. The shape is `ncols` wide and however many rows that needs, so
@@ -312,11 +348,13 @@ def compose(cells, out_path, ncols=None, headers=None, still=False, still_at=8.0
     caption instead, which is the only thing that still reads correctly once
     the panels wrap.
     """
-    ncols = ncols or len(cells)
+    W, H = size
+    top = 96 if headers else 70
+    ncols = ncols or best_grid(len(cells), cells[0]["width"], cells[0]["height"],
+                               W, H - top - 24)
     nrows = int(math.ceil(len(cells) / float(ncols)))
     longest = max(duration(c["path"]) for c in cells)
-    top = 96 if headers else 70
-    cell_w, cell_h = 1920 // ncols, (1080 - top - 24) // nrows
+    cell_w, cell_h = W // ncols, (H - top - 24) // nrows
     pw = min(cell_w - 40, int((cell_h - 34) * cells[0]["width"] / cells[0]["height"]))
     ph = int(pw * cells[0]["height"] / cells[0]["width"])
     # Panels are usually limited by HEIGHT, not width -- a tall Tetris well in
@@ -326,10 +364,16 @@ def compose(cells, out_path, ncols=None, headers=None, still=False, still_at=8.0
     gut_x, gut_y = 48, 44
     block_w = ncols * pw + (ncols - 1) * gut_x
     block_h = nrows * ph + (nrows - 1) * gut_y
-    x0 = max(0, (1920 - block_w) // 2)
-    y0 = max(top, top + ((1080 - top - 24) - block_h) // 2)
+    x0 = max(0, (W - block_w) // 2)
+    y0 = max(top, top + ((H - top - 24) - block_h) // 2)
 
     lengths = [duration(c["path"]) for c in cells]
+    if target > 0:
+        # Used by a cut that must end at a given moment whatever it contains.
+        # The hold plays at real time and does not scale, so it comes off
+        # before the games are fitted into what is left.
+        unit = rate_plan(lengths, 1.0, catch_up, 0.0)[1]
+        speed = max(0.1, unit / max(0.5, target - hold))
     plan, out_seconds = rate_plan(lengths, speed, catch_up, hold)
     pad_to = longest + hold
     inputs, filters, overlays = [], [], "[bg]"
@@ -364,8 +408,28 @@ def compose(cells, out_path, ncols=None, headers=None, still=False, still_at=8.0
     # alive -- a 29-minute game at 3x produced 6776 seconds of output and was
     # mistaken for a slow encode rather than an unbounded one. out_seconds comes
     # from the rate plan, which knows what the varying speed adds up to.
-    graph = (";".join(filters) + ";"
-             + "color=c=black:s=1920x1080:r=60:d=%.3f[bg];" % out_seconds + overlays)
+    if background == "blur":
+        # The studio pipeline's fill, applied here to the first panel: scaled
+        # to COVER the canvas, blurred, and darkened so the sharp panels over
+        # it stay dominant. It is a live frame, not a still, so the backdrop
+        # moves with the game.
+        #
+        # Blurred at 1/BLUR_DOWNSCALE size with the sigma scaled to match: a
+        # full-size gblur was most of the render cost in overlays.py (2.05x
+        # real time with it against 3.93x without) and the stills look the same.
+        # It rides the same tpad and remap as the panels so it lasts exactly as
+        # long as they do.
+        small_w, small_h = max(2, W // BLUR_DOWNSCALE), max(2, H // BLUR_DOWNSCALE)
+        bg_chain = ("[0:v]tpad=stop_mode=clone:stop_duration=%.3f,%s,"
+                    "scale=%d:%d:force_original_aspect_ratio=increase,crop=%d:%d,"
+                    "gblur=sigma=%.2f,eq=brightness=-0.18:saturation=0.65,"
+                    "scale=%d:%d:flags=bicubic,setsar=1[bg]"
+                    % (max(0.0, pad_to - lengths[0]), remap(plan),
+                       small_w, small_h, small_w, small_h,
+                       BLUR_SIGMA / float(BLUR_DOWNSCALE), W, H))
+    else:
+        bg_chain = "color=c=black:s=%dx%d:r=60:d=%.3f[bg]" % (W, H, out_seconds)
+    graph = ";".join(filters) + ";" + bg_chain + ";" + overlays
     graph = graph.rstrip(";")
 
     # Labels go on the composite, not inside the panels: a checkpoint name is
@@ -375,7 +439,7 @@ def compose(cells, out_path, ncols=None, headers=None, still=False, still_at=8.0
         labels = [(HEADINGS.get(col, col), x0 + i * (pw + gut_x) + pw // 2, 34,
                    fit_size(HEADINGS.get(col, col), pw + gut_x, 26))
                   for i, col in enumerate(columns)]
-        labels += [(row, 1920 // 2, y0 + j * (ph + gut_y) - 30, 20)
+        labels += [(row, W // 2, y0 + j * (ph + gut_y) - 30, 20)
                    for j, row in enumerate(rows)]
     else:
         labels = [(cell["label"], x0 + (i % ncols) * (pw + gut_x) + pw // 2,
@@ -388,12 +452,12 @@ def compose(cells, out_path, ncols=None, headers=None, still=False, still_at=8.0
     labels.append(("%sx speed" % rate_text(speed) if fastest <= speed * 1.01 else
                    "%sx speed, up to %sx as games end"
                    % (rate_text(speed), rate_text(fastest)),
-                   1920 // 2, 1054, 16))
+                   W // 2, H - 26, 16))
     if handle:
         # The channel, bottom right, on the same white plate as everything
         # else. Right-aligned by expression so a longer handle does not run
         # off the frame.
-        labels.append((handle, "w-text_w-26", 1046, 18))
+        labels.append((handle, "w-text_w-26", H - 34, 18))
     graph += ";" + drawtext("[vout]", labels)
 
     cmd = ["ffmpeg", "-nostdin", "-y", "-v", "error"] + inputs
@@ -417,10 +481,10 @@ def compose(cells, out_path, ncols=None, headers=None, still=False, still_at=8.0
         # built, so those are pinned here too.
         graph += (";[final]trim=duration=%.3f,setpts=PTS-STARTPTS,fps=60,setsar=1,"
                   "format=yuv420p[gridv];"
-                  "[%d:v]scale=1920:1080,trim=duration=%.3f,setpts=PTS-STARTPTS,"
+                  "[%d:v]scale=%d:%d,trim=duration=%.3f,setpts=PTS-STARTPTS,"
                   "fps=60,setsar=1,format=yuv420p,fade=in:st=0:d=0.5[chartv];"
                   "[gridv][chartv]concat=n=2:v=1:a=0[outv]"
-                  % (out_seconds, inputs_len, chart_seconds))
+                  % (out_seconds, inputs_len, W, H, chart_seconds))
         last = "[outv]"
         out_seconds += chart_seconds
     cmd += ["-filter_complex", graph, "-map", last, "-an"]
@@ -825,6 +889,11 @@ def main():
                         "measured rate of the voice you picked (kokoro 170, qwen 130), "
                         "because a wrong figure here is silence at the end or lines cut "
                         "off it")
+    p.add_argument("--background", choices=("black", "blur"), default="black",
+                   help="what sits behind the panels: flat black, or the studio "
+                        "pipeline's blurred fill -- the game itself scaled to cover the "
+                        "frame, blurred and darkened. The vertical short always uses "
+                        "blur, because a phone frame is mostly background")
     p.add_argument("--handle", default=None,
                    help="the channel handle burnt into the bottom right of the film "
                         "and onto the results card (default: the watermark in "
@@ -940,7 +1009,8 @@ def main():
         # SAME plan -- otherwise its footer quotes a speed the film will not
         # actually run at, and its panels are not dimmed where the film's are.
         compose(cells, still_path, ncols=ncols, headers=headers, still=True,
-                speed=speed, catch_up=a.catch_up, hold=a.hold, handle=handle)
+                speed=speed, catch_up=a.catch_up, hold=a.hold, handle=handle,
+                background=a.background)
         print("wrote %s" % still_path)
         return
 
@@ -1025,7 +1095,8 @@ def main():
     silent = os.path.join(out_dir, "grid.mp4")
     compose(cells, silent, ncols=ncols, headers=headers, speed=speed,
             chart=card and card["path"], chart_seconds=chart_seconds,
-            catch_up=a.catch_up, hold=a.hold, handle=handle)
+            catch_up=a.catch_up, hold=a.hold, handle=handle,
+            background=a.background)
     print("wrote %s" % silent)
 
     if spoken:

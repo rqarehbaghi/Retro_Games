@@ -365,3 +365,41 @@ class CardFitTests(unittest.TestCase):
 
     def test_no_card_means_no_hold(self):
         self.assertEqual(narrate.fit_card([], 22.0), ([], [], 0.0))
+
+
+class LayoutTests(unittest.TestCase):
+    """The grid shape is DERIVED from the panel's own aspect and the canvas,
+    because intuition gets it wrong."""
+
+    TETRIS = (152, 224)          # a well, taller than it is wide
+    MARIO = (240, 224)           # a whole screen, wider than tall
+
+    def test_two_tall_panels_stack_in_a_phone_frame(self):
+        # Side by side wastes the height: 540x794 each against 652x960 stacked.
+        self.assertEqual(video.best_grid(2, *self.TETRIS, 1080, 1826), 1)
+
+    def test_the_same_two_sit_side_by_side_in_a_wide_frame(self):
+        self.assertEqual(video.best_grid(2, *self.TETRIS, 1920, 986), 2)
+
+    def test_fifteen_panels_land_on_the_shape_that_was_chosen_by_hand(self):
+        self.assertEqual(video.best_grid(15, *self.TETRIS, 1920, 986), 5)
+
+    def test_a_wide_game_stacks_in_portrait_too(self):
+        self.assertEqual(video.best_grid(2, *self.MARIO, 1080, 1826), 1)
+
+    def test_one_panel_is_one_column(self):
+        self.assertEqual(video.best_grid(1, *self.TETRIS, 1080, 1826), 1)
+        self.assertEqual(video.best_grid(1, *self.MARIO, 1920, 986), 1)
+
+    def test_the_choice_actually_maximises_the_panel(self):
+        # Whatever it picks must beat every other arrangement on rendered area.
+        w, h, cw, ch = 152, 224, 1080, 1826
+        chosen = video.best_grid(6, w, h, cw, ch)
+
+        def area(cols):
+            rows = -(-6 // cols)
+            cell_w = (cw - (cols - 1) * 48) / cols
+            cell_h = (ch - (rows - 1) * 48) / rows
+            return min(cell_w / w, cell_h / h) ** 2 * w * h
+
+        self.assertEqual(chosen, max(range(1, 7), key=area))

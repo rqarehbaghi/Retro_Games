@@ -877,6 +877,12 @@ def main():
                         "panels 4 then 2, and --cols 2 makes them 2x3")
     p.add_argument("--chart", action="store_true",
                    help="close the film with a stats card built from these games")
+    p.add_argument("--short", action="store_true",
+                   help="also build the silent 9:16 elimination short from this "
+                        "run after the long film finishes")
+    p.add_argument("--short-seconds", type=float, default=90.0,
+                   help="target length of the elimination short, including its "
+                        "crown card (default %(default)g)")
     p.add_argument("--chart-seconds", type=float, default=28.0,
                    help="the MAXIMUM the results card is held (default %(default)s). "
                         "With --voice it is held for as long as the words written about "
@@ -987,6 +993,11 @@ def main():
                    help="write a NEW script for a finished run, speak it and remux. "
                         "The gameplay and the card are reused as they are")
     a = p.parse_args()
+    if a.short and (a.still or a.respeak or a.renarrate):
+        p.error("--short belongs to a complete film run, not --still, --respeak, "
+                "or --renarrate")
+    if a.short_seconds <= 0:
+        p.error("--short-seconds must be greater than zero")
     try:
         a.writer_cascade = text_writer.cascade_order(a.writer_cascade)
     except ValueError as exc:
@@ -1181,9 +1192,31 @@ def main():
                "chatgpt_model": a.chatgpt_model,
                "chatgpt_timeout": a.chatgpt_timeout,
                "writer_model": a.writer_model, "writer_host": a.writer_host,
-               "panels": a.panels},
+               "panels": a.panels, "short": bool(a.short),
+               "short_seconds": a.short_seconds},
               open(os.path.join(out_dir, "run.json"), "w"), indent=2)
+    if a.short:
+        build_short(out_dir, a.short_seconds)
     print("\nrun folder: %s" % out_dir)
+
+
+def short_command(out_dir, seconds):
+    """Exact standalone command used for the package's vertical film.
+
+    Keep the short in a separate process: short.py imports this module for the
+    shared timing and panel helpers, so importing it back here would create a
+    circular import. The run manifest is the interface between the two films.
+    """
+    out_dir = os.path.abspath(out_dir)
+    return [sys.executable, os.path.join(ROOT, "tools", "progression", "short.py"),
+            "--run", out_dir, "--seconds", str(float(seconds)),
+            "--out", os.path.join(out_dir, "short_9x16.mp4")]
+
+
+def build_short(out_dir, seconds):
+    """Build the vertical member of a completed progression package."""
+    print("\nbuilding vertical elimination short ...")
+    subprocess.run(short_command(out_dir, seconds), check=True)
 
 
 def next_take(out_dir):

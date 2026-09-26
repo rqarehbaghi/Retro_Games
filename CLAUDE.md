@@ -113,6 +113,9 @@ python restyle.py ./studio_out/<folder>
   bottom roster, the next true game-over is spotlighted, finished games dim,
   and the final survivor receives an honest crown card. Capped games are
   censored survivors rather than deaths; truncated panels are refused.
+  `video.py --short` builds that vertical film automatically after the long
+  film and writes `short_9x16.mp4` into the same run folder; use
+  `--short-seconds` to set its total length.
 
 ## Facts that cost real effort to establish
 

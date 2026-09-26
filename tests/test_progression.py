@@ -493,3 +493,14 @@ class ShortCutTests(unittest.TestCase):
         self.assertIn("eval=frame", position)
         self.assertIn("min(1\\,max(0\\,", scale)
         self.assertNotIn("min(1,max(0,", scale)
+
+    def test_long_film_package_invokes_short_with_its_exact_run(self):
+        with tempfile.TemporaryDirectory() as run:
+            command = video.short_command(run, 90)
+            self.assertEqual(command[0], sys.executable)
+            self.assertTrue(command[1].endswith(os.path.join(
+                "tools", "progression", "short.py")))
+            self.assertEqual(command[2:5], ["--run", os.path.abspath(run), "--seconds"])
+            self.assertEqual(float(command[5]), 90.0)
+            self.assertEqual(command[6:], [
+                "--out", os.path.join(os.path.abspath(run), "short_9x16.mp4")])

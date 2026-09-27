@@ -329,7 +329,10 @@ def write(game, body_seconds, card, states, cap, algorithm="", channel="",
 
     closing = data.get("closing") or ""
     out = {"body": turns(data.get("body")), "card": turns(data.get("card")),
-           "closing": (turns([closing]) or [("", 1)])[0]}
+           "closing": (turns([closing]) or [("", 1)])[0],
+           # The finished package must be auditable: preserve exactly what was
+           # sent to the writer rather than trying to reconstruct it later.
+           "_prompt": prompt}
     return out if (out["body"] or out["card"]) else None
 
 

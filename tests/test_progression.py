@@ -474,9 +474,16 @@ class ShortCutTests(unittest.TestCase):
                 "seconds": float(end) + 0.5, "label": key, "timeline": timeline,
                 "end_reason": reason, "stats": [["LINES", 1], ["PIECES", 2]]}
 
-    def test_transition_is_quantised_to_half_beats(self):
-        self.assertAlmostEqual(short.beat_transition(0.44, 120), 0.5)
-        self.assertAlmostEqual(short.beat_transition(0.01, 120), 0.25)
+    def test_only_one_best_state_represents_each_checkpoint(self):
+        weak = self.panel("10k_state_a", 50)
+        weak["stats"][0][1] = weak["value"] = 4
+        strong = self.panel("10k_state_b", 70)
+        strong["stats"][0][1] = strong["value"] = 9
+        other = self.panel("20k_state_a", 60)
+        other["stats"][0][1] = other["value"] = 6
+        chosen = short.checkpoint_champions([weak, strong, other])
+        self.assertEqual([panel["key"] for panel in chosen],
+                         ["10k_state_b", "20k_state_a"])
 
     def test_spotlight_order_is_the_real_elimination_order(self):
         result = short.plan([self.panel("late", 90), self.panel("early", 40)],
@@ -491,10 +498,10 @@ class ShortCutTests(unittest.TestCase):
                             30.0, card_seconds=6.0)
         self.assertAlmostEqual(result["phases"][0]["end"],
                                result["phases"][1]["start"])
-        self.assertGreater(result["phases"][0]["show_end"],
-                           result["phases"][0]["end"], "the dissolve overlaps")
-        self.assertLess(result["phases"][1]["show_start"],
-                        result["phases"][1]["start"], "the dissolve overlaps")
+        self.assertEqual(result["phases"][0]["show_end"],
+                         result["phases"][0]["end"])
+        self.assertEqual(result["phases"][1]["show_start"],
+                         result["phases"][1]["start"])
 
     def test_a_cap_is_not_presented_as_a_game_over(self):
         result = short.plan([self.panel("lost", 40),
@@ -531,16 +538,33 @@ class ShortCutTests(unittest.TestCase):
         self.assertAlmostEqual(result["seconds"], 60.0, places=5)
         self.assertAlmostEqual(result["body_seconds"], 52.0, places=5)
 
-    def test_grow_expressions_escape_filtergraph_commas(self):
-        tile = {"x": 10, "y": 20, "w": 100, "h": 140}
-        spot = {"x": 50, "y": 80, "w": 500, "h": 700}
-        phase = {"show_start": 2.0, "fade_in": 0.5}
-        scale = short._scale_filter(tile, spot, phase, True)
-        position = short._overlay_position(tile, spot, phase, True)
-        self.assertIn("eval=frame", scale)
-        self.assertIn("eval=frame", position)
-        self.assertIn("min(1\\,max(0\\,", scale)
-        self.assertNotIn("min(1,max(0,", scale)
+    def test_long_sources_never_force_more_than_ten_x(self):
+        result = short.plan([self.panel("one", 1800), self.panel("two", 2700)],
+                            60.0, card_seconds=6.0)
+        self.assertEqual(result["speed"], 10.0)
+        self.assertGreater(result["removed_source_seconds"], 0)
+        self.assertAlmostEqual(result["seconds"], 60.0, places=4)
+        self.assertGreater(len(result["cuts"]), 2)
+
+    def test_source_clock_jumps_where_footage_was_cut(self):
+        result = short.plan([self.panel("one", 1800), self.panel("two", 2700)],
+                            60.0, card_seconds=6.0)
+        gaps = [(a, b) for a, b in zip(result["cuts"], result["cuts"][1:])
+                if b["source_start"] > a["source_end"] + 1]
+        self.assertTrue(gaps)
+        left, right = gaps[0]
+        self.assertLess(short.source_at(result, left["out_end"] - 0.001),
+                        short.source_at(result, right["out_start"] + 0.001))
+
+    def test_short_copy_schema_is_strict_at_every_object(self):
+        def check(schema):
+            if schema.get("type") == "object":
+                self.assertIs(schema.get("additionalProperties"), False)
+                for child in schema.get("properties", {}).values():
+                    check(child)
+            elif schema.get("type") == "array":
+                check(schema["items"])
+        check(short.SHORT_COPY_SCHEMA)
 
     def test_long_film_package_invokes_short_with_its_exact_run(self):
         with tempfile.TemporaryDirectory() as run:

@@ -187,6 +187,20 @@ class NarrationTimingTests(unittest.TestCase):
     def clips(self, lengths):
         return [("block_%d.wav" % i, s) for i, s in enumerate(lengths)]
 
+    def test_writer_schemas_are_strict_at_every_object(self):
+        # Codex structured output rejects an object schema unless every object,
+        # including array items, explicitly refuses undeclared properties.
+        def check(schema):
+            if schema.get("type") == "object":
+                self.assertIs(schema.get("additionalProperties"), False)
+                for child in schema.get("properties", {}).values():
+                    check(child)
+            elif schema.get("type") == "array":
+                check(schema["items"])
+
+        check(narrate.SCHEMA)
+        check(narrate.PODCAST_SCHEMA)
+
     def test_body_runs_consecutively_from_the_start(self):
         placed = narrate.schedule(self.clips([10, 10, 10]), [], grid_seconds=60.0)
         self.assertAlmostEqual(placed[0][0], 0.6)

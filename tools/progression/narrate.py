@@ -91,6 +91,7 @@ SCHEMA = {
         "closing": {"type": "string"},
     },
     "required": ["body", "card", "closing"],
+    "additionalProperties": False,
 }
 
 # Two hosts. `who` is 1 for the person who trained it and 2 for the co-host,
@@ -99,6 +100,7 @@ TURN = {
     "type": "object",
     "properties": {"who": {"type": "integer"}, "text": {"type": "string"}},
     "required": ["who", "text"],
+    "additionalProperties": False,
 }
 PODCAST_SCHEMA = {
     "type": "object",
@@ -108,6 +110,7 @@ PODCAST_SCHEMA = {
         "closing": TURN,
     },
     "required": ["body", "card", "closing"],
+    "additionalProperties": False,
 }
 
 PODCAST_VOICE = """\

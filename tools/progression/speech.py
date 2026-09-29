@@ -12,6 +12,10 @@ rather than on breath. Two things fix that, and this module does both:
 
 Backends, with what each one costs:
 
+    cosyvoice3  Fun-CosyVoice 3, Apache-2.0, local and free. The default for
+              expressive narration and two-host podcasts. It runs in its own
+              Python 3.10 environment and uses one authorized reference WAV
+              per host, so it cannot disturb the trainer's Python environment.
     kokoro    Kokoro-82M, Apache-2.0, ~82M params, local, free. Named voices
               are fixed embeddings, so intonation does not drift between
               blocks. The recommended default for narration. Chunks long text
@@ -31,10 +35,12 @@ Nothing here is installed by this repo. `available()` reports what is actually
 importable on this machine so a run fails before the emulator does, not after.
 """
 import os
+import json
 import subprocess
+import tempfile
 
 SAMPLE_RATE = 24000
-DEFAULT = "chatterbox"
+DEFAULT = "cosyvoice3"
 
 # How fast each voice actually speaks. The script is sized from this, so a
 # wrong figure is silence at the end of the film or lines cut off it.
@@ -42,7 +48,8 @@ DEFAULT = "chatterbox"
 # Kokoro is measured on rendered blocks on this machine (17 words in 5.72s and
 # 13 in 4.78s). Chatterbox starts from the general estimate until its first
 # complete narration is measured here.
-WPM = {"kokoro": 170, "chatterbox": 140, "chatterbox-turbo": 140}
+WPM = {"cosyvoice3": 125, "kokoro": 170, "chatterbox": 140,
+       "chatterbox-turbo": 140}
 DEFAULT_WPM = 140
 _CHATTERBOX_MODEL = None
 _CHATTERBOX_TURBO_MODEL = None
@@ -52,6 +59,24 @@ _CHATTERBOX_TURBO_MODEL = None
 CHATTERBOX_EXAGGERATION = 0.7
 CHATTERBOX_CFG_WEIGHT = 0.3
 
+# CosyVoice deliberately lives outside the trainer's Python 3.14 venv. These
+# defaults are the locations written by tools/install_cosyvoice.sh; environment
+# variables make the backend portable without introducing more CLI flags.
+COSYVOICE_PYTHON = os.path.expanduser(os.environ.get(
+    "COSYVOICE_PYTHON", "~/miniconda3/envs/cosyvoice/bin/python"))
+COSYVOICE_HOME = os.path.expanduser(os.environ.get(
+    "COSYVOICE_HOME", "~/CosyVoice"))
+COSYVOICE_MODEL = os.path.expanduser(os.environ.get(
+    "COSYVOICE_MODEL",
+    os.path.join(COSYVOICE_HOME, "pretrained_models", "Fun-CosyVoice3-0.5B")))
+COSYVOICE_RUNNER = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "cosyvoice_runner.py")
+COSYVOICE_STYLE = (
+    "You are a helpful assistant. Speak in a natural, relaxed podcast "
+    "conversation. Sound engaged and spontaneous, with varied pacing and "
+    "subtle emotion. Do not sound like an announcer or audiobook narrator."
+    "<|endofprompt|>")
+
 
 def words_per_minute(backend):
     return WPM.get(backend, DEFAULT_WPM)
@@ -59,26 +84,27 @@ def words_per_minute(backend):
 
 def validate_voice(backend, voice=None, podcast=False):
     """Refuse bad voice inputs before an emulator run spends real time."""
-    if backend not in ("chatterbox", "chatterbox-turbo"):
+    if backend not in ("cosyvoice3", "chatterbox", "chatterbox-turbo"):
         return
     references = [part.strip() for part in (voice or "").split(",") if part.strip()]
     if podcast and len(references) != 2:
-        raise ValueError("Chatterbox podcast mode needs two reference WAVs in "
-                         "--voice-name host1.wav,host2.wav")
+        raise ValueError("%s podcast mode needs two reference WAVs in "
+                         "--voice-name host1.wav,host2.wav" % backend)
     if not podcast and len(references) > 1:
-        raise ValueError("Chatterbox monologue mode accepts one reference WAV")
-    if backend == "chatterbox-turbo" and not references:
-        raise ValueError("Chatterbox Turbo needs a reference WAV; podcast mode needs two")
+        raise ValueError("%s monologue mode accepts one reference WAV" % backend)
+    if backend in ("cosyvoice3", "chatterbox-turbo") and not references:
+        raise ValueError("%s needs a reference WAV; podcast mode needs two" % backend)
     if not references:
         return                              # the built-in voice is valid
     import soundfile as sf
     for reference in references:
         if not os.path.isfile(reference):
-            raise ValueError("Chatterbox reference WAV does not exist: %s" % reference)
+            raise ValueError("%s reference WAV does not exist: %s"
+                             % (backend, reference))
         info = sf.info(reference)
         if info.duration < 5.0:
-            raise ValueError("Chatterbox reference WAV must be at least 5 seconds: %s"
-                             % reference)
+            raise ValueError("%s reference WAV must be at least 5 seconds: %s"
+                             % (backend, reference))
 
 # Kokoro's voices are named embeddings. a = American English, b = British.
 # The first letter after that is the gender. These are the ones worth trying
@@ -112,6 +138,12 @@ def kokoro_files():
 
 def available(backend=DEFAULT):
     """Is this backend actually usable HERE? Checked before a run starts."""
+    if backend == "cosyvoice3":
+        return (os.path.isfile(COSYVOICE_PYTHON)
+                and os.access(COSYVOICE_PYTHON, os.X_OK)
+                and os.path.isdir(COSYVOICE_HOME)
+                and os.path.isfile(os.path.join(COSYVOICE_MODEL, "cosyvoice3.yaml"))
+                and os.path.isfile(COSYVOICE_RUNNER))
     if backend == "kokoro":
         # Two packages, same model. `kokoro` is the PyTorch one and caps at
         # Python < 3.13; `kokoro_onnx` runs anywhere onnxruntime does and
@@ -287,6 +319,46 @@ def _speak_chatterbox_turbo(blocks, out_dir, voice=None, speed=1.0, verbose=True
     return [path for _at, path, _closing in clips]
 
 
+# --------------------------------------------------------------- CosyVoice --
+def _speak_cosyvoice3(blocks, out_dir, voice=None, speed=1.0, verbose=True):
+    """Render a complete batch in CosyVoice's isolated Python environment.
+
+    Loading the 9 GB checkpoint once per sentence would be unusably slow, so a
+    single subprocess owns the model for the whole body or card batch. The
+    runner receives only text, authorized reference paths, and output paths.
+    """
+    references = list(voice) if isinstance(voice, (list, tuple)) else [voice] * len(blocks)
+    if len(references) != len(blocks) or any(not item for item in references):
+        raise RuntimeError("cosyvoice3 needs one reference WAV for every spoken block")
+    os.makedirs(out_dir, exist_ok=True)
+    outputs = [os.path.join(out_dir, "block_%02d.wav" % i)
+               for i in range(len(blocks))]
+    job = {
+        "model_dir": COSYVOICE_MODEL,
+        "style": COSYVOICE_STYLE,
+        "blocks": [{"text": text, "reference": reference, "output": output}
+                   for text, reference, output in zip(blocks, references, outputs)],
+    }
+    handle, job_path = tempfile.mkstemp(prefix="cosyvoice_job_", suffix=".json",
+                                        dir=out_dir)
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            json.dump(job, stream, ensure_ascii=False, indent=2)
+        subprocess.run([COSYVOICE_PYTHON, COSYVOICE_RUNNER, job_path],
+                       cwd=COSYVOICE_HOME, check=True)
+    finally:
+        if os.path.exists(job_path):
+            os.unlink(job_path)
+    missing = [path for path in outputs if not os.path.isfile(path)]
+    if missing:
+        raise RuntimeError("CosyVoice returned without writing: %s" % missing[0])
+    if verbose:
+        for i, (text, reference) in enumerate(zip(blocks, references)):
+            print("    [%2d/%2d] %-10s %s"
+                  % (i + 1, len(blocks), os.path.basename(reference), text[:46]))
+    return outputs
+
+
 # ------------------------------------------------------------------- piper --
 def _speak_piper(blocks, out_dir, voice=None, speed=1.0, verbose=True):
     """Piper wants a model path; `voice` IS that path here."""
@@ -332,7 +404,8 @@ def _speak_elevenlabs(blocks, out_dir, voice=None, speed=1.0, verbose=True):
     return out
 
 
-SPEAKERS = {"kokoro": _speak_kokoro, "chatterbox": _speak_chatterbox,
+SPEAKERS = {"cosyvoice3": _speak_cosyvoice3,
+            "kokoro": _speak_kokoro, "chatterbox": _speak_chatterbox,
             "chatterbox-turbo": _speak_chatterbox_turbo,
             "piper": _speak_piper, "elevenlabs": _speak_elevenlabs}
 

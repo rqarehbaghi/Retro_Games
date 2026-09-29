@@ -811,11 +811,23 @@ def speak_script(script, folder, voice_model, voice_name, take=""):
               n or speech.KOKORO_DEFAULT for n in hosts)))
 
     blocks = os.path.join(folder, "narration_blocks%s" % take)
-    body = speech.speak([t for t, _w in body_turns], blocks, backend=voice_model,
-                        voice=voices(body_turns) if len(hosts) > 1 else hosts[0])
-    card_clips = speech.speak([t for t, _w in card_turns], os.path.join(blocks, "card"),
-                              backend=voice_model,
-                              voice=voices(card_turns) if len(hosts) > 1 else hosts[0])
+    if voice_model == "cosyvoice3":
+        # Loading CosyVoice's 9 GB checkpoint twice would add a second startup
+        # delay and briefly duplicate GPU pressure. Render the complete podcast
+        # in one worker, then preserve the body/card split used by scheduling.
+        turns = body_turns + card_turns
+        rendered = speech.speak(
+            [t for t, _w in turns], blocks, backend=voice_model,
+            voice=voices(turns) if len(hosts) > 1 else hosts[0])
+        body = rendered[:len(body_turns)]
+        card_clips = rendered[len(body_turns):]
+    else:
+        body = speech.speak([t for t, _w in body_turns], blocks, backend=voice_model,
+                            voice=voices(body_turns) if len(hosts) > 1 else hosts[0])
+        card_clips = speech.speak(
+            [t for t, _w in card_turns], os.path.join(blocks, "card"),
+            backend=voice_model,
+            voice=voices(card_turns) if len(hosts) > 1 else hosts[0])
     return body, card_clips, [t for t, _w in body_turns + card_turns]
 
 
@@ -927,11 +939,11 @@ def main():
     p.add_argument("--no-think", action="store_true",
                    help="disable reasoning on the local Ollama writer")
     p.add_argument("--voice-model", default=speech.DEFAULT,
-                   help="which TTS speaks it: chatterbox (default, local voice cloning), "
-                        "kokoro (local and lightweight), piper, elevenlabs (PAID, "
+                   help="which TTS speaks it: cosyvoice3 (default, local expressive "
+                        "voice cloning), chatterbox, kokoro, piper, elevenlabs (PAID, "
                         "and it sends the script to a third party)")
     p.add_argument("--voice-name", default=None,
-                   help="the speaker: a Chatterbox reference WAV, a Kokoro voice such as "
+                   help="the speaker: a CosyVoice/Chatterbox reference WAV, a Kokoro voice such as "
                         "%s, a piper .onnx path, or an ElevenLabs voice id. TWO names separated by "
                         "a comma makes it a conversation -- the first voice is the "
                         "person who trained the thing, the second is the co-host"

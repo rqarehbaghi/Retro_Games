@@ -168,13 +168,16 @@ def main():
     print("\nVOICE (optional -- only for --voice)")
     try:
         from tools.progression import speech
-        for backend in ("chatterbox-turbo", "chatterbox", "kokoro", "piper",
+        for backend in ("cosyvoice3", "chatterbox-turbo", "chatterbox", "kokoro", "piper",
                         "elevenlabs"):
             if speech.available(backend):
                 extra = ""
                 if backend == "kokoro":
                     extra = " (weights: %s)" % (speech.kokoro_files()[0] or "torch build")
                 report(OK, backend, "installed%s" % extra)
+            elif backend == "cosyvoice3":
+                report(MEH, backend, "isolated environment or model missing",
+                       "bash tools/install_cosyvoice.sh")
             elif backend == "kokoro":
                 have_pkg = importlib.util.find_spec("kokoro_onnx") is not None
                 report(MEH, "kokoro",

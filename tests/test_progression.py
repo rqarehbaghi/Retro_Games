@@ -251,6 +251,9 @@ class NarrationTimingTests(unittest.TestCase):
 
 
 class SpeechBackendTests(unittest.TestCase):
+    def test_cosyvoice_is_the_progression_default(self):
+        self.assertEqual(speech.DEFAULT, "cosyvoice3")
+
     def test_unknown_backend_is_refused_by_name(self):
         with self.assertRaises(ValueError):
             speech.speak(["hello"], "/tmp", backend="not-a-real-tts")
@@ -299,6 +302,53 @@ class SpeechBackendTests(unittest.TestCase):
     def test_chatterbox_turbo_requires_a_reference(self):
         with self.assertRaisesRegex(ValueError, "needs a reference WAV"):
             speech.validate_voice("chatterbox-turbo", None, podcast=False)
+
+    def test_cosyvoice_podcast_requires_two_reference_wavs(self):
+        with self.assertRaisesRegex(ValueError, "needs two reference WAVs"):
+            speech.validate_voice("cosyvoice3", "only-one.wav", podcast=True)
+
+    def test_cosyvoice_dispatches_one_batch_with_per_turn_references(self):
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as out:
+            refs = [os.path.join(out, "host1.wav"), os.path.join(out, "host2.wav")]
+            jobs = []
+
+            def run(command, cwd, check):
+                self.assertTrue(check)
+                self.assertEqual(command[0], "/cosy/python")
+                self.assertEqual(cwd, "/cosy/home")
+                with open(command[-1], encoding="utf-8") as handle:
+                    jobs.append(json.load(handle))
+                for block in jobs[-1]["blocks"]:
+                    with open(block["output"], "wb") as handle:
+                        handle.write(b"wav")
+
+            with patch.object(speech, "COSYVOICE_PYTHON", "/cosy/python"), \
+                    patch.object(speech, "COSYVOICE_HOME", "/cosy/home"), \
+                    patch.object(speech, "COSYVOICE_MODEL", "/cosy/model"), \
+                    patch("tools.progression.speech.subprocess.run", side_effect=run):
+                paths = speech._speak_cosyvoice3(
+                    ["first turn", "second turn"], out, voice=refs, verbose=False)
+            self.assertEqual([b["reference"] for b in jobs[0]["blocks"]], refs)
+            self.assertEqual(len(paths), 2)
+
+    def test_video_batches_a_whole_cosyvoice_podcast_into_one_model_load(self):
+        from unittest.mock import patch
+
+        script = {"body": [("body one", 1), ("body two", 2)],
+                  "card": [("winner", 2)], "closing": ("next match", 1)}
+        rendered = [("/tmp/%d.wav" % i, 1.0) for i in range(4)]
+        with tempfile.TemporaryDirectory() as out, \
+                patch("tools.progression.video.speech.speak",
+                      return_value=rendered) as speak:
+            body, card, _texts = video.speak_script(
+                script, out, "cosyvoice3", "host1.wav,host2.wav")
+        self.assertEqual(speak.call_count, 1)
+        self.assertEqual(speak.call_args.kwargs["voice"],
+                         ["host1.wav", "host2.wav", "host2.wav", "host1.wav"])
+        self.assertEqual(body, rendered[:2])
+        self.assertEqual(card, rendered[2:])
 
     def test_progression_chatterbox_uses_expressive_controls(self):
         from unittest.mock import patch

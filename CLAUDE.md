@@ -108,7 +108,10 @@ python restyle.py ./studio_out/<folder>
   `--cols` reflows the panels into any shape, `--chart` closes on a stats card
   built from those same games (`chart.py`), and `--voice` writes and speaks a
   narration about the game and the training rather than the gameplay
-  (`narrate.py`) -- off by default, like the studio pipeline's. `short.py`
+  (`narrate.py`) -- off by default, like the studio pipeline's. CosyVoice 3 is
+  the default progression narrator and runs in a separate Python 3.10
+  environment; install it once with `bash tools/install_cosyvoice.sh`.
+  `short.py`
   turns a completed run into a 9:16 elimination film: every game remains in a
   bottom roster, the next true game-over is spotlighted, finished games dim,
   and the final survivor receives an honest crown card. Capped games are
@@ -190,11 +193,14 @@ an earlier version silently dropped the end of a line that nearly fit.
 variable fonts as, literally, `Ubuntu[wdth,wght].ttf`, and `[` `]` `,` are
 filtergraph structure.
 
-**The TTS speaker must stay FIXED.** Original Chatterbox can use its built-in
-voice; Chatterbox Turbo and podcast mode clone one clean reference WAV for each host. Use the
-same authorized reference throughout a run; changing it between arbitrary
-lines makes the narrator sound like a different person. Podcast mode may use
-two references, one fixed WAV per host.
+**The TTS speaker must stay FIXED.** CosyVoice 3 is the progression default and
+uses one clean authorized reference WAV per host. Original Chatterbox can use
+its built-in voice; Chatterbox Turbo also needs a reference. Use the same
+authorized reference throughout a run; changing it between arbitrary lines
+makes the narrator sound like a different person. Podcast mode uses two
+references, one fixed WAV per host. An optional same-name `.txt` beside a
+CosyVoice WAV supplies its exact transcript for higher-fidelity zero-shot
+cloning; without it CosyVoice uses instruction-conditioned podcast delivery.
 
 **The spoken commentary is OFF by default.** It is the least finished part of the pipeline and the owner has parked it; `--voice` turns it on. Without it no script is even requested, which saves one of the three model calls a run makes. Everything below still applies when it is on.
 
@@ -268,7 +274,8 @@ session and a read-only sandbox. It cannot inspect or modify the repository.
 | Tone of everything | `VOICE` in `writer.py` — one system prompt, all three artifacts |
 | Caption style specifically | the worked examples in `captions()` — models copy samples harder than they follow adjectives |
 | Colour, size, position | `style` in `studio.json`, or per-caption in a staged `overlays.json` |
-| The voice's identity | `voice_reference` in `studio.json` — a clean authorized WAV, or empty for Chatterbox's built-in voice |
+| The progression voice's identity | `--voice-name host1.wav,host2.wav` — clean authorized WAVs; CosyVoice 3 is the default |
+| The studio voice's identity | `voice_reference` in `studio.json` — a clean authorized WAV, or empty for Chatterbox's built-in voice |
 | The voice's emotion | `voice_exaggeration` in `studio.json` — 0.5 is the natural starting point |
 | Local writer quality/speed | `writer_model` (Ollama model) |
 | One video's wording | edit `overlays.json`, run `restyle.py` |

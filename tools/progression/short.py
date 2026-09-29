@@ -12,8 +12,8 @@ source-clock timer visibly jumps with them.
 
 Panels need ``<key>_timeline.json`` sidecars. A panel recorded before timeline
 support cannot be repaired from its MP4: replay it with progression/video.py.
-The output is silent by design. ChatGPT writes sparse on-screen commentary, a
-final challenge from the winning AI to its trainer, and upload copy for the
+The output is silent by design. ChatGPT writes sparse on-screen commentary from
+the trainer's first-person viewpoint, a final head-to-head setup, and upload copy for the
 long YouTube film, YouTube Short, Instagram and TikTok. Every model prompt is
 saved beside the finished package.
 """
@@ -692,12 +692,14 @@ one of the numbered cuts above. Each overlay is at most 42 characters, readable
 in one glance, specific to this experiment, and either explains the stakes,
 notices a real reversal, or makes one dry joke. Do not narrate falling pieces.
 Do not invent numbers. Do not use emoji, hashtags, quotation marks, stage
-directions, or generic hype. Leave some cuts text-free.
+directions, or generic hype. Leave some cuts text-free. Write every overlay from
+the trainer/creator's viewpoint, using first person naturally when useful. The
+AI never speaks, addresses the trainer, or claims to be sentient.
 
-`challenge` is the final card's one sentence, spoken AS THE WINNING AI directly
-to the human who trained it. At most 70 characters. Confident and funny, not
-sentient, threatening, or melodramatic. It challenges the human to the promised
-head-to-head match.
+`challenge` is the final card's one sentence, spoken by the trainer/creator.
+At most 70 characters. It says, in first person, that I have finally found or
+built a worthy opponent and now have to face it. Confident and funny, not
+melodramatic. The AI must not speak in this sentence.
 
 Also write upload copy for four distinct posts:
 - youtube_long: the narrated 16:9 checkpoint comparison.
@@ -747,7 +749,7 @@ def _clean_package(data, plan_data):
     challenge = text_writer.trim_words(
         text_writer.clean_spoken(data.get("challenge", "")), 70)
     if not challenge:
-        challenge = "You trained me. Now try to beat me."
+        challenge = "I built my worthy opponent. Now I have to beat it."
     clean = {"overlays": overlays, "challenge": challenge}
     for name in ("youtube_long", "youtube_short", "instagram", "tiktok"):
         source = data.get(name) or {}
@@ -892,12 +894,13 @@ def build_crown_card(plan_data, panels, path, chart=None, size=SIZE):
                            fill=gold, outline=edge, width=4)
     winner = " + ".join(panel["label"] for panel in survivors)
     _plate_center(draw, width, 500, winner.upper(), title_font, 18)
-    challenge = plan_data.get("challenge") or "You trained me. Now try to beat me."
+    challenge = (plan_data.get("challenge") or
+                 "I built my worthy opponent. Now I have to beat it.")
     y = 720
     for line in _wrap_words(challenge, 28):
         _plate_center(draw, width, y, line, body_font, 12)
         y += 76
-    footer = "THE WINNER PLAYS ITS TRAINER NEXT"
+    footer = "NEXT: I PLAY THE WINNER"
     _plate_center(draw, width, height - 230, footer, video.house_font(20), 9)
     image.save(path)
     return path

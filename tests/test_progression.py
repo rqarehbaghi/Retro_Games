@@ -296,6 +296,21 @@ class SpeechBackendTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "needs two reference WAVs"):
             speech.validate_voice("chatterbox", None, podcast=True)
 
+    def test_progression_chatterbox_uses_expressive_controls(self):
+        from unittest.mock import patch
+        previous = speech._CHATTERBOX_MODEL
+        speech._CHATTERBOX_MODEL = object()
+        try:
+            with patch("tts.speak_lines",
+                       return_value=[(None, "/tmp/line.wav", False)]) as speak:
+                paths = speech._speak_chatterbox(
+                    ["A complete thought."], "/tmp", voice=None, verbose=False)
+            self.assertEqual(paths, ["/tmp/line.wav"])
+            self.assertEqual(speak.call_args.kwargs["exaggeration"], 0.7)
+            self.assertEqual(speak.call_args.kwargs["cfg_weight"], 0.3)
+        finally:
+            speech._CHATTERBOX_MODEL = previous
+
 
 if __name__ == "__main__":
     unittest.main()
@@ -577,6 +592,16 @@ class ShortCutTests(unittest.TestCase):
             font=short.overlay_font_file())
         self.assertIn("BlackOpsOne-Regular.ttf", result)
         self.assertNotIn("PressStart2P", result)
+
+    def test_short_writer_is_explicitly_trainer_first_person(self):
+        panels = [self.panel("10k_state", 40), self.panel("20k_state", 90)]
+        for panel in panels:
+            panel["value"] = 1
+            panel["state"] = "state"
+        plan = short.plan(panels, 30, card_seconds=6)
+        prompt = short._short_prompt(plan, panels, {"game": "Example"})
+        self.assertIn("trainer/creator's viewpoint", prompt)
+        self.assertIn("AI never speaks", prompt)
 
     def test_long_film_package_invokes_short_with_its_exact_run(self):
         with tempfile.TemporaryDirectory() as run:

@@ -42,6 +42,11 @@ DEFAULT = "chatterbox"
 WPM = {"kokoro": 170, "chatterbox": 140}
 DEFAULT_WPM = 140
 _CHATTERBOX_MODEL = None
+# Resemble's documented expressive-speech starting point. The neutral 0.5/0.5
+# pair made a two-host film sound like two people reading a list; lower CFG
+# restores more deliberate pacing while the higher exaggeration adds variation.
+CHATTERBOX_EXAGGERATION = 0.7
+CHATTERBOX_CFG_WEIGHT = 0.3
 
 
 def words_per_minute(backend):
@@ -248,7 +253,10 @@ def _speak_chatterbox(blocks, out_dir, voice=None, speed=1.0, verbose=True):
             print("  [voice] GPU load failed (%s), falling back to CPU" % exc)
             _CHATTERBOX_MODEL = tts.load(device="cpu")
     clips = tts.speak_lines(lines, out_dir, model=_CHATTERBOX_MODEL,
-                            speaker=voice or tts.DEFAULT_SPEAKER, verbose=verbose)
+                            speaker=voice or tts.DEFAULT_SPEAKER,
+                            exaggeration=CHATTERBOX_EXAGGERATION,
+                            cfg_weight=CHATTERBOX_CFG_WEIGHT,
+                            verbose=verbose)
     return [path for _at, path, _closing in clips]
 
 

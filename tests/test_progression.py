@@ -566,6 +566,18 @@ class ShortCutTests(unittest.TestCase):
                 check(schema["items"])
         check(short.SHORT_COPY_SCHEMA)
 
+    def test_commentary_display_font_is_bundled_and_loadable(self):
+        path = short.overlay_font_file()
+        self.assertTrue(path.endswith("BlackOpsOne-Regular.ttf"))
+        self.assertGreater(short.overlay_font(32).getlength("CHECKPOINT UPSET"), 0)
+
+    def test_commentary_filter_uses_display_font_not_house_font(self):
+        result = short._enabled_label(
+            "[in]", "[out]", "CHECKPOINT UPSET", 1, 2, 100, 40,
+            font=short.overlay_font_file())
+        self.assertIn("BlackOpsOne-Regular.ttf", result)
+        self.assertNotIn("PressStart2P", result)
+
     def test_long_film_package_invokes_short_with_its_exact_run(self):
         with tempfile.TemporaryDirectory() as run:
             command = video.short_command(run, 90)

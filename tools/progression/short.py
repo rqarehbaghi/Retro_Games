@@ -25,7 +25,7 @@ import shutil
 import subprocess
 import sys
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if ROOT not in sys.path:
@@ -41,6 +41,8 @@ MAX_SPEED = 10.0
 CLIP_SOURCE_SECONDS = 65.0
 MIN_PHASE_SOURCE_SECONDS = 35.0
 TIE_EPSILON = 1.0 / FPS
+OVERLAY_FONT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 "fonts", "BlackOpsOne-Regular.ttf")
 
 
 PLATFORM_SCHEMA = {
@@ -436,14 +438,40 @@ def _escape_text(text):
     return str(text).replace("\\", "\\\\").replace(":", "\\:").replace("'", "")
 
 
-def _enabled_label(chain, output, text, start, end, y, size):
+def overlay_font_file():
+    """Bundled display font used only for model-written short-form copy."""
+    if not os.path.isfile(OVERLAY_FONT_FILE):
+        raise RuntimeError("missing bundled overlay font: %s" % OVERLAY_FONT_FILE)
+    return OVERLAY_FONT_FILE
+
+
+def overlay_font(size):
+    return ImageFont.truetype(overlay_font_file(), size)
+
+
+def _filter_path(path):
+    """Escape a local font path for FFmpeg's filtergraph parser."""
+    value = os.path.abspath(path).replace("\\", "/")
+    for char in (":", ",", "[", "]", ";", "'"):
+        value = value.replace(char, "\\" + char)
+    return value
+
+
+def _overlay_size(text, width, base=48, minimum=24):
+    """Fit proportional display lettering instead of fixed-cell house type."""
+    font = overlay_font(base)
+    measured = max(1.0, float(font.getlength(str(text))))
+    return max(minimum, min(base, int(base * (width - 24) / measured)))
+
+
+def _enabled_label(chain, output, text, start, end, y, size, font=None):
     return _enabled_text(chain, output, text, start, end,
-                         "(w-text_w)/2", y, size)
+                         "(w-text_w)/2", y, size, font=font)
 
 
-def _enabled_text(chain, output, text, start, end, x, y, size):
-    font = video.font_file()
-    font_arg = ("fontfile=%s:" % font) if font else ""
+def _enabled_text(chain, output, text, start, end, x, y, size, font=None):
+    font_path = video.font_file() if font is None else font
+    font_arg = ("fontfile=%s:" % _filter_path(font_path)) if font_path else ""
     return ("%sdrawtext=%stext='%s':fontcolor=black:fontsize=%d:box=1:"
             "boxcolor=white:boxborderw=10:x=%s:y=%d:"
             "enable='between(t\\,%.3f\\,%.3f)'%s"
@@ -582,8 +610,9 @@ def render_body(plan_data, panels, path, size=SIZE, handle="", **_ignored):
         output = "[copy%d]" % index
         text = overlay["text"]
         filters.append(_enabled_label(stage, output, text, start, end,
-                                      dock_top - 92,
-                                      video.fit_size(text, width - 70, 34, 18)))
+                                      dock_top - 110,
+                                      _overlay_size(text, width - 70),
+                                      font=overlay_font_file()))
         stage = output
 
     static = []
@@ -851,7 +880,7 @@ def build_crown_card(plan_data, panels, path, chart=None, size=SIZE):
     image = Image.new("RGB", size, (9, 11, 16))
     draw = ImageDraw.Draw(image)
     title_font = video.house_font(58)
-    body_font = video.house_font(30)
+    body_font = overlay_font(42)
     by_key = {panel["key"]: panel for panel in panels}
     survivors = [by_key[key] for key in plan_data["survivors"]]
     cx = width // 2

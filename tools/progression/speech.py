@@ -330,6 +330,8 @@ def _speak_cosyvoice3(blocks, out_dir, voice=None, speed=1.0, verbose=True):
     references = list(voice) if isinstance(voice, (list, tuple)) else [voice] * len(blocks)
     if len(references) != len(blocks) or any(not item for item in references):
         raise RuntimeError("cosyvoice3 needs one reference WAV for every spoken block")
+    references = [os.path.abspath(reference) for reference in references]
+    out_dir = os.path.abspath(out_dir)
     os.makedirs(out_dir, exist_ok=True)
     outputs = [os.path.join(out_dir, "block_%02d.wav" % i)
                for i in range(len(blocks))]

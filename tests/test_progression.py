@@ -331,6 +331,8 @@ class SpeechBackendTests(unittest.TestCase):
                 paths = speech._speak_cosyvoice3(
                     ["first turn", "second turn"], out, voice=refs, verbose=False)
             self.assertEqual([b["reference"] for b in jobs[0]["blocks"]], refs)
+            self.assertTrue(all(os.path.isabs(b["output"])
+                                for b in jobs[0]["blocks"]))
             self.assertEqual(len(paths), 2)
 
     def test_video_batches_a_whole_cosyvoice_podcast_into_one_model_load(self):

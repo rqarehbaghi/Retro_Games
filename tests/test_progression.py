@@ -296,6 +296,10 @@ class SpeechBackendTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "needs two reference WAVs"):
             speech.validate_voice("chatterbox", None, podcast=True)
 
+    def test_chatterbox_turbo_requires_a_reference(self):
+        with self.assertRaisesRegex(ValueError, "needs a reference WAV"):
+            speech.validate_voice("chatterbox-turbo", None, podcast=False)
+
     def test_progression_chatterbox_uses_expressive_controls(self):
         from unittest.mock import patch
         previous = speech._CHATTERBOX_MODEL
@@ -310,6 +314,31 @@ class SpeechBackendTests(unittest.TestCase):
             self.assertEqual(speak.call_args.kwargs["cfg_weight"], 0.3)
         finally:
             speech._CHATTERBOX_MODEL = previous
+
+    def test_turbo_uses_the_reference_without_unsupported_controls(self):
+        import numpy as np
+
+        class FakeTurbo:
+            sr = 24000
+            calls = []
+
+            def generate(self, _text, **kwargs):
+                self.calls.append(kwargs)
+                return np.zeros((1, 16), dtype="float32")
+
+        with tempfile.TemporaryDirectory() as out:
+            reference = os.path.join(out, "host.wav")
+            import soundfile as sf
+            sf.write(reference, np.zeros(6 * 8000, dtype="float32"), 8000)
+            model = FakeTurbo()
+            studio_tts.speak_lines(
+                [{"text": "A natural podcast turn."}], out, model=model,
+                model_name=studio_tts.TURBO_MODEL, speaker=reference,
+                verbose=False)
+        self.assertEqual(model.calls[0]["audio_prompt_path"], reference)
+        self.assertIs(model.calls[0]["norm_loudness"], False)
+        self.assertNotIn("exaggeration", model.calls[0])
+        self.assertNotIn("cfg_weight", model.calls[0])
 
 
 if __name__ == "__main__":

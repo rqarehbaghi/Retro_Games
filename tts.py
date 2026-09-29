@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Speak the narration script locally with Chatterbox.
+"""Speak the narration script locally with Chatterbox or Chatterbox Turbo.
 
 narration.txt is a timed script and nothing more -- there is no audio in the
 pipeline without this. This renders each line, places it at its timestamp, and
@@ -23,6 +23,7 @@ import subprocess
 
 SAMPLE_RATE = 24000
 DEFAULT_MODEL = "chatterbox"
+TURBO_MODEL = "chatterbox-turbo"
 DEFAULT_SPEAKER = ""                 # optional reference WAV
 DEFAULT_EXAGGERATION = 0.5
 DEFAULT_CFG_WEIGHT = 0.5
@@ -46,9 +47,13 @@ def available():
 def load(model_name=DEFAULT_MODEL, device=None):
     """Load the model once; it is far too slow to load per line."""
     import torch
-    from chatterbox.tts import ChatterboxTTS
+    if model_name == TURBO_MODEL:
+        from chatterbox.tts_turbo import ChatterboxTurboTTS
+        device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        return ChatterboxTurboTTS.from_pretrained(device=device)
     if model_name not in (None, "", DEFAULT_MODEL):
         raise ValueError("unknown Chatterbox model %r" % model_name)
+    from chatterbox.tts import ChatterboxTTS
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     return ChatterboxTTS.from_pretrained(device=device)
 
@@ -89,9 +94,17 @@ def speak_lines(lines, out_dir, model=None, model_name=DEFAULT_MODEL,
             continue
         who = references[i] if references is not None else (speaker or None)
         path = os.path.join(out_dir, "line_%03d.wav" % i)
-        wav = model.generate(text, audio_prompt_path=who,
-                             exaggeration=float(exaggeration),
-                             cfg_weight=float(cfg_weight))
+        generate = {"audio_prompt_path": who}
+        if model_name == TURBO_MODEL:
+            # chatterbox-tts 0.1.7's loudness normalizer promotes an ordinary
+            # PCM16 reference to float64, then Turbo's float32 mel filters
+            # reject it. Our references are already clean and levelled; skip
+            # that buggy optional normalization rather than rewriting them.
+            generate["norm_loudness"] = False
+        else:
+            generate.update(exaggeration=float(exaggeration),
+                            cfg_weight=float(cfg_weight))
+        wav = model.generate(text, **generate)
         if hasattr(wav, "detach"):
             audio = wav.detach().cpu().numpy()
         else:

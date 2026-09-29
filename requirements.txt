@@ -55,9 +55,10 @@ soundfile                    # reads and writes the spoken wavs
 # separate ~350MB download: bash tools/get_kokoro.sh
 kokoro-onnx
 
-# Chatterbox, MIT licensed, local and free. It can use its built-in voice or a
-# reference WAV the owner has permission to clone. This replaces Qwen3-TTS;
-# keeping both is impossible under their current exact Transformers pins.
+# Chatterbox plus Chatterbox Turbo, MIT licensed, local and free. Turbo is the
+# preferred English podcast voice and clones one authorized reference WAV per
+# host. This replaces Qwen3-TTS; keeping both is impossible under their current
+# exact Transformers pins.
 chatterbox-tts
 # Chatterbox's PerTh watermark package still imports pkg_resources. Setuptools
 # 81+ removed it; Torch only requires >=77, so this overlap keeps both valid.

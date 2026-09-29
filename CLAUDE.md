@@ -67,7 +67,7 @@ python restyle.py ./studio_out/<folder>
   through the authenticated Codex CLI, and local Ollama. `auto` tries them in
   that order; no separately billed writer API exists.
 - `overlays.py` — all rendering; both studio and restyle go through `render_spec`
-- `tts.py` — local Chatterbox speech/voice cloning and the ducking mux
+- `tts.py` — local Chatterbox/Chatterbox Turbo speech and voice cloning, and the ducking mux
 - `restyle.py` — re-render from an edited `overlays.json`
 - `games.json` — verified RAM addresses per game, with the evidence for each
 - `train.py` — the GENERIC trainer: one CLI for any game, with everything
@@ -190,8 +190,8 @@ an earlier version silently dropped the end of a line that nearly fit.
 variable fonts as, literally, `Ubuntu[wdth,wght].ttf`, and `[` `]` `,` are
 filtergraph structure.
 
-**The TTS speaker must stay FIXED.** Chatterbox uses its built-in voice when no
-reference is provided, or clones one clean reference WAV for each host. Use the
+**The TTS speaker must stay FIXED.** Original Chatterbox can use its built-in
+voice; Chatterbox Turbo and podcast mode clone one clean reference WAV for each host. Use the
 same authorized reference throughout a run; changing it between arbitrary
 lines makes the narrator sound like a different person. Podcast mode may use
 two references, one fixed WAV per host.

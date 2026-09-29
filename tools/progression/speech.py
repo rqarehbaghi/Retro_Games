@@ -17,8 +17,11 @@ Backends, with what each one costs:
               blocks. The recommended default for narration. Chunks long text
               itself and keeps one voice across the chunks.
               pip install "kokoro>=0.9.4" soundfile   (plus: apt install espeak-ng)
-    chatterbox  Chatterbox, MIT, local and free. Uses its built-in voice or a
-              reference WAV per host. The recommended realistic narrator.
+    chatterbox  Original Chatterbox, MIT, local and free. Uses its built-in
+              voice or a reference WAV per host.
+    chatterbox-turbo  Chatterbox Turbo, local and free. The recommended
+              English podcast backend: conversational, faster, and one fixed
+              cloned reference voice per host.
     piper     Piper, MIT, local, free, tiny and fast. Flat but utterly
               consistent -- the safe fallback on a machine with no GPU.
     elevenlabs  PAID, and it sends the script to a third party. Only used if
@@ -39,9 +42,10 @@ DEFAULT = "chatterbox"
 # Kokoro is measured on rendered blocks on this machine (17 words in 5.72s and
 # 13 in 4.78s). Chatterbox starts from the general estimate until its first
 # complete narration is measured here.
-WPM = {"kokoro": 170, "chatterbox": 140}
+WPM = {"kokoro": 170, "chatterbox": 140, "chatterbox-turbo": 140}
 DEFAULT_WPM = 140
 _CHATTERBOX_MODEL = None
+_CHATTERBOX_TURBO_MODEL = None
 # Resemble's documented expressive-speech starting point. The neutral 0.5/0.5
 # pair made a two-host film sound like two people reading a list; lower CFG
 # restores more deliberate pacing while the higher exaggeration adds variation.
@@ -55,7 +59,7 @@ def words_per_minute(backend):
 
 def validate_voice(backend, voice=None, podcast=False):
     """Refuse bad voice inputs before an emulator run spends real time."""
-    if backend != "chatterbox":
+    if backend not in ("chatterbox", "chatterbox-turbo"):
         return
     references = [part.strip() for part in (voice or "").split(",") if part.strip()]
     if podcast and len(references) != 2:
@@ -63,6 +67,8 @@ def validate_voice(backend, voice=None, podcast=False):
                          "--voice-name host1.wav,host2.wav")
     if not podcast and len(references) > 1:
         raise ValueError("Chatterbox monologue mode accepts one reference WAV")
+    if backend == "chatterbox-turbo" and not references:
+        raise ValueError("Chatterbox Turbo needs a reference WAV; podcast mode needs two")
     if not references:
         return                              # the built-in voice is valid
     import soundfile as sf
@@ -121,12 +127,14 @@ def available(backend=DEFAULT):
             return all(kokoro_files())
         except Exception:                                          # noqa: BLE001
             return False
-    if backend == "chatterbox":
+    if backend in ("chatterbox", "chatterbox-turbo"):
         # find_spec rather than import: importing a TTS stack loads Torch and
         # model helpers just for a yes/no check before every run.
         import importlib.util
-        return all(importlib.util.find_spec(m) is not None
-                   for m in ("chatterbox", "soundfile"))
+        modules = (("chatterbox.tts_turbo", "soundfile")
+                   if backend == "chatterbox-turbo" else
+                   ("chatterbox", "soundfile"))
+        return all(importlib.util.find_spec(m) is not None for m in modules)
     if backend == "piper":
         return bool(_which("piper"))
     if backend == "elevenlabs":
@@ -260,6 +268,25 @@ def _speak_chatterbox(blocks, out_dir, voice=None, speed=1.0, verbose=True):
     return [path for _at, path, _closing in clips]
 
 
+def _speak_chatterbox_turbo(blocks, out_dir, voice=None, speed=1.0, verbose=True):
+    """Higher-quality English dialogue, with one stable clone per host."""
+    import tts
+    global _CHATTERBOX_TURBO_MODEL
+    if not voice:
+        raise RuntimeError("chatterbox-turbo needs a reference WAV per host")
+    lines = [{"text": text} for text in blocks]
+    if _CHATTERBOX_TURBO_MODEL is None:
+        try:
+            _CHATTERBOX_TURBO_MODEL = tts.load(tts.TURBO_MODEL)
+        except Exception as exc:                                   # noqa: BLE001
+            print("  [voice] Turbo GPU load failed (%s), falling back to CPU" % exc)
+            _CHATTERBOX_TURBO_MODEL = tts.load(tts.TURBO_MODEL, device="cpu")
+    clips = tts.speak_lines(lines, out_dir, model=_CHATTERBOX_TURBO_MODEL,
+                            model_name=tts.TURBO_MODEL, speaker=voice,
+                            verbose=verbose)
+    return [path for _at, path, _closing in clips]
+
+
 # ------------------------------------------------------------------- piper --
 def _speak_piper(blocks, out_dir, voice=None, speed=1.0, verbose=True):
     """Piper wants a model path; `voice` IS that path here."""
@@ -306,6 +333,7 @@ def _speak_elevenlabs(blocks, out_dir, voice=None, speed=1.0, verbose=True):
 
 
 SPEAKERS = {"kokoro": _speak_kokoro, "chatterbox": _speak_chatterbox,
+            "chatterbox-turbo": _speak_chatterbox_turbo,
             "piper": _speak_piper, "elevenlabs": _speak_elevenlabs}
 
 

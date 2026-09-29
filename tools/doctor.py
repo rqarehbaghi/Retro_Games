@@ -168,7 +168,8 @@ def main():
     print("\nVOICE (optional -- only for --voice)")
     try:
         from tools.progression import speech
-        for backend in ("chatterbox", "kokoro", "piper", "elevenlabs"):
+        for backend in ("chatterbox-turbo", "chatterbox", "kokoro", "piper",
+                        "elevenlabs"):
             if speech.available(backend):
                 extra = ""
                 if backend == "kokoro":

@@ -228,6 +228,16 @@ class NarrationTimingTests(unittest.TestCase):
         self.assertLess(held, 18.0)                    # and not much more
         self.assertEqual(narrate.card_seconds([]), 0.0)
 
+    def test_finished_narration_track_has_a_peak_safety_limiter(self):
+        from unittest.mock import patch
+
+        with patch("tools.progression.narrate.subprocess.run") as run:
+            narrate.build_track([(0.6, 2.0, "turn.wav", False)], 3.0, "out.wav")
+        command = run.call_args.args[0]
+        graph = command[command.index("-filter_complex") + 1]
+        self.assertIn("amix=inputs=2:normalize=0", graph)
+        self.assertIn("alimiter=limit=0.84:level=false", graph)
+
     def test_facts_name_the_unit_of_every_number(self):
         # A mean with no unit was read aloud as "the average placement count"
         # when it was lines cleared.
@@ -257,6 +267,23 @@ class SpeechBackendTests(unittest.TestCase):
     def test_unknown_backend_is_refused_by_name(self):
         with self.assertRaises(ValueError):
             speech.speak(["hello"], "/tmp", backend="not-a-real-tts")
+
+    def test_saved_script_links_are_removed_at_the_tts_boundary(self):
+        from unittest.mock import patch
+
+        rendered = []
+
+        def fake(blocks, _out, **_kwargs):
+            rendered.extend(blocks)
+            return ["/tmp/fake.wav"]
+
+        with patch.dict(speech.SPEAKERS, {"fake": fake}), \
+                patch("tools.progression.speech.available", return_value=True), \
+                patch("tools.progression.speech.normalize_loudness"), \
+                patch("tools.progression.speech.seconds", return_value=1.0):
+            speech.speak(["Read [the history](https://example.com), not the URL."],
+                         "/tmp", backend="fake", verbose=False)
+        self.assertEqual(rendered, ["Read the history, not the URL."])
 
     def test_a_missing_backend_fails_before_anything_is_rendered(self):
         # The check exists so a voice that is not installed costs nothing --
@@ -331,9 +358,61 @@ class SpeechBackendTests(unittest.TestCase):
                 paths = speech._speak_cosyvoice3(
                     ["first turn", "second turn"], out, voice=refs, verbose=False)
             self.assertEqual([b["reference"] for b in jobs[0]["blocks"]], refs)
+            self.assertIn("person who built the project",
+                          jobs[0]["blocks"][0]["style"])
+            self.assertIn("curious co-host", jobs[0]["blocks"][1]["style"])
+            self.assertNotEqual(jobs[0]["blocks"][0]["style"],
+                                jobs[0]["blocks"][1]["style"])
+            self.assertEqual(jobs[0]["speed"], 1.0)
             self.assertTrue(all(os.path.isabs(b["output"])
                                 for b in jobs[0]["blocks"]))
             self.assertEqual(len(paths), 2)
+
+    def test_cosyvoice_instruction_changes_delivery_for_the_turn(self):
+        question = speech._cosyvoice_instruction("You really trust that move?", 2)
+        reaction = speech._cosyvoice_instruction("Not a chance.", 2)
+        explanation = speech._cosyvoice_instruction(
+            "I trained it on the same positions so the comparison stays fair.", 1)
+        opening = speech._cosyvoice_instruction("I made five agents audition.",
+                                                1, responding=False)
+        self.assertIn("genuinely curious", question)
+        self.assertIn("crisp, dry timing", reaction)
+        self.assertIn("restrained conversational emotion", explanation)
+        self.assertIn("Open the discussion naturally", opening)
+        self.assertTrue(all(value.endswith("<|endofprompt|>")
+                            for value in (question, reaction, explanation, opening)))
+
+    def test_spoken_turn_is_two_pass_loudness_normalized_atomically(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        measurement = json.dumps({
+            "input_i": "-30.0", "input_tp": "-8.0", "input_lra": "2.0",
+            "input_thresh": "-40.0", "target_offset": "0.1",
+        })
+        calls = []
+
+        def run(command, **kwargs):
+            calls.append((command, kwargs))
+            if kwargs.get("capture_output"):
+                return SimpleNamespace(stderr=measurement)
+            with open(command[-1], "wb") as handle:
+                handle.write(b"normalized")
+            return SimpleNamespace()
+
+        with tempfile.TemporaryDirectory() as out:
+            source = os.path.join(out, "block.wav")
+            with open(source, "wb") as handle:
+                handle.write(b"raw")
+            with patch("tools.progression.speech.subprocess.run", side_effect=run):
+                speech.normalize_loudness(source)
+            with open(source, "rb") as handle:
+                self.assertEqual(handle.read(), b"normalized")
+        self.assertEqual(len(calls), 2)
+        self.assertIn("print_format=json", calls[0][0][calls[0][0].index("-af") + 1])
+        applied = calls[1][0][calls[1][0].index("-af") + 1]
+        self.assertIn("measured_I=-30.0", applied)
+        self.assertIn("linear=true", applied)
 
     def test_video_batches_a_whole_cosyvoice_podcast_into_one_model_load(self):
         from unittest.mock import patch

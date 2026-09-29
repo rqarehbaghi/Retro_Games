@@ -39,20 +39,23 @@ def main():
     if not torch.cuda.is_available():
         raise RuntimeError("CosyVoice 3 requires CUDA for this pipeline")
     model = AutoModel(model_dir=job["model_dir"])
-    style = job["style"]
+    default_style = job["style"]
+    default_speed = float(job.get("speed", 1.0))
     blocks = job.get("blocks") or []
     for index, block in enumerate(blocks):
         text = block["text"].strip()
         reference = os.path.abspath(block["reference"])
+        style = block.get("style") or default_style
+        speed = float(block.get("speed", default_speed))
         transcript = _transcript(reference)
         if transcript:
             prompt = "You are a helpful assistant.<|endofprompt|>" + transcript
             generated = model.inference_zero_shot(
-                text, prompt, reference, stream=False)
+                text, prompt, reference, stream=False, speed=speed)
             mode = "zero-shot transcript"
         else:
             generated = model.inference_instruct2(
-                text, style, reference, stream=False)
+                text, style, reference, stream=False, speed=speed)
             mode = "podcast instruction"
         pieces = []
         for result in generated:

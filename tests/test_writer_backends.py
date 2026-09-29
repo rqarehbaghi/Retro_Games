@@ -11,6 +11,14 @@ import writer  # noqa: E402
 
 
 class WriterBackendTests(unittest.TestCase):
+    def test_speech_keeps_link_words_but_never_reads_web_addresses(self):
+        text = ("The original [Tetris came from Alexey Pajitnov in 1984]"
+                "(https://www.tetris.com/about). More at https://example.com/x.")
+        cleaned = writer.clean_for_speech(text)
+        self.assertIn("Tetris came from Alexey Pajitnov in 1984", cleaned)
+        self.assertNotIn("http", cleaned)
+        self.assertNotIn("www.", cleaned)
+
     def test_only_subscription_and_local_backends_exist(self):
         self.assertEqual(writer.BACKENDS, ("chatgpt", "ollama", "auto"))
         self.assertEqual(writer.DEFAULT_BACKEND, "chatgpt")

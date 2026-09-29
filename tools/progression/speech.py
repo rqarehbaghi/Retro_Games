@@ -36,6 +36,7 @@ importable on this machine so a run fails before the emulator does, not after.
 """
 import os
 import json
+import re
 import subprocess
 import tempfile
 
@@ -72,10 +73,25 @@ COSYVOICE_MODEL = os.path.expanduser(os.environ.get(
 COSYVOICE_RUNNER = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 "cosyvoice_runner.py")
 COSYVOICE_STYLE = (
-    "You are a helpful assistant. Speak in a natural, relaxed podcast "
-    "conversation. Sound engaged and spontaneous, with varied pacing and "
-    "subtle emotion. Do not sound like an announcer or audiobook narrator."
+    "Speak at a normal conversational volume in a natural two-person podcast. "
+    "React to the other host rather than reading prepared copy. Use varied "
+    "pacing, natural pauses, and clear but subtle emotion. Do not sound like "
+    "an announcer, audiobook narrator, or synthetic assistant."
     "<|endofprompt|>")
+COSYVOICE_HOST_STYLE = {
+    1: ("You are host one, the person who built the project. Sound personally "
+        "invested, warm, confident, and occasionally self-deprecating."),
+    2: ("You are host two, the curious co-host. Sound playfully sceptical, "
+        "quick to react, and genuinely interested rather than scripted."),
+}
+
+# Every TTS block is generated independently. Without levelling, the model's
+# phrase-dependent output gain becomes an audible jump at every turn. Normalize
+# the *turns* (not only the final track) so the two hosts remain equally audible
+# while dynamics within a sentence stay intact.
+LOUDNESS_I = -18.0
+LOUDNESS_TP = -2.0
+LOUDNESS_LRA = 7.0
 
 
 def words_per_minute(backend):
@@ -188,6 +204,68 @@ def seconds(path):
     import soundfile as sf
     info = sf.info(path)
     return info.frames / float(info.samplerate)
+
+
+def _cosyvoice_instruction(text, host=1, responding=True):
+    """A concise supported Instruct2 prompt, varied by speaker and turn type."""
+    delivery = ("Deliver this as a direct response to the preceding speaker."
+                if responding else
+                "Open the discussion naturally and draw the other host in.")
+    words = len(text.split())
+    if "?" in text:
+        delivery += " Let the question sound genuinely curious, not rhetorical."
+    elif words <= 8:
+        delivery += " Give the short reaction crisp, dry timing; do not whisper it."
+    elif any(mark in text for mark in ("!", "—", " - ")):
+        delivery += " Let the change in thought carry a little extra energy."
+    else:
+        delivery += " Emphasize the meaning, with restrained conversational emotion."
+    return ("You are a helpful assistant. %s %s %s"
+            % (COSYVOICE_STYLE.removesuffix("<|endofprompt|>"),
+               COSYVOICE_HOST_STYLE.get(host, COSYVOICE_HOST_STYLE[2]), delivery)
+            + "<|endofprompt|>")
+
+
+def normalize_loudness(path, target_i=LOUDNESS_I, target_tp=LOUDNESS_TP,
+                       target_lra=LOUDNESS_LRA, sample_rate=SAMPLE_RATE):
+    """Two-pass EBU R128 normalization of one spoken turn, in place.
+
+    The first pass measures the utterance; the second applies one linear gain
+    whenever the true-peak constraint permits it. FFmpeg falls back to its
+    dynamic mode only when a peak would otherwise clip. The source file is not
+    replaced unless the complete normalized WAV was written successfully.
+    """
+    target = "I=%g:TP=%g:LRA=%g" % (target_i, target_tp, target_lra)
+    measured = subprocess.run(
+        ["ffmpeg", "-nostdin", "-hide_banner", "-nostats", "-i", path,
+         "-af", "loudnorm=%s:print_format=json" % target,
+         "-f", "null", "-"], capture_output=True, text=True, check=True)
+    matches = re.findall(r"\{[^{}]*\}", measured.stderr, flags=re.DOTALL)
+    if not matches:
+        raise RuntimeError("ffmpeg loudnorm returned no measurement for %s" % path)
+    stats = json.loads(matches[-1])
+    if stats.get("input_i") in (None, "-inf"):
+        raise RuntimeError("cannot loudness-normalize silent speech block %s" % path)
+
+    filt = (
+        "loudnorm=%s:measured_I=%s:measured_TP=%s:measured_LRA=%s:"
+        "measured_thresh=%s:offset=%s:linear=true:print_format=summary"
+        % (target, stats["input_i"], stats["input_tp"], stats["input_lra"],
+           stats["input_thresh"], stats["target_offset"]))
+    handle, temp = tempfile.mkstemp(prefix=".loudnorm_", suffix=".wav",
+                                    dir=os.path.dirname(os.path.abspath(path)))
+    os.close(handle)
+    os.unlink(temp)                 # ffmpeg should create it, not overwrite a stub
+    try:
+        subprocess.run(
+            ["ffmpeg", "-nostdin", "-y", "-hide_banner", "-loglevel", "error",
+             "-i", path, "-af", filt, "-ar", str(sample_rate), "-ac", "1",
+             "-c:a", "pcm_f32le", temp], check=True)
+        os.replace(temp, path)
+    finally:
+        if os.path.exists(temp):
+            os.unlink(temp)
+    return path
 
 
 class _FixSpeedDtype:
@@ -331,6 +409,13 @@ def _speak_cosyvoice3(blocks, out_dir, voice=None, speed=1.0, verbose=True):
     if len(references) != len(blocks) or any(not item for item in references):
         raise RuntimeError("cosyvoice3 needs one reference WAV for every spoken block")
     references = [os.path.abspath(reference) for reference in references]
+    identities = []
+    hosts = []
+    for reference in references:
+        identity = os.path.normcase(os.path.realpath(reference))
+        if identity not in identities:
+            identities.append(identity)
+        hosts.append(identities.index(identity) + 1)
     out_dir = os.path.abspath(out_dir)
     os.makedirs(out_dir, exist_ok=True)
     outputs = [os.path.join(out_dir, "block_%02d.wav" % i)
@@ -338,8 +423,11 @@ def _speak_cosyvoice3(blocks, out_dir, voice=None, speed=1.0, verbose=True):
     job = {
         "model_dir": COSYVOICE_MODEL,
         "style": COSYVOICE_STYLE,
-        "blocks": [{"text": text, "reference": reference, "output": output}
-                   for text, reference, output in zip(blocks, references, outputs)],
+        "speed": speed,
+        "blocks": [{"text": text, "reference": reference, "output": output,
+                    "style": _cosyvoice_instruction(text, host, index > 0)}
+                   for index, (text, reference, output, host)
+                   in enumerate(zip(blocks, references, outputs, hosts))],
     }
     handle, job_path = tempfile.mkstemp(prefix="cosyvoice_job_", suffix=".json",
                                         dir=out_dir)
@@ -420,9 +508,15 @@ def speak(blocks, out_dir, backend=DEFAULT, voice=None, speed=1.0, verbose=True)
     if not available(backend):
         raise RuntimeError("voice backend %r is not installed here" % backend)
     os.makedirs(out_dir, exist_ok=True)
+    # Enforce this at the final TTS boundary too. In particular, --respeak can
+    # load a saved script produced before link sanitizing existed.
+    import writer as text_writer
+    blocks = [text_writer.clean_for_speech(block) for block in blocks]
     keep = [i for i, b in enumerate(blocks) if b and b.strip()]
     if isinstance(voice, (list, tuple)):
         voice = [voice[i] for i in keep]
     paths = SPEAKERS[backend]([blocks[i] for i in keep],
                               out_dir, voice=voice, speed=speed, verbose=verbose)
+    for path in paths:
+        normalize_loudness(path)
     return [(p, seconds(p)) for p in paths]

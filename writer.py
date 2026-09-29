@@ -658,6 +658,10 @@ _TRAIL = (_Q + "?[,;]" + r"\s*" + _Q + "?" + _KEYS + _Q + "?" +
           r"\s*[:=]\s*" + _Q + r"?[\w -]*" + _Q + "?$")
 _OPEN = r"^[\s{\[" + chr(34) + chr(39) + "]+"
 _CLOSE = r"[\s}\]" + chr(34) + chr(39) + "]+$"
+_MARKDOWN_LINK = re.compile(
+    r"\[([^\]]+)\]\((?:https?://|www\.)[^)]+\)", flags=re.I)
+_RAW_WEB_ADDRESS = re.compile(
+    r"(?:https?://|www\.)[^\s<>\])}]+", flags=re.I)
 
 
 def clean_spoken(text):
@@ -677,6 +681,18 @@ def clean_spoken(text):
         out = stripped
     out = re.sub(_TRAIL, "", out, flags=re.I)
     return out.strip().strip(chr(34)).strip(chr(39)).strip()
+
+
+def clean_for_speech(text):
+    """Make model prose safe to read aloud, even when it ignored no-markdown.
+
+    Keep the human-readable label of a Markdown link, but never hand its URL to
+    TTS. Bare web addresses have no useful spoken form and are removed.
+    """
+    out = _MARKDOWN_LINK.sub(r"\1", clean_spoken(text))
+    out = _RAW_WEB_ADDRESS.sub("", out)
+    out = re.sub(r"\s+([,.;:!?])", r"\1", out)
+    return re.sub(r"\s{2,}", " ", out).strip()
 
 
 def narration(game, level, duration_s, players, events, fps, wpm=125,
@@ -735,14 +751,14 @@ def narration(game, level, duration_s, players, events, fps, wpm=125,
         # Tolerate a bare string: a backend without schema enforcement may
         # ignore the object shape entirely.
         raw = item if isinstance(item, str) else item.get("text", "")
-        text = clean_spoken(raw)
+        text = clean_for_speech(raw)
         if not text:
             continue
         anchor = None
         if isinstance(item, dict) and item.get("event") is not None:
             anchor = event_time(events, item.get("event"), fps, duration_s)
         lines.append({"text": text, "anchor": anchor, "closing": False})
-    closing = clean_spoken(data.get("closing", ""))
+    closing = clean_for_speech(data.get("closing", ""))
     if closing:
         lines.append({"text": closing, "anchor": None, "closing": True})
     return lines or None

@@ -148,6 +148,15 @@ no "welcome to the show", no "that's a great question", no sign-off, no
 laughing written out, no stage directions. Contractions throughout. Nobody
 recaps what was just said.
 
+Make it behave like one continuous exchange. Alternate speakers unless a
+single two-turn interruption genuinely improves the rhythm. HOST 2 should
+question, tease, challenge, or react; HOST 1 should answer the exact point and
+occasionally turn the question back. Use callbacks to an earlier joke or claim.
+Mix quick reactions with fuller answers, and let emotion follow the result:
+curiosity, doubt, relief, surprise, and earned pride. Do not give both hosts the
+same opinion, vocabulary, or sentence rhythm. Do not write two adjacent mini
+essays that merely happen to use different voices.
+
 Be ACTUALLY funny -- a true observation placed where it lands, usually a
 specific detail. Never announce a joke, never explain one."""
 
@@ -312,7 +321,7 @@ def write(game, body_seconds, card, states, cap, algorithm="", channel="",
     data = writer.write(prompt, PODCAST_SCHEMA if podcast else SCHEMA, **kw)
     if not data:
         return None
-    clean = writer.clean_spoken
+    clean = writer.clean_for_speech
 
     def turns(items):
         """A turn is {who, text}; a monologue block is a bare string. Both
@@ -415,7 +424,8 @@ def build_track(placed, total, out_path, sample_rate=speech.SAMPLE_RATE):
         labels.append("[d%d]" % i)
     labels.insert(0, "[0:a]")
     graph = ";".join(chains) + ";" + "".join(labels) + \
-        "amix=inputs=%d:normalize=0:dropout_transition=0[out]" % len(labels)
+        "amix=inputs=%d:normalize=0:dropout_transition=0," \
+        "alimiter=limit=0.84:level=false[out]" % len(labels)
     subprocess.run(
         ["ffmpeg", "-nostdin", "-y", "-v", "error",
          "-f", "lavfi", "-t", "%.3f" % total,

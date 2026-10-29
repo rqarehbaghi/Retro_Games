@@ -35,9 +35,11 @@ def main():
     import torch
     import torchaudio
     from cosyvoice.cli.cosyvoice import AutoModel
+    from speech_quality import Recognizer, assess
 
     if not torch.cuda.is_available():
         raise RuntimeError("CosyVoice 3 requires CUDA for this pipeline")
+    recognizer = Recognizer()
     model = AutoModel(model_dir=job["model_dir"])
     default_style = job["style"]
     default_speed = float(job.get("speed", 1.0))
@@ -48,24 +50,40 @@ def main():
         style = block.get("style") or default_style
         speed = float(block.get("speed", default_speed))
         transcript = _transcript(reference)
-        if transcript:
-            prompt = "You are a helpful assistant.<|endofprompt|>" + transcript
-            generated = model.inference_zero_shot(
-                text, prompt, reference, stream=False, speed=speed)
-            mode = "zero-shot transcript"
-        else:
-            generated = model.inference_instruct2(
-                text, style, reference, stream=False, speed=speed)
-            mode = "podcast instruction"
-        pieces = []
-        for result in generated:
-            samples = result["tts_speech"]
-            pieces.append(samples.unsqueeze(0) if samples.ndim == 1 else samples)
-        if not pieces:
-            raise RuntimeError("CosyVoice generated no audio for block %d" % index)
-        audio = torch.cat(pieces, dim=1).detach().cpu()
         output = os.path.abspath(block["output"])
         os.makedirs(os.path.dirname(output), exist_ok=True)
+        attempts = []
+        for attempt in range(3):
+            if transcript:
+                prompt = "You are a helpful assistant.<|endofprompt|>" + transcript
+                generated = model.inference_zero_shot(
+                    text, prompt, reference, stream=False, speed=speed)
+                mode = "zero-shot transcript"
+            else:
+                instruction = (style if attempt == 0 else
+                               'You are a helpful assistant. Speak clearly.<|endofprompt|>')
+                generated = model.inference_instruct2(
+                    text, instruction, reference, stream=False, speed=speed)
+                mode = "podcast instruction"
+            pieces = []
+            for result in generated:
+                samples = result['tts_speech']
+                pieces.append(samples.unsqueeze(0) if samples.ndim == 1 else samples)
+            if not pieces:
+                raise RuntimeError('CosyVoice generated no audio for block %d' % index)
+            audio = torch.cat(pieces, dim=1).detach().cpu()
+            report = assess(text, recognizer.transcribe(audio, model.sample_rate),
+                            audio.shape[-1] / float(model.sample_rate))
+            attempts.append(report)
+            with open(output + '.quality.json', 'w', encoding='utf-8') as handle:
+                json.dump(attempts, handle, indent=2)
+            if report['accepted']:
+                break
+            print('Speech check rejected block %d attempt %d: %s' %
+                  (index, attempt + 1, report['heard']), flush=True)
+        else:
+            raise RuntimeError('Speech validation failed: %s.quality.json; '
+                               'no finished narration will be published' % output)
         torchaudio.save(output, audio, model.sample_rate)
         print("    cosyvoice [%d/%d] %s %.2fs"
               % (index + 1, len(blocks), mode,

@@ -119,6 +119,12 @@ python restyle.py ./studio_out/<folder>
   `video.py --short` builds that vertical film automatically after the long
   film and writes `short_9x16.mp4` into the same run folder; use
   `--short-seconds` to set its total length.
+  For the simpler cached-footage package, use `story.py --run <completed-run>
+  --out-dir <new-folder>`: two fixed same-start boards, a two-host long film,
+  narrated short, seven-second result card only in the long film, moving outro,
+  and upload copy. See `PROGRESSION_STORY.md` for the full command and retry path.
+  CosyVoice turns now undergo local transcript checks with bounded retries;
+  this catches wrong words but does not certify natural delivery.
 
 ## Facts that cost real effort to establish
 

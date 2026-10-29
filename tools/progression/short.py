@@ -471,7 +471,7 @@ def _enabled_label(chain, output, text, start, end, y, size, font=None):
 
 def _enabled_text(chain, output, text, start, end, x, y, size, font=None):
     font_path = video.font_file() if font is None else font
-    font_arg = ("fontfile=%s:" % _filter_path(font_path)) if font_path else ""
+    font_arg = ("fontfile='%s':" % _filter_path(font_path)) if font_path else ""
     return ("%sdrawtext=%stext='%s':fontcolor=black:fontsize=%d:box=1:"
             "boxcolor=white:boxborderw=10:x=%s:y=%d:"
             "enable='between(t\\,%.3f\\,%.3f)'%s"
@@ -767,6 +767,8 @@ def write_short_package(plan_data, panels, run, out_dir, writer_backend=None):
     prompts = os.path.join(out_dir, "prompts")
     os.makedirs(prompts, exist_ok=True)
     prompt = _short_prompt(plan_data, panels, run)
+    from tools.progression.story import PLAIN
+    prompt += '\nAUDIENCE: ' + PLAIN
     prompt_path = os.path.join(prompts, "short_overlays_and_upload_copy.txt")
     with open(prompt_path, "w", encoding="utf-8") as handle:
         handle.write(prompt)

@@ -46,6 +46,9 @@ matplotlib
 # ------------------------------------------------------- voice (optional) --
 # Only for --voice. Nothing below is needed to render a silent video.
 soundfile                    # reads and writes the spoken wavs
+# Progression's default CosyVoice 3 and its local Whisper transcript checker
+# belong in the ISOLATED environment: bash tools/install_cosyvoice.sh.
+# Do not install/upgrade their torch/transformers dependencies in this venv.
 
 # Kokoro-82M, Apache-2.0, local and free. The lightweight fallback: its speakers
 # are fixed embeddings, so a paragraph in the middle of a film sounds like the

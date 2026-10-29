@@ -318,6 +318,13 @@ def write(game, body_seconds, card, states, cap, algorithm="", channel="",
 
     if podcast:
         prompt = podcast_prompt(prompt)
+    # Viewer-facing language wins over the legacy technical brief above.
+    from tools.progression.story import PLAIN
+    prompt += ('\nEDITORIAL OVERRIDE: ' + PLAIN +
+               '\nSkip technical explanations and historical trivia. The story is choosing '
+               'a computer opponent for my next video. Finish with an explicit '
+               'invitation: Stay tuned for my match in the next video. '
+               'Keep the result sentence short enough for seven seconds.')
     data = writer.write(prompt, PODCAST_SCHEMA if podcast else SCHEMA, **kw)
     if not data:
         return None

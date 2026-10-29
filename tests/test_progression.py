@@ -358,27 +358,24 @@ class SpeechBackendTests(unittest.TestCase):
                 paths = speech._speak_cosyvoice3(
                     ["first turn", "second turn"], out, voice=refs, verbose=False)
             self.assertEqual([b["reference"] for b in jobs[0]["blocks"]], refs)
-            self.assertIn("person who built the project",
-                          jobs[0]["blocks"][0]["style"])
-            self.assertIn("curious co-host", jobs[0]["blocks"][1]["style"])
-            self.assertNotEqual(jobs[0]["blocks"][0]["style"],
-                                jobs[0]["blocks"][1]["style"])
+            self.assertEqual(jobs[0]["blocks"][0]["style"],
+                             jobs[0]["blocks"][1]["style"])
+            self.assertIn("Speak naturally and clearly", jobs[0]["blocks"][0]["style"])
             self.assertEqual(jobs[0]["speed"], 1.0)
             self.assertTrue(all(os.path.isabs(b["output"])
                                 for b in jobs[0]["blocks"]))
             self.assertEqual(len(paths), 2)
 
-    def test_cosyvoice_instruction_changes_delivery_for_the_turn(self):
+    def test_cosyvoice_instruction_is_brief_and_never_copies_dialogue(self):
         question = speech._cosyvoice_instruction("You really trust that move?", 2)
         reaction = speech._cosyvoice_instruction("Not a chance.", 2)
         explanation = speech._cosyvoice_instruction(
             "I trained it on the same positions so the comparison stays fair.", 1)
         opening = speech._cosyvoice_instruction("I made five agents audition.",
                                                 1, responding=False)
-        self.assertIn("genuinely curious", question)
-        self.assertIn("crisp, dry timing", reaction)
-        self.assertIn("restrained conversational emotion", explanation)
-        self.assertIn("Open the discussion naturally", opening)
+        self.assertEqual(len(set((question, reaction, explanation, opening))), 1)
+        self.assertLess(len(question.split()), 15)
+        self.assertNotIn("trust that move", question)
         self.assertTrue(all(value.endswith("<|endofprompt|>")
                             for value in (question, reaction, explanation, opening)))
 

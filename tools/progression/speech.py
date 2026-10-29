@@ -72,18 +72,7 @@ COSYVOICE_MODEL = os.path.expanduser(os.environ.get(
     os.path.join(COSYVOICE_HOME, "pretrained_models", "Fun-CosyVoice3-0.5B")))
 COSYVOICE_RUNNER = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 "cosyvoice_runner.py")
-COSYVOICE_STYLE = (
-    "Speak at a normal conversational volume in a natural two-person podcast. "
-    "React to the other host rather than reading prepared copy. Use varied "
-    "pacing, natural pauses, and clear but subtle emotion. Do not sound like "
-    "an announcer, audiobook narrator, or synthetic assistant."
-    "<|endofprompt|>")
-COSYVOICE_HOST_STYLE = {
-    1: ("You are host one, the person who built the project. Sound personally "
-        "invested, warm, confident, and occasionally self-deprecating."),
-    2: ("You are host two, the curious co-host. Sound playfully sceptical, "
-        "quick to react, and genuinely interested rather than scripted."),
-}
+COSYVOICE_STYLE = 'You are a helpful assistant. Speak naturally and clearly.<|endofprompt|>'
 
 # Every TTS block is generated independently. Without levelling, the model's
 # phrase-dependent output gain becomes an audible jump at every turn. Normalize
@@ -207,23 +196,10 @@ def seconds(path):
 
 
 def _cosyvoice_instruction(text, host=1, responding=True):
-    """A concise supported Instruct2 prompt, varied by speaker and turn type."""
-    delivery = ("Deliver this as a direct response to the preceding speaker."
-                if responding else
-                "Open the discussion naturally and draw the other host in.")
-    words = len(text.split())
-    if "?" in text:
-        delivery += " Let the question sound genuinely curious, not rhetorical."
-    elif words <= 8:
-        delivery += " Give the short reaction crisp, dry timing; do not whisper it."
-    elif any(mark in text for mark in ("!", "—", " - ")):
-        delivery += " Let the change in thought carry a little extra energy."
-    else:
-        delivery += " Emphasize the meaning, with restrained conversational emotion."
-    return ("You are a helpful assistant. %s %s %s"
-            % (COSYVOICE_STYLE.removesuffix("<|endofprompt|>"),
-               COSYVOICE_HOST_STYLE.get(host, COSYVOICE_HOST_STYLE[2]), delivery)
-            + "<|endofprompt|>")
+    """Keep delivery instructions short; host identity comes from its reference."""
+    # Long role descriptions correlated with invented/repeated speech. Keep
+    # personality in the dialogue and identity in the fixed reference WAV.
+    return COSYVOICE_STYLE
 
 
 def normalize_loudness(path, target_i=LOUDNESS_I, target_tp=LOUDNESS_TP,

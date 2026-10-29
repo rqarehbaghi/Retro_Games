@@ -34,6 +34,11 @@ fi
 cd "$COSY_ROOT"
 "$ENV_ROOT/bin/python" -c \
   "from huggingface_hub import snapshot_download; snapshot_download('FunAudioLLM/Fun-CosyVoice3-0.5B-2512', local_dir='$MODEL_ROOT')"
+# The worker transcribes each generated turn locally and retries obvious wrong
+# words before publishing narration. Uses the existing transformers/scipy stack;
+# no trainer dependency upgrade, cloud transcription, or billed API.
+"$ENV_ROOT/bin/python" -c \
+  "from transformers import WhisperProcessor, WhisperForConditionalGeneration; WhisperProcessor.from_pretrained('openai/whisper-base.en'); WhisperForConditionalGeneration.from_pretrained('openai/whisper-base.en')"
 "$ENV_ROOT/bin/python" -c \
   "import torch; assert torch.cuda.is_available(); print(torch.cuda.get_device_name(0))"
 echo "CosyVoice 3 is ready: $MODEL_ROOT"

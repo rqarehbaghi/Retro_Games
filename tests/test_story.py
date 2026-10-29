@@ -122,7 +122,7 @@ class StoryTests(unittest.TestCase):
                                         cat=lambda pieces,dim:audio),
                  'torchaudio':SimpleNamespace(save=save_audio),
                  'cosyvoice.cli.cosyvoice':SimpleNamespace(AutoModel=lambda **kw:model),
-                 'speech_quality':SimpleNamespace(Recognizer=lambda:recognizer,assess=assess)}
+                 'tools.progression.speech_quality':SimpleNamespace(Recognizer=lambda:recognizer,assess=assess)}
         with tempfile.TemporaryDirectory() as folder:
             out=Path(folder)
             job=out/'job.json'
@@ -140,6 +140,14 @@ class StoryTests(unittest.TestCase):
             self.assertEqual(len(reports),count)
             self.assertEqual(model.inference_instruct2.call_count,count)
             self.assertEqual(save_audio.call_count,1 if success else 0)
+
+    def test_worker_removes_script_folder_that_shadows_stdlib_select(self):
+        from tools.progression import cosyvoice_runner as worker
+        folder = str(Path(worker.__file__).resolve().parent)
+        with patch.object(sys,'path',[folder]+list(sys.path)):
+            worker._prepare_imports()
+            self.assertNotIn(folder,sys.path)
+            self.assertIn(str(Path(folder).parents[1]),sys.path)
 
 
 if __name__ == '__main__':

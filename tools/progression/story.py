@@ -8,12 +8,17 @@ import argparse
 import hashlib
 import math
 import json
+import os
 from pathlib import Path
-import subprocess
 import sys
 
+# This directory contains select.py (state ranking), not Python's socket module.
+# Remove it before subprocess/HTTP libraries can import the wrong select.
+_SCRIPT_DIR = str(Path(__file__).resolve().parent)
+sys.path[:] = [p for p in sys.path if os.path.abspath(p or os.getcwd()) != _SCRIPT_DIR]
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
+import subprocess
 from PIL import Image, ImageDraw, ImageFont
 from tools.progression import short, video, narrate, speech, chart
 import writer

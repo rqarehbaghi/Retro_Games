@@ -10,6 +10,18 @@ import os
 import sys
 
 
+def _prepare_imports():
+    # Direct execution adds tools/progression to sys.path. Its select.py then
+    # shadows Python's socket-select module, breaking requests/urllib3 downloads.
+    # Import our helpers through the package, never through this script folder.
+    worker_dir = os.path.dirname(os.path.abspath(__file__))
+    sys.path[:] = [p for p in sys.path
+                   if os.path.abspath(p or os.getcwd()) != worker_dir]
+    root = os.path.dirname(os.path.dirname(worker_dir))
+    if root not in sys.path:
+        sys.path.insert(0, root)
+
+
 def _transcript(reference):
     """Return an optional exact transcript stored beside a reference WAV."""
     path = os.path.splitext(reference)[0] + ".txt"
@@ -20,6 +32,7 @@ def _transcript(reference):
 
 
 def main():
+    _prepare_imports()
     if len(sys.argv) != 2:
         raise SystemExit("usage: cosyvoice_runner.py JOB.json")
     with open(sys.argv[1], encoding="utf-8") as handle:
@@ -35,7 +48,7 @@ def main():
     import torch
     import torchaudio
     from cosyvoice.cli.cosyvoice import AutoModel
-    from speech_quality import Recognizer, assess
+    from tools.progression.speech_quality import Recognizer, assess
 
     if not torch.cuda.is_available():
         raise RuntimeError("CosyVoice 3 requires CUDA for this pipeline")

@@ -149,6 +149,46 @@ class StoryTests(unittest.TestCase):
             self.assertNotIn(folder,sys.path)
             self.assertIn(str(Path(folder).parents[1]),sys.path)
 
+    def test_normalizer_uses_complete_local_cache_and_restores_downloader(self):
+        from tools.progression import cosyvoice_runner as worker
+        from unittest.mock import Mock
+        downloader=Mock(return_value='/cache/wetext')
+        module=SimpleNamespace(snapshot_download=downloader,Normalizer=Mock())
+        with patch.object(worker.importlib,'import_module',return_value=module), \
+                patch.object(worker.os.path,'isfile',return_value=True):
+            with worker._cached_normalizer():
+                self.assertEqual(module.snapshot_download('pengzhendong/wetext'),'/cache/wetext')
+        downloader.assert_called_once_with('pengzhendong/wetext',local_files_only=True)
+        self.assertIs(module.snapshot_download,downloader)
+
+    def test_normalizer_incomplete_cache_falls_back_to_download(self):
+        from tools.progression import cosyvoice_runner as worker
+        from unittest.mock import Mock, call
+        downloader=Mock(return_value='/cache/wetext')
+        module=SimpleNamespace(snapshot_download=downloader,Normalizer=Mock())
+        with patch.object(worker.importlib,'import_module',return_value=module), \
+                patch.object(worker.os.path,'isfile',return_value=False):
+            with worker._cached_normalizer():
+                module.snapshot_download('pengzhendong/wetext')
+        self.assertEqual(downloader.call_args_list,[
+            call('pengzhendong/wetext',local_files_only=True),call('pengzhendong/wetext')])
+
+    def test_normalizer_uses_legacy_english_assets_without_remote_lookup(self):
+        from tools.progression import cosyvoice_runner as worker
+        from unittest.mock import Mock
+        downloader=Mock(return_value='/cache/wetext')
+        english=SimpleNamespace(normalize=lambda text,**kw:'twelve games')
+        factory=Mock(return_value=english)
+        module=SimpleNamespace(snapshot_download=downloader,Normalizer=factory)
+        with patch.object(worker.importlib,'import_module',return_value=module), \
+                patch.object(worker.os.path,'isfile',return_value=True):
+            with worker._cached_normalizer():
+                normalizer=module.Normalizer()
+                self.assertEqual(normalizer.normalize('12 games'),'twelve games')
+        self.assertTrue(all(c.kwargs.get('local_files_only') for c in downloader.call_args_list))
+        self.assertEqual(factory.call_args.kwargs['lang'],'en')
+        self.assertTrue(factory.call_args.kwargs['tagger_path'].endswith('en_tn_tagger.fst'))
+
 
 if __name__ == '__main__':
     unittest.main()

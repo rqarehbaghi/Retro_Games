@@ -74,6 +74,13 @@ The owner still needs to listen to the export.
 Verbose emotional role instructions have been removed from synthesis. Short
 delivery guidance, a conversational script, and the two fixed reference voices
 now carry the performance. Per-turn loudness normalization remains enabled.
+The worker prefers complete cached WeText normalization assets before contacting
+ModelScope, so a remote authentication failure cannot disable an already-installed
+normalizer. Missing/incomplete caches still use the normal download path.
+Older cached `en_tn_tagger.fst` / `en_tn_verbalizer.fst` files are also supported
+via WeText's explicit local-file interface. This covers English; Chinese text
+still requires the corresponding Chinese assets, never English substitution.
+Progress messages distinguish model loading, speech generation, and word checking.
 Optional exact-transcript `.txt` files beside each reference WAV still enable
 CosyVoice's zero-shot path.
 

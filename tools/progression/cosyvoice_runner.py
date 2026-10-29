@@ -8,6 +8,10 @@ whole batch of podcast turns.
 import json
 import os
 import sys
+from contextlib import contextmanager
+import importlib
+import logging
+import re
 
 
 def _prepare_imports():
@@ -31,6 +35,70 @@ def _transcript(reference):
         return handle.read().strip()
 
 
+@contextmanager
+def _cached_normalizer():
+    """WeText's default downloader checks remote revisions even with local FSTs.
+
+    Prefer its supported offline lookup, but only accept a complete TN cache.
+    Patch this one lookup during model construction; never edit site-packages.
+    """
+    try:
+        module = importlib.import_module('wetext.wetext')
+    except ImportError:
+        yield
+        return
+    original = module.snapshot_download
+    public = importlib.import_module('wetext')
+    original_normalizer = public.Normalizer
+
+    def local_normalizer(*args, **kwargs):
+        # Older installations cached English FSTs at the snapshot root, while
+        # current WeText expects en/tn/*.fst AND Chinese files for lang=auto.
+        # Supply the supported explicit paths instead of redownloading assets.
+        if not args and not kwargs.get('tagger_path') and kwargs.get('lang','auto') in ('auto','en'):
+            try:
+                folder = original('pengzhendong/wetext',local_files_only=True)
+                pair = [os.path.join(folder,'en_tn_'+name+'.fst')
+                        for name in ('tagger','verbalizer')]
+                if kwargs.get('operator','tn')=='tn' and all(os.path.isfile(p) for p in pair):
+                    english = original_normalizer(tagger_path=pair[0],verbalizer_path=pair[1],lang='en')
+                    class LocalEnglish:
+                        other = None
+                        def normalize(self, text, **options):
+                            if re.search(r'[\u4e00-\u9fff]',text):
+                                # Never run Chinese through English rules.
+                                if self.other is None:
+                                    self.other = original_normalizer(*args,**kwargs)
+                                return self.other.normalize(text,**options)
+                            return english.normalize(text,**options)
+                    print('    text normalizer: using cached English FSTs',flush=True)
+                    return LocalEnglish()
+            except (OSError, ValueError):
+                pass
+        return original_normalizer(*args, **kwargs)
+
+    def cached_first(repo, *args, **kwargs):
+        if repo == 'pengzhendong/wetext' and not args and 'local_files_only' not in kwargs:
+            try:
+                folder = original(repo, local_files_only=True, **kwargs)
+                required = [os.path.join(folder,lang,'tn',name+'.fst')
+                            for lang in ('en','zh') for name in ('tagger','verbalizer')]
+                if all(os.path.isfile(path) for path in required):
+                    print('    text normalizer: using cached local assets', flush=True)
+                    return folder
+            except (OSError, ValueError):
+                pass
+        return original(repo, *args, **kwargs)
+
+    module.snapshot_download = cached_first
+    public.Normalizer = local_normalizer
+    try:
+        yield
+    finally:
+        module.snapshot_download = original
+        public.Normalizer = original_normalizer
+
+
 def main():
     _prepare_imports()
     if len(sys.argv) != 2:
@@ -49,11 +117,17 @@ def main():
     import torchaudio
     from cosyvoice.cli.cosyvoice import AutoModel
     from tools.progression.speech_quality import Recognizer, assess
+    # Optional Hugging Face file probes are not failures; don't dump HTTP DEBUG
+    # traffic from CosyVoice's global logging setup into the owner's terminal.
+    logging.getLogger('urllib3').setLevel(logging.WARNING)
 
     if not torch.cuda.is_available():
         raise RuntimeError("CosyVoice 3 requires CUDA for this pipeline")
+    print('    loading CPU speech checker ...', flush=True)
     recognizer = Recognizer()
-    model = AutoModel(model_dir=job["model_dir"])
+    print('    loading CosyVoice ...', flush=True)
+    with _cached_normalizer():
+        model = AutoModel(model_dir=job["model_dir"])
     default_style = job["style"]
     default_speed = float(job.get("speed", 1.0))
     blocks = job.get("blocks") or []
@@ -67,6 +141,8 @@ def main():
         os.makedirs(os.path.dirname(output), exist_ok=True)
         attempts = []
         for attempt in range(3):
+            print('    speech [%d/%d] generating, attempt %d ...' %
+                  (index+1, len(blocks), attempt+1), flush=True)
             if transcript:
                 prompt = "You are a helpful assistant.<|endofprompt|>" + transcript
                 generated = model.inference_zero_shot(
@@ -85,6 +161,7 @@ def main():
             if not pieces:
                 raise RuntimeError('CosyVoice generated no audio for block %d' % index)
             audio = torch.cat(pieces, dim=1).detach().cpu()
+            print('    speech [%d/%d] checking words ...' % (index+1,len(blocks)), flush=True)
             report = assess(text, recognizer.transcribe(audio, model.sample_rate),
                             audio.shape[-1] / float(model.sample_rate))
             attempts.append(report)

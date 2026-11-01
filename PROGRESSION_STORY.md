@@ -1,5 +1,38 @@
 # Cached footage: a simpler narrated package
 
+## Approved showcase edit (silent preview)
+
+The current approved edit separates the formats: two strongest same-start games
+in the short; all five checkpoints' best recorded games in the long film.
+Do not use the old average-ranked / first-state narration command below to
+reproduce this selection. That format and its local voices were rejected.
+
+```bash
+python tools/progression/story.py \
+  --run progression_out/runs/tetris_v54_uncapped_full \
+  --edit-plan tools/progression/examples/tetris_v54_showcase.json \
+  --out-dir progression_out/runs/tetris_v54_showcase_v2
+```
+
+Use a new output folder if it already exists. This mode does not call a writer,
+load TTS, launch an emulator, or purchase any service. It creates a 60-second
+`short_9x16.mp4` and a 98-second `showcase_16x9.mp4`, both silent. It preserves
+the edit plan and selected results beside the output. The JSON owns the specific
+footage, captions and times; the Python rendering code remains game-agnostic.
+
+Short: 50k / level0_1p (1,646 lines) and 200k / level0_1p (2,085).
+Long: best recorded game for each of 10k, 20k, 50k, 100k, 200k, with starting
+states disclosed. Different starts are a showcase, not a controlled comparison.
+The shared source clock advances across explicit cuts; the recovery sequence is
+continuous. Dynamic counters use cumulative timeline values, including thousands,
+rather than the rolling game HUD. Both films show the actual final results.
+
+The reader refuses inconsistent counters, incomplete recordings, backward cuts,
+and short selections with different starting states. All footage in this example
+plays at 1x. No filler time is added to reach a requested duration.
+
+## Previous narrated format (retained, not the current recommendation)
+
 `tools/progression/story.py` is the new **cached-footage edit** entry point.
 It does not play an emulator, train anything, or modify the input run/cache.
 The older `video.py` and `short.py` commands remain available for their original

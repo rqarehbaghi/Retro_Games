@@ -125,6 +125,13 @@ python restyle.py ./studio_out/<folder>
   and upload copy. See `PROGRESSION_STORY.md` for the full command and retry path.
   CosyVoice turns now undergo local transcript checks with bounded retries;
   this catches wrong words but does not certify natural delivery.
+  The owner rejected that two-game long film and the local voices. The current
+  approved silent showcase uses `story.py --edit-plan
+  tools/progression/examples/tetris_v54_showcase.json`: two strongest same-start
+  games in the short, all five best recorded games in the long, cumulative
+  counters beyond HUD rollover, and explicitly chosen source windows. See the
+  first section of `PROGRESSION_STORY.md`. Do not silently return to first-state
+  sampling or label competitors "less practice / more practice".
 
 ## Facts that cost real effort to establish
 

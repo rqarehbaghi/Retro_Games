@@ -17,6 +17,32 @@ def panel(version, state, value, seconds=100):
 
 
 class StoryTests(unittest.TestCase):
+    def test_counters_preserve_thousands_and_event_boundaries(self):
+        p=dict(timeline=[dict(t=1,v=998),dict(t=3,v=1002),dict(t=5,v=1002)])
+        self.assertEqual(list(story.counter_intervals(p,2,4)),[(0,1,998),(1,4,1002)])
+        self.assertEqual(list(story.counter_intervals(p,9,2)),[(0,2,1002)])
+        self.assertEqual(list(story.counter_intervals(p,2,2,2)),[(0,.5,998),(.5,2,1002)])
+
+    def test_explicit_plan_rejects_bad_selection_timing_and_results(self):
+        import copy
+        panels=[dict(panel(k,'a',10),stats=[['LINES',10]]) for k in ('10k','20k')]
+        for p in panels:
+            p['timeline']=[dict(t=90,v=10,d=10),dict(t=100,v=10,d=0,end='game_over')]
+        film=dict(panels=[p['key'] for p in panels],scenes=[dict(start=90,duration=11)])
+        plan=dict(films=dict(short=film,long=film))
+        story.validate_edit_plan(plan,panels)
+        bad=copy.deepcopy(plan)
+        bad['films']['short']['scenes']=[dict(start=0,duration=5)]
+        with self.assertRaisesRegex(ValueError,'final result'):
+            story.validate_edit_plan(bad,panels)
+        bad=copy.deepcopy(plan)
+        bad['films']['short']['scenes'][0]['duration']=float('nan')
+        with self.assertRaisesRegex(ValueError,'Nonfinite'):
+            story.validate_edit_plan(bad,panels)
+        panels[1]['state']='b'
+        with self.assertRaisesRegex(ValueError,'same starting state'):
+            story.validate_edit_plan(plan,panels)
+
     def setUp(self):
         self.run = dict(states=['a','b'],columns=[['one','10k','10k steps'],
                          ['two','20k','20k steps'],['three','30k','30k steps']])

@@ -162,7 +162,7 @@ def result_card(results, names, chosen, unit, path, tied=False):
 
 
 def render_scene(panels, path, duration, start=0, speed=1, portrait=False,
-                 caption='', heading='', crown=False):
+                 caption='', heading='', crown=False, counters=False):
     """Fixed board positions, shared source time, captions on opaque plates."""
     width, height = (1080, 1920) if portrait else (1920, 1080)
     n = len(panels)
@@ -208,6 +208,19 @@ def render_scene(panels, path, duration, start=0, speed=1, portrait=False,
         filters.append(short._enabled_text(stage,target,message,tick,tick+1,
                                             25, height-60,22))
         stage = target
+    if counters:
+        for i, p in enumerate(panels):
+            unit = str(p['stats'][0][0])
+            for j, (begin, end, value) in enumerate(counter_intervals(p, start, duration, speed)):
+                target = '[stat%d_%d]' % (i,j)
+                # Half-open intervals avoid drawing both values on a clear frame.
+                expression = short._enabled_text(stage,target,
+                    '%s %s' % (format(value, ','),unit),begin,end,
+                    str(50+i*cell_w),top+cell_h+12,24 if portrait else 18)
+                expression = expression.replace("between(t\\,%.3f\\,%.3f)" % (begin,end),
+                    "gte(t\\,%.3f)*lt(t\\,%.3f)" % (begin,end))
+                filters.append(expression)
+                stage = target
     for i, p in enumerate(panels):
         target = '[end%d]' % i
         death = max(0,(short.ending(p)['time']-start)/speed)
@@ -222,6 +235,85 @@ def render_scene(panels, path, duration, start=0, speed=1, portrait=False,
         '-an','-frames:v',str(frames),'-c:v','libx264','-preset','veryfast','-crf','20',
         '-pix_fmt','yuv420p','-r','30',path],check=True)
     return path
+
+
+def counter_intervals(panel, start, duration, speed=1):
+    """Unwrapped measured counters, updated at their actual source events."""
+    value = 0
+    changes = []
+    for row in panel['timeline']:
+        if row['t'] <= start:
+            value = row['v']
+        elif row['t'] < start + duration*speed:
+            changes.append(((row['t']-start)/speed,row['v']))
+    cursor = 0.0
+    for at, next_value in changes:
+        if next_value != value:
+            if at > cursor:
+                yield cursor,at,value
+            cursor,value = at,next_value
+    if cursor < duration:
+        yield cursor,duration,value
+
+
+def validate_edit_plan(plan, panels):
+    """Explicit footage choices, separate by format, with no hidden ranking."""
+    by_key = {p['key']:p for p in panels}
+    if set(plan.get('films',{})) != {'long','short'}:
+        raise ValueError('Edit plan requires long and short films')
+    for name, film in plan['films'].items():
+        keys = film['panels']
+        if len(keys) != len(set(keys)) or not keys or any(k not in by_key for k in keys):
+            raise ValueError('Unknown or duplicate panel in '+name)
+        if name == 'short' and (len(keys)!=2 or len({by_key[k]['state'] for k in keys})!=1):
+            raise ValueError('Short requires two games from the same starting state')
+        if len({short.checkpoint_of(by_key[k]) for k in keys}) != len(keys):
+            raise ValueError('Use one game per checkpoint')
+        previous_end=0
+        if not film.get('scenes'):
+            raise ValueError('Film has no scenes')
+        for scene in film['scenes']:
+            start,duration,speed = scene['start'],scene['duration'],scene.get('speed',1)
+            if not all(math.isfinite(v) for v in (start,duration,speed)):
+                raise ValueError('Nonfinite timing')
+            if start<previous_end-1e-6 or duration<=0 or not 0<speed<=10:
+                raise ValueError('Scenes must move forward with positive duration and speed <=10')
+            previous_end=start+duration*speed
+            if start>=max(by_key[k]['seconds'] for k in keys):
+                raise ValueError('Scene begins after all source footage ends')
+        for k in keys:
+            p=by_key[k]
+            rows=p['timeline']
+            if (short.ending(p)['reason']!='game_over' or not rows or
+                rows[-1]['v']!=p['value'] or sum(r.get('d',0) for r in rows)!=p['value'] or
+                rows[-1]['t']>p['seconds'] or any(a['v']>b['v'] or a['t']>b['t']
+                    for a,b in zip(rows,rows[1:]))):
+                raise ValueError('Incomplete or inconsistent recording: '+k)
+        if film['scenes'][-1]['start']+film['scenes'][-1]['duration']*film['scenes'][-1].get('speed',1) < max(short.ending(by_key[k])['time'] for k in keys):
+            raise ValueError('Film must show the final result')
+    return by_key
+
+
+def render_edit_plan(plan, panels, out):
+    by_key=validate_edit_plan(plan,panels)
+    out.mkdir(parents=True,exist_ok=False)
+    save(out/'edit_plan.json',plan)
+    save(out/'selected_results.json',[dict(key=k,state=by_key[k]['state'],
+        value=by_key[k]['value'],seconds=by_key[k]['seconds'],path=by_key[k]['path'])
+        for k in dict.fromkeys(k for f in plan['films'].values() for k in f['panels'])])
+    for name,film in plan['films'].items():
+        selected=[dict(by_key[k],label=film.get('labels',{}).get(k,short.checkpoint_of(by_key[k])))
+                  for k in film['panels']]
+        parts=[]
+        for i,scene in enumerate(film['scenes']):
+            print('[%s %d/%d] source %.3fs' % (name,i+1,len(film['scenes']),scene['start']),flush=True)
+            path=str(out/('%s_%02d.mp4'%(name,i)))
+            render_scene(selected,path,scene['duration'],scene['start'],scene.get('speed',1),
+                         name=='short',scene.get('caption',''),scene.get('heading',''),
+                         False,True)
+            parts.append(path)
+        concat(parts,str(out/('short_9x16.mp4' if name=='short' else 'showcase_16x9.mp4')))
+    print('Silent showcase package:',out)
 
 
 def concat(paths, dest):
@@ -387,8 +479,14 @@ def main():
     parser.add_argument('--voice-name',default='voice_references/host1.wav,voice_references/host2.wav')
     parser.add_argument('--writer',choices=writer.BACKENDS,default='chatgpt')
     parser.add_argument('--resume',action='store_true',help='Reuse editable scripts after a failed render')
+    parser.add_argument('--edit-plan',help='Render an explicit silent long/short footage plan; no writer or TTS')
     args = parser.parse_args()
     out = Path(args.out_dir).resolve()
+    if args.edit_plan:
+        plan=json.loads(Path(args.edit_plan).read_text(encoding='utf-8'))
+        panels,_,_=short.panels_from_run(args.run)
+        render_edit_plan(plan,panels,out)
+        return
     if args.seconds < 45 or args.short_seconds < 30:
         raise SystemExit('Narrated package needs at least 45 seconds long / 30 seconds short.')
     if out.exists() and any(out.iterdir()) and not args.resume:

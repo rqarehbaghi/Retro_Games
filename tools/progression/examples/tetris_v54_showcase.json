@@ -1,0 +1,37 @@
+{
+  "description": "Best recorded runs from the 15-game v54 uncapped cache. Silent approval preview. Source time is shared; cuts skip elapsed time, never restart a game.",
+  "films": {
+    "short": {
+      "panels": ["50k_level0_1p_bare", "200k_level0_1p_bare"],
+      "labels": {"50k_level0_1p_bare": "Challenger (50k)", "200k_level0_1p_bare": "Record holder (200k)"},
+      "scenes": [
+        {"start": 0, "duration": 6, "heading": "I TRAINED MY NEXT OPPONENT", "caption": "Their final records: 1,646 and 2,085 lines."},
+        {"start": 1123, "duration": 6, "heading": "18 MINUTES LATER", "caption": "Same starting board. Both still going."},
+        {"start": 2126, "duration": 6, "heading": "35 MINUTES IN", "caption": "Watch the right player pass 1,000."},
+        {"start": 2177, "duration": 9, "heading": "ONE MINUTE LATER", "caption": "The right board is almost full."},
+        {"start": 2186, "duration": 9, "heading": "NO CUT. WATCH THE RECOVERY.", "caption": "It keeps clearing. Watch the stack fall."},
+        {"start": 3640, "duration": 8, "heading": "AN HOUR IN", "caption": "Now watch the left player."},
+        {"start": 4033, "duration": 6, "heading": "67 MINUTES IN", "caption": "Left finished at 1,646. Watch right cross 2,000."},
+        {"start": 4197, "duration": 6, "heading": "THE LAST CLEAR", "caption": "Watch the final lines disappear."},
+        {"start": 4207, "duration": 4, "heading": "NEXT VIDEO: MY TURN", "caption": "1,646 vs 2,085. Can I beat my own player?"}
+      ]
+    },
+    "long": {
+      "panels": ["10k_p1_02_bare", "20k_level0_1p_bare", "50k_level0_1p_bare", "100k_p1_01_bare", "200k_level0_1p_bare"],
+      "labels": {"10k_p1_02_bare": "10k / p1_02", "20k_level0_1p_bare": "20k / level0_1p", "50k_level0_1p_bare": "50k / level0_1p", "100k_p1_01_bare": "100k / p1_01", "200k_level0_1p_bare": "200k / level0_1p"},
+      "scenes": [
+        {"start": 0, "duration": 8, "heading": "FIVE VERSIONS I TRAINED", "caption": "Each version's best recorded game. Different starting boards."},
+        {"start": 181, "duration": 8, "heading": "3 MINUTES IN", "caption": "Watch the first version's final moves."},
+        {"start": 967, "duration": 10, "heading": "16 MINUTES IN", "caption": "Now the 20k version is running out of room."},
+        {"start": 2126, "duration": 10, "heading": "35 MINUTES IN", "caption": "Now the rightmost player passes 1,000."},
+        {"start": 2177, "duration": 9, "heading": "WATCH THE RIGHTMOST BOARD", "caption": "Almost full. Can it recover?"},
+        {"start": 2186, "duration": 9, "heading": "THE SAME MOMENT, CONTINUED", "caption": "It keeps clearing and brings the stack down."},
+        {"start": 2280, "duration": 10, "heading": "38 MINUTES IN", "caption": "Watch the 100k version's final moves."},
+        {"start": 3640, "duration": 10, "heading": "AN HOUR IN", "caption": "The 50k version has lasted an hour. Watch its final moves."},
+        {"start": 4033, "duration": 10, "heading": "67 MINUTES IN", "caption": "Watch the last player cross 2,000 lines."},
+        {"start": 4197, "duration": 10, "heading": "MY BEST RECORDED GAME", "caption": "The final clear. This is who I have to face."},
+        {"start": 4207, "duration": 4, "heading": "STAY TUNED FOR MY MATCH", "caption": "2,085 lines. Next video: human versus my computer player."}
+      ]
+    }
+  }
+}

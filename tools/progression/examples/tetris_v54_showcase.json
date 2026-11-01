@@ -4,6 +4,17 @@
     "short": {
       "panels": ["50k_level0_1p_bare", "200k_level0_1p_bare"],
       "labels": {"50k_level0_1p_bare": "Challenger (50k)", "200k_level0_1p_bare": "Record holder (200k)"},
+      "narration": [
+        {"who": 1, "text": "I built my next opponent. These are its two strongest recorded games."},
+        {"who": 1, "text": "Eighteen minutes later, both are still clearing. They started from the same board."},
+        {"who": 1, "text": "Now watch the right player. It's about to pass a thousand lines."},
+        {"who": 1, "text": "This is where I'd start panicking. Look how high the right stack is. There's almost no room left."},
+        {"who": 1, "text": "But keep watching. No cut here. It keeps clearing lines, and that huge stack comes back down."},
+        {"who": 1, "text": "An hour into the game, the left player finally runs out of room. That was quite a run."},
+        {"who": 1, "text": "The left finished with sixteen forty-six. The right is closing in on two thousand."},
+        {"who": 1, "text": "Here's the final clear. This is the computer I'm going to play against."},
+        {"who": 1, "text": "Next video, my turn. Stay tuned!"}
+      ],
       "scenes": [
         {"start": 0, "duration": 6, "heading": "I TRAINED MY NEXT OPPONENT", "caption": "Their final records: 1,646 and 2,085 lines."},
         {"start": 1123, "duration": 6, "heading": "18 MINUTES LATER", "caption": "Same starting board. Both still going."},
@@ -19,6 +30,19 @@
     "long": {
       "panels": ["10k_p1_02_bare", "20k_level0_1p_bare", "50k_level0_1p_bare", "100k_p1_01_bare", "200k_level0_1p_bare"],
       "labels": {"10k_p1_02_bare": "10k / p1_02", "20k_level0_1p_bare": "20k / level0_1p", "50k_level0_1p_bare": "50k / level0_1p", "100k_p1_01_bare": "100k / p1_01", "200k_level0_1p_bare": "200k / level0_1p"},
+      "narration": [
+        {"who": 1, "text": "I trained five versions of this computer player. These are their best recorded games, starting from different boards."},
+        {"who": 2, "text": "So these are personal bests, not a fair race. Got it. Let's see how long the first one lasts."},
+        {"who": 1, "text": "Exactly. Now we're sixteen minutes in. The first version is out, and the second is getting into trouble."},
+        {"who": 2, "text": "Meanwhile, look at the player on the far right. It's closing in on a thousand lines. That's the one you're challenging?"},
+        {"who": 1, "text": "That's the plan. Although, look at its board now. It's almost full. I'd probably panic and drop the next piece anywhere."},
+        {"who": 2, "text": "Wait, keep watching. It's bringing the stack back down. Okay, that recovery would make me nervous about playing against it."},
+        {"who": 1, "text": "Me too. Now watch the fourth version's final moves. Its best recorded game was impressive, but two others keep going."},
+        {"who": 2, "text": "An hour of playing, and the left of those two is still fighting. I wasn't expecting either game to last this long."},
+        {"who": 1, "text": "The last player is about to pass two thousand lines. I wanted a real opponent. I might have overdone it."},
+        {"who": 2, "text": "Well, you certainly didn't build yourself an easy win. Let's watch its final clear, then you can decide how confident you feel."},
+        {"who": 1, "text": "Next video, I play it. Stay tuned!"}
+      ],
       "scenes": [
         {"start": 0, "duration": 8, "heading": "FIVE VERSIONS I TRAINED", "caption": "Each version's best recorded game. Different starting boards."},
         {"start": 181, "duration": 8, "heading": "3 MINUTES IN", "caption": "Watch the first version's final moves."},

@@ -28,8 +28,9 @@ Backends, with what each one costs:
               cloned reference voice per host.
     piper     Piper, MIT, local, free, tiny and fast. Flat but utterly
               consistent -- the safe fallback on a machine with no GPU.
-    elevenlabs  PAID, and it sends the script to a third party. Only used if
-              explicitly asked for and ELEVENLABS_API_KEY is set.
+    elevenlabs  Hosted dialogue, sends scripts to ElevenLabs. Explicit opt-in
+              with ELEVENLABS_API_KEY. Currently guarded to free-tier auditions;
+              free audio is not commercially licensed. No paid fallback.
 
 Nothing here is installed by this repo. `available()` reports what is actually
 importable on this machine so a run fails before the emulator does, not after.
@@ -88,6 +89,13 @@ def words_per_minute(backend):
 
 
 def validate_voice(backend, voice=None, podcast=False):
+    if backend == 'elevenlabs':
+        ids = [v.strip() for v in (voice or '').split(',') if v.strip()]
+        if len(ids) != (2 if podcast else 1) or any(not re.fullmatch(r'[A-Za-z0-9_-]+',v) for v in ids):
+            raise ValueError('ElevenLabs needs %s Voice IDs, not WAV paths' % ('two comma-separated' if podcast else 'one'))
+        if podcast and ids[0] == ids[1]:
+            raise ValueError('Choose two different ElevenLabs voices for the podcast')
+        return
     """Refuse bad voice inputs before an emulator run spends real time."""
     if backend not in ("cosyvoice3", "chatterbox", "chatterbox-turbo"):
         return
@@ -443,31 +451,100 @@ def _speak_piper(blocks, out_dir, voice=None, speed=1.0, verbose=True):
 
 # -------------------------------------------------------------- elevenlabs --
 def _speak_elevenlabs(blocks, out_dir, voice=None, speed=1.0, verbose=True):
-    """PAID, and the script leaves this machine. Opt in only.
+    """Generate dialogue in context, then use server timing to recover turns.
 
-    Kept deliberately thin: a key, a voice id, one request per block."""
-    import json
-    import urllib.request
-
-    key = os.environ["ELEVENLABS_API_KEY"]
-    voice_id = voice or "JBFqnCBsd6RMkjVDRZzb"
-    out = []
-    for i, text in enumerate(blocks):
-        req = urllib.request.Request(
-            "https://api.elevenlabs.io/v1/text-to-speech/%s" % voice_id,
-            data=json.dumps({"text": text, "model_id": "eleven_multilingual_v2"}).encode(),
-            headers={"xi-api-key": key, "Content-Type": "application/json",
-                     "Accept": "audio/mpeg"})
-        mp3 = os.path.join(out_dir, "block_%02d.mp3" % i)
-        with urllib.request.urlopen(req, timeout=120) as resp, open(mp3, "wb") as fh:
-            fh.write(resp.read())
-        wav = os.path.join(out_dir, "block_%02d.wav" % i)
-        subprocess.run(["ffmpeg", "-nostdin", "-y", "-v", "error", "-i", mp3,
-                        "-ar", str(SAMPLE_RATE), "-ac", "1", wav], check=True)
-        out.append(wav)
+    Explicit opt-in only. Free-tier guard; no purchases, retries or paid fallback.
+    Raw responses are cached before decoding so a local failure costs no retake.
+    """
+    import base64
+    import hashlib
+    if speed != 1:
+        raise ValueError('ElevenLabs dialogue uses its natural delivery speed; use speed=1')
+    refs = list(voice) if isinstance(voice,(list,tuple)) else [voice]*len(blocks)
+    if len(refs)!=len(blocks) or any(not isinstance(v,str) or not re.fullmatch(r'[A-Za-z0-9_-]+',v) for v in refs):
+        raise ValueError('ElevenLabs needs one valid Voice ID per turn; no file paths')
+    if not blocks:
+        return []
+    chunks = []
+    for text,ref in zip(blocks,refs):
+        if len(text)>2000:
+            raise ValueError('An ElevenLabs turn exceeds 2,000 characters; shorten it before generating')
+        if not chunks or sum(len(t['text']) for t in chunks[-1])+len(text)>2000:
+            chunks.append([])
+        chunks[-1].append(dict(text=text,voice_id=ref))
+    model=os.environ.get('ELEVENLABS_MODEL','eleven_v3')
+    pending=[]
+    for chunk in chunks:
+        payload=dict(inputs=chunk,model_id=model)
+        digest=hashlib.sha256(json.dumps(payload,sort_keys=True).encode()).hexdigest()
+        cache=os.path.join(out_dir,'elevenlabs_'+digest+'.json')
+        pending.append((payload,cache))
+    needed=sum(len(t['text']) for payload,cache in pending if not os.path.exists(cache) for t in payload['inputs'])
+    if needed:
+        subscription=_eleven_request('/v1/user/subscription')
+        if subscription.get('tier')!='free':
+            raise RuntimeError('ElevenLabs free-tier safety guard: account is not free. No audio requested.')
+        remaining=subscription['character_limit']-subscription['character_count']
+        if needed>remaining:
+            raise RuntimeError('ElevenLabs quota insufficient: %d text characters, %d remaining. No audio requested.'%(needed,remaining))
         if verbose:
-            print("    [%2d/%2d] %s" % (i + 1, len(blocks), text[:58]))
-    return out
+            print('  [ElevenLabs] sending %d text characters; no voice recordings. Free-tier test audio only.'%needed)
+    paths=[]
+    for batch,(payload,cache) in enumerate(pending):
+        if os.path.exists(cache):
+            with open(cache,encoding='utf-8') as handle:
+                response=json.load(handle)
+        else:
+            response=_eleven_request('/v1/text-to-dialogue/with-timestamps?output_format=mp3_44100_128',payload)
+            with open(cache+'.tmp','w',encoding='utf-8') as handle:
+                json.dump(response,handle)
+            os.replace(cache+'.tmp',cache)
+        mp3=os.path.join(out_dir,'dialogue_%02d.mp3'%batch)
+        with open(mp3,'wb') as handle:
+            handle.write(base64.b64decode(response['audio_base64'],validate=True))
+        length=seconds(mp3)
+        bounds=_eleven_bounds(response['voice_segments'],len(payload['inputs']),length)
+        for begin,end in bounds:
+            path=os.path.join(out_dir,'block_%02d.wav'%len(paths))
+            subprocess.run(['ffmpeg','-nostdin','-y','-v','error','-i',mp3,'-ss',str(begin),
+                            '-t',str(end-begin),'-ar',str(SAMPLE_RATE),'-ac','1',path],check=True)
+            paths.append(path)
+    return paths
+
+
+def _eleven_request(route, payload=None):
+    import urllib.request
+    import urllib.error
+    request=urllib.request.Request('https://api.elevenlabs.io'+route,
+        data=None if payload is None else json.dumps(payload).encode(),
+        headers={'xi-api-key':os.environ['ELEVENLABS_API_KEY'],'Content-Type':'application/json'})
+    try:
+        with urllib.request.urlopen(request,timeout=180) as response:
+            return json.load(response)
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError('ElevenLabs HTTP %s. Check key permissions, voice/model access and quota. No automatic retry.'%exc.code) from None
+    except (urllib.error.URLError,TimeoutError):
+        raise RuntimeError('ElevenLabs connection failed. Check generation history before retrying; the server may have used credits.') from None
+
+
+def _eleven_bounds(segments, count, length):
+    """Reject missing/overlapping speakers instead of cutting spoken words."""
+    import math
+    ranges=[]
+    for index in range(count):
+        rows=[s for s in segments if s['dialogue_input_index']==index]
+        if not rows:
+            raise RuntimeError('ElevenLabs omitted a dialogue turn; cached response preserved')
+        begin=min(s['start_time_seconds'] for s in rows)
+        end=max(s['end_time_seconds'] for s in rows)
+        if not all(math.isfinite(v) for v in (begin,end,length)) or not 0<=begin<end<=length+.05:
+            raise RuntimeError('Invalid ElevenLabs timestamps; cached response preserved')
+        if ranges and begin<ranges[-1][1]-.001:
+            raise RuntimeError('Overlapping ElevenLabs speakers cannot be split safely; cached full dialogue preserved')
+        ranges.append((begin,end))
+    # Keep original leading/trailing silence and between-turn pacing in the clips.
+    starts=[0]+[r[0] for r in ranges[1:]]
+    return list(zip(starts,starts[1:]+[length]))
 
 
 SPEAKERS = {"cosyvoice3": _speak_cosyvoice3,

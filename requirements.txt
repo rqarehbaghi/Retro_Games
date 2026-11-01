@@ -45,6 +45,9 @@ matplotlib
 
 # ------------------------------------------------------- voice (optional) --
 # Only for --voice. Nothing below is needed to render a silent video.
+# ElevenLabs: no SDK needed (stdlib HTTPS + existing ffmpeg). Set
+# ELEVENLABS_API_KEY in the shell, never in Git. See PROGRESSION_STORY.md.
+# Free-tier integration is test/noncommercial only; no automatic paid fallback.
 soundfile                    # reads and writes the spoken wavs
 # Progression's default CosyVoice 3 and its local Whisper transcript checker
 # belong in the ISOLATED environment: bash tools/install_cosyvoice.sh.

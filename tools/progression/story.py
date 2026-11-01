@@ -294,9 +294,21 @@ def validate_edit_plan(plan, panels):
     return by_key
 
 
-def render_edit_plan(plan, panels, out):
+def render_edit_plan(plan, panels, out, voice_model=None, voices=None, resume=False):
     by_key=validate_edit_plan(plan,panels)
-    out.mkdir(parents=True,exist_ok=False)
+    if voice_model:
+        speech.validate_voice(voice_model,','.join(voices or []),podcast=True)
+        if not speech.available(voice_model):
+            raise ValueError('Voice backend unavailable; set its credentials before rendering')
+        for film in plan['films'].values():
+            if len(film.get('narration',[])) != len(film['scenes']):
+                raise ValueError('Voiced edit requires one narration turn per scene')
+            if any(t.get('who') not in (1,2) or not t.get('text','').strip() for t in film['narration']):
+                raise ValueError('Narration turns need text and who=1 or 2')
+    if resume:
+        if json.loads((out/'edit_plan.json').read_text(encoding='utf-8')) != plan:
+            raise ValueError('Edit plan changed; choose a new output directory')
+    out.mkdir(parents=True,exist_ok=resume)
     save(out/'edit_plan.json',plan)
     save(out/'selected_results.json',[dict(key=k,state=by_key[k]['state'],
         value=by_key[k]['value'],seconds=by_key[k]['seconds'],path=by_key[k]['path'])
@@ -305,15 +317,38 @@ def render_edit_plan(plan, panels, out):
         selected=[dict(by_key[k],label=film.get('labels',{}).get(k,short.checkpoint_of(by_key[k])))
                   for k in film['panels']]
         parts=[]
+        movie=str(out/('short_9x16.mp4' if name=='short' else 'showcase_16x9.mp4'))
         for i,scene in enumerate(film['scenes']):
+            if resume and Path(movie).exists():
+                break
             print('[%s %d/%d] source %.3fs' % (name,i+1,len(film['scenes']),scene['start']),flush=True)
             path=str(out/('%s_%02d.mp4'%(name,i)))
             render_scene(selected,path,scene['duration'],scene['start'],scene.get('speed',1),
                          name=='short',scene.get('caption',''),scene.get('heading',''),
                          False,True)
             parts.append(path)
-        concat(parts,str(out/('short_9x16.mp4' if name=='short' else 'showcase_16x9.mp4')))
-    print('Silent showcase package:',out)
+        if parts:
+            concat(parts,movie)
+        if abs(video.duration(movie)-sum(s['duration'] for s in film['scenes'])) > .1:
+            raise RuntimeError('Cached film duration does not match plan')
+        if voice_model:
+            turns=film['narration']
+            refs=[voices[t['who']-1] for t in turns]
+            clips=speech.speak([t['text'] for t in turns],str(out/(name+'_speech')),
+                               backend=voice_model,voice=refs)
+            if len(clips)!=len(turns):
+                raise RuntimeError('Narration omitted a turn; silent movie preserved')
+            placed=[]
+            cursor=0
+            for scene,(audio,duration) in zip(film['scenes'],clips):
+                if duration>scene['duration']:
+                    raise RuntimeError('Narration exceeds scene budget; shorten the turn. Cached audio and silent movie preserved.')
+                placed.append((cursor,cursor+duration,audio,False))
+                cursor+=scene['duration']
+            wav=str(out/(name+'_narration.wav'))
+            narrate.build_track(placed,cursor,wav)
+            narrate.mux(movie,wav,str(out/(name+'_narrated.mp4')))
+    print('Showcase package:',out)
 
 
 def concat(paths, dest):
@@ -479,13 +514,15 @@ def main():
     parser.add_argument('--voice-name',default='voice_references/host1.wav,voice_references/host2.wav')
     parser.add_argument('--writer',choices=writer.BACKENDS,default='chatgpt')
     parser.add_argument('--resume',action='store_true',help='Reuse editable scripts after a failed render')
-    parser.add_argument('--edit-plan',help='Render an explicit silent long/short footage plan; no writer or TTS')
+    parser.add_argument('--edit-plan',help='Render an explicit long/short footage plan; silent unless --voice is supplied')
+    parser.add_argument('--voice',action='store_true',help='With --edit-plan, speak its authored narration; opt-in cloud backend via --voice-model')
     args = parser.parse_args()
     out = Path(args.out_dir).resolve()
     if args.edit_plan:
         plan=json.loads(Path(args.edit_plan).read_text(encoding='utf-8'))
         panels,_,_=short.panels_from_run(args.run)
-        render_edit_plan(plan,panels,out)
+        render_edit_plan(plan,panels,out,args.voice_model if args.voice else None,
+                         [v.strip() for v in args.voice_name.split(',')] if args.voice else None,args.resume)
         return
     if args.seconds < 45 or args.short_seconds < 30:
         raise SystemExit('Narrated package needs at least 45 seconds long / 30 seconds short.')

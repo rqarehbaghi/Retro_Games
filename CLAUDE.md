@@ -132,6 +132,13 @@ python restyle.py ./studio_out/<folder>
   counters beyond HUD rollover, and explicitly chosen source windows. See the
   first section of `PROGRESSION_STORY.md`. Do not silently return to first-state
   sampling or label competitors "less practice / more practice".
+  ElevenLabs is now an explicit optional voice backend: `--voice-model elevenlabs`
+  with two Voice IDs (not WAVs), and `--voice` for the edit-plan mode. It uses
+  joint dialogue generation, cached timestamp responses, and a free-account guard.
+  Never put ELEVENLABS_API_KEY in tracked files or upload reference voices without
+  permission. Free-generated audio is audition/noncommercial only. Setup and
+  the audition command are in PROGRESSION_STORY.md. Do not claim live verification
+  until an authenticated audition actually succeeds.
 
 ## Facts that cost real effort to establish
 

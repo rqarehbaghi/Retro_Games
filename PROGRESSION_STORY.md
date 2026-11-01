@@ -1,5 +1,85 @@
 # Cached footage: a simpler narrated package
 
+## ElevenLabs free-tier voice setup (audition before full export)
+
+No new pip dependency is needed. Select `--voice-model elevenlabs` explicitly;
+the default is not silently changed and rejected local voices are not fallbacks.
+The script text goes to ElevenLabs; your reference recordings are not uploaded.
+
+1. In ElevenLabs, create an API key under Developers / API Keys. Enable speech
+   generation and account/subscription read permissions for the quota check.
+   Set a small credit limit on the key. Never paste the key into chat or Git.
+2. Choose two voices available to your free account through the API and copy
+   their Voice IDs. ElevenLabs explicitly excludes Voice Library voices from
+   free-tier API access (https://elevenlabs.io/docs/eleven-creative/voices/voice-library).
+   Website/library availability does not guarantee API access. Use permitted
+   account voices, or audition through the website without enabling billing.
+3. In your WSL terminal, after pulling the code:
+
+```bash
+read -rsp 'ElevenLabs API key: ' ELEVENLABS_API_KEY; echo
+export ELEVENLABS_API_KEY
+export HOST1_VOICE_ID='REPLACE_WITH_FIRST_VOICE_ID'
+export HOST2_VOICE_ID='REPLACE_WITH_SECOND_VOICE_ID'
+```
+
+The key is only in this shell session; it is not saved to a repository file or
+echoed into command history. The adapter defaults to the documented `eleven_v3`
+dialogue model. `ELEVENLABS_MODEL` can select another model your account supports;
+model access and voice quality must be confirmed with a real audition.
+
+Generate one short two-host audition, consuming free credits:
+
+```bash
+python - <<'PY'
+import os
+from tools.progression import speech
+speech.speak([
+    "I trained this computer to play against me. Now I'm wondering if that was a good idea.",
+    "You picked its best game to show us. Let's see how confident you are when it's your turn."
+], 'voice_auditions/elevenlabs', backend='elevenlabs',
+voice=[os.environ['HOST1_VOICE_ID'], os.environ['HOST2_VOICE_ID']])
+print('Listen to voice_auditions/elevenlabs/dialogue_00.mp3')
+PY
+```
+
+The two hosts are generated together via Text to Dialogue, not independent TTS
+calls. Full dialogue audio, turn WAVs and the raw timestamp response stay in the
+output folder. Repeating identical text/voices/model in that folder reuses the
+response without another generation. Changed text or model consumes credits.
+No automatic API retries occur. If a timeout occurs, inspect ElevenLabs history
+before retrying: the server may have generated audio even without a local reply.
+
+After approving the voices, generate the showcase with both formats:
+
+```bash
+python tools/progression/story.py \
+  --run progression_out/runs/tetris_v54_uncapped_full \
+  --edit-plan tools/progression/examples/tetris_v54_showcase.json \
+  --out-dir progression_out/runs/tetris_v54_elevenlabs_test \
+  --voice --voice-model elevenlabs \
+  --voice-name "$HOST1_VOICE_ID,$HOST2_VOICE_ID"
+```
+
+The long uses the two authored hosts; the short uses host 1. Authored narration
+is stored in the plan's `narration` arrays. Silent films remain intact; voiced
+outputs are `long_narrated.mp4` and `short_narrated.mp4`. Exact speech duration
+must fit each scene; overruns stop instead of clipping or accelerating voices.
+Repeat the same command with `--resume` to reuse matching silent films and cached
+speech after an interrupted run. Changing the edit plan requires a new folder.
+
+Safety: the adapter refuses non-free accounts before new generation, checks
+remaining character quota, and never enables usage-based billing or buys credits.
+Actual credits depend on ElevenLabs model/voice pricing; the provider enforces
+the free quota. Free-generated audio is not licensed for commercial use, and
+noncommercial publication requires attribution under ElevenLabs' current terms.
+Keep these as auditions until publication licensing is settled. Upgrading later
+does not automatically relicense old free-generated audio.
+
+API access, selected voices, naturalness and final narration timing cannot be
+verified until the owner supplies credentials locally and auditions the output.
+No account call or live synthesis was made while implementing this integration.
+
 ## Approved showcase edit (silent preview)
 
 The current approved edit separates the formats: two strongest same-start games

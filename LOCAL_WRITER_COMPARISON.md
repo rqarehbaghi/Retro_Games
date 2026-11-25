@@ -13,6 +13,10 @@ python tools/compare_local_writers.py \
 By default this exports every installed local text model. Cloud entries and
 non-text models are skipped. `--models name1,name2` selects a subset.
 Use a new output folder for every comparison; existing results are never overwritten.
+After an interrupted run, repeat its exact command with `--resume`. Completed
+scripts are retained; unfinished models are retried. The saved prompt must match,
+and completed models must still have the same installed digest. Results are saved
+atomically after each model so a shutdown cannot leave a half-written index.
 Replace the facts file with your own UTF-8 gameplay evidence for a real production
 comparison. The included sample is explicitly a showcase, not a controlled test.
 

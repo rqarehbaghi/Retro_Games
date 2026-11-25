@@ -36,6 +36,12 @@ class CompareWritersTest(unittest.TestCase):
             self.assertTrue((out / records[0]['file']).exists())
             self.assertIn('skipped', records[1])
             self.assertEqual(len(list(out.glob('*.json'))), 2)
+            original = (out / records[0]['file']).read_bytes()
+            with patch('sys.argv', ['compare', '--facts', str(facts), '--out-dir', str(out), '--resume']), \
+                    patch.object(compare, 'request', side_effect=request) as calls:
+                compare.main()
+            self.assertFalse(any(c.args[1] == '/api/generate' for c in calls.call_args_list))
+            self.assertEqual((out / records[0]['file']).read_bytes(), original)
 
     def test_empty_response_is_error_not_reasoning(self):
         def request(host, endpoint, payload=None, timeout=30):

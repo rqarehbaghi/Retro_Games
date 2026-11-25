@@ -8,6 +8,13 @@ Default roles: Gemma 4 12B drafts a connected story; Qwen3.8 27B drafts an alter
 gamer voice; Gemma 4 31B writes the master. They run sequentially, unload after
 generation, and use no cloud APIs or speech credits. All three must remain installed.
 
+The current prompt treats this as entertaining Let's Play performance: a playful
+opening, changing pressure, a change of pace, and a payoff. Factual grounding applies
+to gameplay claims, while jokes and immediate reactions may be authored. The master
+must rewrite a coherent story rather than stitch together draft sentences. Examples
+span genres and are style demonstrations, not facts. No game-specific Python rules
+are introduced. Each complete run is still reviewed for unsupported implications.
+
 ```bash
 python tools/narrate_ensemble.py --evidence reviewed_evidence.json \
   --out-dir progression_out/narration_ensemble_01

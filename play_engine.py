@@ -437,6 +437,17 @@ def _boot_state_name(game, name="boot"):
         return None
 
 
+def ai_requested(players, model_path, p2_human):
+    """A single human does not implicitly request a random opponent."""
+    return not p2_human and (players >= 2 or bool(model_path))
+
+
+def configured_repress_index(buttons, config):
+    """Ignore absent button configuration, including placeholder None buttons."""
+    button = config.get('button')
+    return buttons.index(button) if isinstance(button, str) and button in buttons else None
+
+
 def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
                mode="versus", players=2, boot_screen=False, p2_human=False,
                fullscreen=False, render_mp4=True, deterministic=False,
@@ -613,7 +624,7 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
     ai_combos, ai_combos_name = resolve_ai_combos(game, ai_overrides)
     ai_frame, ai_expected_shape = make_frame_processor(game, ai_overrides)
     model = None
-    if not p2_human:
+    if ai_requested(num_players, model_path, p2_human):
         resolved_model_path = model_path
         if resolved_model_path and not os.path.exists(resolved_model_path):
             if os.path.exists(resolved_model_path + ".zip"):
@@ -741,7 +752,7 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
         transition_gate = None
         ai_slot = 1 if num_players >= 2 else 0
     ai_p = ai_slot + 1
-    if not p2_human:
+    if ai_requested(num_players, model_path, p2_human):
         # Now that the agent's player is known, say which side it is on. The
         # default assumption of human-P1 / AI-P2 is exactly backwards when the
         # model drives player 1, and there is no human at all with one player.
@@ -755,6 +766,9 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
         else:
             print("AI: PLAYER %d (%s) | no human player" % (ai_p, who))
             pygame.display.set_caption("Retro AI Arena: AI (P%d) - [%s]" % (ai_p, game))
+    elif num_players == 1:
+        print("Human: PLAYER 1 (Keyboard/Gamepad) | no AI player")
+        pygame.display.set_caption("Retro: Human P1 - [%s]" % game)
 
     # PLAY_DEBUG=1 traces every placement decision and every button frame the
     # shared controller emits. Live play has no unittest harness, so this is
@@ -845,8 +859,7 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
     #   "repress_on_reset": {"button": "DOWN", "var": "piece_row_p{player}",
     #                        "resets_below": 5}
     repress = dict((getattr(spec, "raw", {}) or {}).get("repress_on_reset") or {})
-    repress_idx = (buttons.index(repress["button"])
-                   if repress.get("button") in buttons else None)
+    repress_idx = configured_repress_index(buttons, repress)
     last_reset_val = [None] * num_players
     release_pending = [False] * num_players
 

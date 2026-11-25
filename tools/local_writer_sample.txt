@@ -1,0 +1,11 @@
+These are recorded results, not proof of average performance.
+The game is TetrisTime. Five saved versions of a computer player were tested.
+The best recorded game for each version cleared:
+10,000 training steps: 64 lines.
+20,000 training steps: 394 lines.
+50,000 training steps: 1,646 lines.
+100,000 training steps: 1,057 lines.
+200,000 training steps: 2,085 lines.
+Starting positions differ between some of these records, so this is a showcase,
+not a controlled comparison. More training did not improve every recorded result.
+The owner plans to play against the computer in a future video.

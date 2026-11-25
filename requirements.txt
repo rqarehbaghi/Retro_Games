@@ -37,6 +37,8 @@ matplotlib
 # measured slower and failed 3 of 18 encodes (see overlays.py).
 
 # ------------------------------------------------- writers (pick any ONE) --
+# Visual gameplay analysis: stdlib only, existing ffmpeg/ffprobe + Ollama vision
+# model (ollama pull gemma4:12b). See VIDEO_ANALYSIS.md; no Torch upgrades needed.
 # No writer needs a pip package or separately billed API. setup.sh installs the
 # Codex CLI; authenticate it inside WSL with `codex login --device-auth` to use
 # the existing ChatGPT subscription. Ollama remains the local free fallback:

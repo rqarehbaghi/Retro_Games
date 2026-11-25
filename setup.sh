@@ -95,5 +95,10 @@ Next, in order:
 
   # 5. Optional, only for spoken narration (~350MB):
   bash tools/get_kokoro.sh
+
+  # 6. Optional local video evidence (separate from speech; ~8 GB if absent):
+  # ollama pull gemma4:12b
+  # python tools/analyze_gameplay.py --help
+  # See VIDEO_ANALYSIS.md for a bounded first test.
 ----------------------------------------------------------------------
 NEXT

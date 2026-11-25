@@ -1,0 +1,14 @@
+SYNTHETIC WRITING TEST ONLY. These events are invented for comparing writing style,
+not taken from the owner's recording. Do not publish this as real gameplay evidence.
+Game: TetrisTime. Mode: two human players. Narrator: player 1. Player 2 is a friend.
+Both players start with empty boards. Neither player is a computer-controlled bot.
+Narrator's stated plan: keep a clear column on the right for a long piece.
+Recorded order within this fictional example:
+1. Player 1 clears two lines early.
+2. Player 1 places a piece over an empty square, creating a hole.
+3. Player 1's stack rises while the hole stays covered.
+4. Player 2 clears four lines on their own board. No attack effects are specified.
+5. Player 1 abandons the plan of waiting for a four-line clear and takes smaller clears.
+6. Player 1 uncovers the hole and lowers the stack.
+The clip ends with both players still playing. No winner or final total is established.
+The owner intends to show another gameplay video next; its opponent is unspecified.

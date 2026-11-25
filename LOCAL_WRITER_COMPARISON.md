@@ -27,6 +27,12 @@ other models' exports. A timeout may leave Ollama finishing its current request.
 Compare factual accuracy, conversational flow, clarity, forced humor and the
 closing invitation. Do not infer voice quality from these text-only exports.
 
+For a single human narrator describing their own gameplay, add `--style first-person`.
+Use `--facts tools/local_writer_human_sample.txt` for the clearly labelled synthetic
+two-human example, or supply facts from a real recording. All models receive the
+same scenario. No models are removed by this tool. Delimited reasoning is excluded
+from scripts and word counts, while raw responses remain available for debugging.
+
 Installation sizing: this machine was measured with a 16 GB RTX 4090 Laptop GPU
 and 15 GB WSL RAM. Large 18–20 GB models require partial CPU offload; a modest
 context is deliberate. GLM-5.3 and DeepSeek-V4.1-Flash are not suitable downloads

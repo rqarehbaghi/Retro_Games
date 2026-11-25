@@ -8,6 +8,11 @@ from tools import compare_local_writers as compare
 
 
 class CompareWritersTest(unittest.TestCase):
+    def test_reasoning_is_not_spoken(self):
+        self.assertEqual(compare.clean_script('Draft notes</think> My game.'), ('My game.', True))
+        with self.assertRaises(ValueError):
+            compare.clean_script('<think>unfinished notes')
+
     def test_exports_local_and_skips_remote(self):
         def request(host, endpoint, payload=None, timeout=30):
             if endpoint == '/api/tags':

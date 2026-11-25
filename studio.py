@@ -920,8 +920,16 @@ def main():
     parser.add_argument("--writer-host", default=cfg.get("writer_host", writer.DEFAULT_HOST), help="Where Ollama is listening. (default: %(default)s)")
     parser.add_argument("--list-writer-models", action="store_true", help="Show which Ollama models are installed, with notes on what suits a 24GB card, then exit")
     parser.add_argument("--no-voice", action="store_true", help="Force the spoken commentary off even when studio.json turns it on.")
-    parser.add_argument("--voice", action="store_true", help="Write and speak commentary with local Chatterbox, then duck the game audio underneath. OFF by default. Chatterbox uses its built-in voice unless --voice-reference names a WAV you own or have permission to clone.")
-    parser.add_argument("--voice-model", default=cfg.get("voice_model", tts.DEFAULT_MODEL), help="Local TTS engine for --voice. Chatterbox is the supported engine. (default: %(default)s)")
+    parser.add_argument("--voice", action="store_true", help="Generate spoken commentary and duck game audio. OFF by default. Use --voice-model elevenlabs for explicitly authorized paid API speech.")
+    parser.add_argument("--voice-model", default=cfg.get("voice_model", tts.DEFAULT_MODEL), help="Speech backend: chatterbox, chatterbox-turbo, or elevenlabs. (default: %(default)s)")
+    parser.add_argument("--voice-id", default=None, help="ElevenLabs Voice ID; never put the API key here.")
+    parser.add_argument("--elevenlabs-model", default="eleven_multilingual_v2", help="ElevenLabs API model ID; independent of --voice-model.")
+    parser.add_argument("--elevenlabs-allow-paid", action="store_true", help="Explicitly authorize ElevenLabs requests that consume account credits.")
+    parser.add_argument("--elevenlabs-max-chars", type=int, default=5000, help="Maximum script characters per invocation; not a currency/credit limit.")
+    parser.add_argument("--narrate-folder", default=None, help="Narrate an existing studio folder without playing or calling a writer; requires --narration-json and ElevenLabs flags.")
+    parser.add_argument("--narration-json", default=None, help="Approved timed segments JSON, or ensemble master JSON with its adjacent manifest.json.")
+    parser.add_argument("--voice-output", default=None, help="Output directory for --narrate-folder; defaults to its elevenlabs_narrated subfolder.")
+    parser.add_argument("--narration-writer", choices=["standard", "ensemble"], default="standard", help="Narration only: standard writer or three local models (Gemma 12B, Qwen3.8 27B, Gemma 31B).")
     parser.add_argument("--voice-reference", "--voice-speaker", dest="voice_reference", default=cfg.get("voice_reference", tts.DEFAULT_SPEAKER), help="Optional clean reference WAV for the commentator. --voice-speaker is retained as a compatibility alias. (default: built-in voice)")
     parser.add_argument("--voice-exaggeration", type=float, default=cfg.get("voice_exaggeration", tts.DEFAULT_EXAGGERATION), help="Chatterbox emotion strength; 0.5 is natural, larger is more dramatic. (default: %(default)s)")
     parser.add_argument("--voice-cfg-weight", type=float, default=cfg.get("voice_cfg_weight", tts.DEFAULT_CFG_WEIGHT), help="Chatterbox guidance strength. (default: %(default)s)")
@@ -931,6 +939,18 @@ def main():
     parser.add_argument("--paste-block", metavar="DIR", default=None, help="Print the copy-paste block for an already staged folder (or a metadata.json) and exit. A normal run also writes it to paste.txt.")
     parser.add_argument("--print-upload-plan", action="store_true", help="Explain what can and cannot be automated per platform, then exit")
     args = parser.parse_args()
+    if args.narrate_folder:
+        if args.voice_model != "elevenlabs" or not args.narration_json or not args.voice or args.no_voice:
+            parser.error("--narrate-folder requires --voice --voice-model elevenlabs --narration-json FILE")
+        if args.from_mp4 or args.no_captions and args.overlay_videos:
+            parser.error("Do not combine --narrate-folder with --from-mp4 or conflicting caption flags")
+        tts.elevenlabs_narrate_folder(args.narrate_folder, args.narration_json,
+            args.voice_output or os.path.join(args.narrate_folder, "elevenlabs_narrated"),
+            args.voice_id, args.elevenlabs_model, args.elevenlabs_allow_paid,
+            args.elevenlabs_max_chars, overlays=args.overlay_videos, style=style)
+        return
+    if args.narration_json or args.voice_output:
+        parser.error("--narration-json and --voice-output require --narrate-folder")
     try:
         args.writer_cascade = writer.cascade_order(args.writer_cascade)
     except ValueError as exc:
@@ -1067,12 +1087,24 @@ def main():
     # every run for output that is not being used. --voice turns it on;
     # "voice": true in studio.json makes that the default again.
     args.voice = (args.voice or cfg.get("voice", False)) and not args.no_voice
-    if args.voice and not tts.available():
+    if args.voice and args.narration_writer == "ensemble":
+        if args.model:
+            parser.error("The automatic ensemble path currently supports human-only play; omit --model")
+        if args.short_seconds != 0:
+            parser.error("Ensemble narration requires --short-seconds 0")
+        required = {"gemma4:12b", "qwen3.8:27b", "gemma4:31b"}
+        if not required.issubset(set(writer.installed_models("http://127.0.0.1:11434"))):
+            parser.error("Ensemble requires local Ollama with gemma4:12b, qwen3.8:27b and gemma4:31b")
+    if args.voice and args.voice_model == "elevenlabs":
+        if args.short_seconds != 0:
+            parser.error("ElevenLabs studio narration requires --short-seconds 0 so both video timelines match")
+        tts.elevenlabs_preflight(args.voice_id, args.elevenlabs_allow_paid, args.elevenlabs_max_chars)
+    elif args.voice and not tts.available():
         sys.exit("--voice needs local Chatterbox:\n"
                  "  pip uninstall -y qwen-tts\n"
                  "  pip install -U chatterbox-tts soundfile\n"
                  "  (model weights download on first use)")
-    if args.voice:
+    if args.voice and args.voice_model != "elevenlabs":
         try:
             tts.validate_reference(args.voice_reference)
         except ValueError as exc:
@@ -1312,7 +1344,7 @@ def main():
         # Relative, so the whole folder can be moved or copied and still
         # re-render. overlays.render_spec resolves it against the folder.
         "source": os.path.basename(native),
-        "outputs": studio_outputs(slug, args.overlay_videos),
+        "outputs": studio_outputs(slug, args.overlay_videos and not (args.voice and args.voice_model == "elevenlabs")),
         "title": title,
         "watermark": args.watermark,
         "captions": spec_captions(written_caps, lines),
@@ -1331,7 +1363,17 @@ def main():
 
     # Only asked for when it is going to be used -- this is one of the three
     # model calls a run makes, and writing a script nobody hears is waste.
-    written_narr = (writer.narration(**ctx, **ai) or []) if args.voice else []
+    written_narr = []
+    if args.voice:
+        if args.narration_writer == "ensemble":
+            try:
+                written_narr = generate_ensemble_narration(args.game, effective_players, events, FPS,
+                    duration, folder, two_human=args.two_human, replay=bk2_path)
+            except Exception as exc:
+                print("WARNING: ensemble narration failed; clean videos preserved: %s" % exc)
+        else:
+            written_narr = writer.narration(**ctx, **ai) or []
+    narration_by_audio = {}
 
     def write_narration(placed=None):
         """The script on disk. Real times once the speech exists, order before.
@@ -1347,7 +1389,8 @@ def main():
                             in_use, seed))
             if placed:
                 handle.write("# Times are where each line was actually spoken.\n\n")
-                for (at, _path), item in zip(placed, written_narr):
+                for (at, _path) in placed:
+                    item = narration_by_audio[_path]
                     handle.write("[%s] %s\n" % (stamp(int(at * FPS)), item["text"]))
             else:
                 handle.write("# In order. A line marked (@) waits for that moment;\n"
@@ -1366,22 +1409,44 @@ def main():
         # After the videos are rendered, not before: the speech is laid over
         # finished files, so a TTS failure costs the commentary track and
         # nothing else.
-        shown_voice = args.voice_reference or "Chatterbox built-in voice"
+        shown_voice = args.voice_id if args.voice_model == "elevenlabs" else (args.voice_reference or "Chatterbox built-in voice")
         print(f"Speaking {len(written_narr)} lines as {shown_voice} ...")
         try:
-            clips = tts.speak_lines(written_narr, os.path.join(folder, "voice"),
+            if args.voice_model == "elevenlabs":
+                clips = tts.elevenlabs_speak_lines(written_narr, os.path.join(folder, "voice_elevenlabs"),
+                    voice_id=args.voice_id, model=args.elevenlabs_model,
+                    allow_paid=args.elevenlabs_allow_paid, max_chars=args.elevenlabs_max_chars)
+            else:
+                clips = tts.speak_lines(written_narr, os.path.join(folder, "voice"),
                                     model_name=args.voice_model,
                                     speaker=args.voice_reference,
                                     exaggeration=args.voice_exaggeration,
                                     cfg_weight=args.voice_cfg_weight)
-            track, placed = tts.build_track(
-                clips, duration, os.path.join(folder, "narration.wav"))
+            narration_by_audio = {clip[1]: item for clip, item in zip(clips, written_narr)}
+            if args.voice_model == "elevenlabs" and args.narration_writer == "ensemble":
+                track = os.path.join(folder, "narration.wav")
+                measured = tts.elevenlabs_timed_track(written_narr, [clip[1] for clip in clips], duration, track)
+                placed = [(item['start'], item['audio']) for item in measured]
+            else:
+                track, placed = tts.build_track(clips, duration, os.path.join(folder, "narration.wav"))
+                measured = [dict(start=at, spoken_end=at + tts.wav_seconds(path),
+                                 text=narration_by_audio[path]['text']) for at, path in placed]
             write_narration(placed)
             print(f"  narration.wav      the voice alone, {len(placed)} lines")
-            for source in (wide, tall):
+            for aspect, source in zip(("16x9", "9x16"), (wide, tall)):
                 stem, ext = os.path.splitext(source)
-                spoken = tts.mux(source, track, stem + "_narrated" + ext)
+                spoken = stem + "_narrated" + ext
+                if args.voice_model == "elevenlabs":
+                    source = by_name[f"{slug}_{aspect}_clean.mp4"]
+                    spoken = os.path.join(folder, f"{slug}_{aspect}_narrated.mp4")
+                    tts.elevenlabs_mux(source, track, spoken, measured if args.overlay_videos else None, style)
+                else:
+                    tts.mux(source, track, spoken)
                 print(f"  {os.path.basename(spoken)}   voice over the game, music ducked")
+                if aspect == "16x9":
+                    wide = spoken
+                else:
+                    tall = spoken
         except Exception as exc:                              # noqa: BLE001
             print(f"  WARNING: voice failed ({exc.__class__.__name__}: {exc})")
             print( "           the videos and narration.txt are unaffected.")
@@ -1418,6 +1483,73 @@ def main():
     print()
     print(folder)
     print(brief)
+
+
+
+"""Adapt studio event evidence to the generic local narration ensemble."""
+import json
+from pathlib import Path
+import subprocess
+import sys
+import time
+
+
+def make_ensemble_evidence(game, players, events, fps, duration, two_human=False, integration=None):
+    if duration < 15:
+        raise ValueError('Ensemble narration requires at least 15 seconds of footage.')
+    known = [(float(frame) / fps, str(kind), str(detail)) for frame, kind, detail in events]
+    if integration:
+        for event in integration.get('events', []):
+            changes = {name: value for name, value in event['changes'].items() if value['before'] is not None}
+            if changes:
+                known.append((event['seconds'], 'raw_integration_change', json.dumps(changes)))
+    known.sort()
+    anchors = [0.6]
+    for at, _, _ in known:
+        if at >= anchors[-1] + max(18, duration / 8) and at < duration - 23:
+            anchors.append(at)
+    anchors.append(duration - 11)
+    segments = []
+    for index, start in enumerate(anchors):
+        end = anchors[index + 1] - 0.4 if index + 1 < len(anchors) else duration - 0.4
+        past = [dict(seconds=at, kind=kind, detail=detail) for at, kind, detail in known
+                if (anchors[index - 1] if index else 0) < at <= start]
+        observation = {'id': 'e%d' % index, 'text': 'Studio-scanned events at or before this passage.',
+                       'events': past[-12:]}
+        if not past:
+            observation['text'] = 'No reliable action detail supplied for this passage. Do not invent gameplay.'
+        segments.append({'id': 's%d' % index, 'start': start, 'end': end,
+                         'max_words': max(8, min(45, int((end - start) * 1.8))),
+                         'observations': [observation]})
+    return {'game': game, 'narrator': 'Human player 1',
+            'players': 'Two humans' if two_human else 'One human' if players == 1 else 'Human versus AI',
+            'review': 'Automatically scanned events, not human-reviewed visual evidence. '
+                      'Meaning and coverage depend on the integration. Unknown actions remain unknown.',
+            'constraints': ['Do not give numeric scores: integration units may differ from the HUD.',
+                            'Raw variable names/units are not verified meanings. Suffixes do not identify human players. Startup changes are not achievements.',
+                            'Do not invent enemies, locations, attack causes, plans or an outcome.',
+                            'Lack of an event is not proof that nothing happened.',
+                            'End with a generic next-video invitation, never a promised result.'],
+            'segments': segments}
+
+
+def generate_ensemble_narration(game, players, events, fps, duration, folder, two_human=False, replay=None):
+    root = Path(__file__).resolve().parent
+    out = Path(folder) / ('ensemble_' + str(time.time_ns()))
+    out.mkdir()
+    integration = None
+    if replay:
+        subprocess.run([sys.executable, str(root / 'tools/extract_replay_evidence.py'),
+                        '--replay', str(replay), '--out', str(out / 'integration.json')], check=True)
+        integration = json.loads((out / 'integration.json').read_text())
+    evidence = make_ensemble_evidence(game, players, events, fps, duration, two_human, integration)
+    path = out / 'evidence.json'
+    path.write_text(json.dumps(evidence, indent=2), encoding='utf-8')
+    subprocess.run([sys.executable, str(root / 'tools/narrate_ensemble.py'),
+                    '--evidence', str(path), '--out-dir', str(out / 'writers')], check=True)
+    script = json.loads((out / 'writers/master.json').read_text())
+    return [dict(text=segment['text'], anchor=slot['start'], start=slot['start'], end=slot['end'],
+                 closing=False) for segment, slot in zip(script['segments'], evidence['segments'])]
 
 
 if __name__ == "__main__":

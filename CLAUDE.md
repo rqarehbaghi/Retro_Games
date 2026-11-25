@@ -16,6 +16,15 @@ The training half has two threads:
 
 ## The one command
 
+Paid single-narrator studio exports and the three-local-model narration option
+are documented in `ELEVENLABS_SETUP.md` and `STUDIO_USER_GUIDE.md`. They use
+`studio.py`; no additional entry-point script is required. ElevenLabs requires
+an environment API key and explicit `--elevenlabs-allow-paid`. With
+`--overlay-videos`, its narrated exports caption the spoken text and preserve
+the two clean exports. Tests use mocked service responses; live paid synthesis
+has not been verified. The automatic ensemble consumes replay integration data
+and events, not automatic visual analysis.
+
 ```bash
 python studio.py --game SuperMarioBros3-Nes-v0
 ```

@@ -21,11 +21,11 @@ python studio.py --game TeenageMutantNinjaTurtles-Nes-v0 \
   --no-voice --no-captions --level ""
 ```
 
-For two humans, replace `--players 1` with `--two-human`. Select the game's actual
+For two humans, use `--players 2 --human`. Select the game's actual
 two-player mode at the title screen. `--mode versus` is engine context, not a way
 to give a single-player ROM a two-player mode. Some games alternate turns.
 
-**Do not use only `--players 2` to request two humans.** Without `--two-human`,
+**Do not use only `--players 2` to request two humans.** Without `--human` (or legacy `--two-human`),
 the second side is the AI/random-opponent path. Passing `--model PATH` invokes an
 AI checkpoint; with one player it is AI-only. Single-player without a model is
 human-controlled. A previously misleading AI message and missing-button crash
@@ -178,3 +178,13 @@ spoken-text overlays. For those, rerun `--narrate-folder` with the same cache lo
 
 Code-path tests are not a guarantee of entertaining writing, accurate events for all
 700+ games, natural speech, or successful paid API access. Review a short run first.
+
+### Explicit player controls
+
+- `--players 1 --human`: you play alone.
+- `--players 2 --human`: two humans.
+- `--players 1 --ai --model CHECKPOINT`: the AI plays alone.
+- `--players 2 --ai --model CHECKPOINT`: human versus AI; `--player` selects the AI slot.
+
+`--bot` is an alias for `--ai`. Explicit AI selection requires a checkpoint.
+Older commands still work; `--two-human` is a compatibility alias.

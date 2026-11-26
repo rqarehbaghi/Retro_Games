@@ -887,7 +887,10 @@ def main():
     parser.add_argument("--game", help="stable-retro game id. Required unless --brief, --paste-block, --list-games or --print-upload-plan.")
     parser.add_argument("--players", type=int, choices=[1, 2], default=None, help="How many players the game runs. Defaults to 2 when there is a --model or --two-human, 1 otherwise. --players 1 WITH a --model means the AI plays alone, with no human in the match.")
     parser.add_argument("--boot-screen", action="store_true", help="Start from the power-on title screen (state=NONE) instead of a mid-level save state, so you can pick 1P/2P and the game mode yourself. Passed through to the play window.")
-    parser.add_argument("--two-human", action="store_true", help="Two HUMAN players, no AI. Player 1 = keyboard/pad 1, Player 2 = a SECOND gamepad (or the numeric keypad). Pair it with --boot-screen to choose 2 PLAYER GAME at the title; for SMB3 that is the classic alternating two-player game. To keep the AI opponent instead, use --players 2 with --model <checkpoint>.")
+    parser.add_argument("--two-human", action="store_true", help="Compatibility alias for --players 2 --human.")
+    controllers = parser.add_mutually_exclusive_group()
+    controllers.add_argument("--human", action="store_true", help="All selected players are human. Use --players 1 or --players 2.")
+    controllers.add_argument("--ai", "--bot", dest="ai", action="store_true", help="Use --model for an AI: alone with --players 1, versus a human with --players 2. --player selects the AI slot.")
     parser.add_argument("--gamepad", action="store_true", help="(Now default) Gamepad and keyboard are both supported seamlessly via pygame.")
     parser.add_argument("--scale", type=int, default=cfg.get("scale", 4), help="Window display scale multiplier (e.g. 4 or 5 for large modern screens, default: %(default)s)")
     parser.add_argument("--fullscreen", action="store_true", help="Launch play window in borderless full screen mode")
@@ -939,6 +942,11 @@ def main():
     parser.add_argument("--paste-block", metavar="DIR", default=None, help="Print the copy-paste block for an already staged folder (or a metadata.json) and exit. A normal run also writes it to paste.txt.")
     parser.add_argument("--print-upload-plan", action="store_true", help="Explain what can and cannot be automated per platform, then exit")
     args = parser.parse_args()
+    try:
+        args.players, args.two_human = resolve_controllers(
+            args.players, args.human, args.ai, args.two_human, args.model)
+    except ValueError as exc:
+        parser.error(str(exc))
     if args.narrate_folder:
         if args.voice_model != "elevenlabs" or not args.narration_json or not args.voice or args.no_voice:
             parser.error("--narrate-folder requires --voice --voice-model elevenlabs --narration-json FILE")
@@ -1492,6 +1500,20 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+
+
+def resolve_controllers(players, human, ai, two_human, model):
+    """Normalize explicit controller selection while preserving old commands."""
+    if human and ai:
+        raise ValueError("Choose --human or --ai, not both")
+    if (human or two_human) and model:
+        raise ValueError("Human-only play cannot use --model; use --ai for a bot")
+    if two_human and (ai or players == 1):
+        raise ValueError("--two-human means --players 2 --human")
+    if ai and not model:
+        raise ValueError("--ai/--bot requires --model CHECKPOINT")
+    count = players or (2 if two_human or model else 1)
+    return count, two_human or (human and count == 2)
 
 
 def make_ensemble_evidence(game, players, events, fps, duration, two_human=False, integration=None):

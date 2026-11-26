@@ -65,7 +65,7 @@ python studio.py \
 ```
 
 Replace the game ID with one from `python studio.py --list-games`. For two human
-players, replace `--players 1` with `--two-human` and select the correct 2P mode
+players, use `--players 2 --human` and select the correct 2P mode
 in the game. Do not pass a checkpoint `--model` for human-only play.
 
 Close the game window when finished. Leave WSL/the laptop awake while it renders,

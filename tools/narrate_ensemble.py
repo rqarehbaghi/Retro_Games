@@ -62,19 +62,33 @@ ROLES = {
 def validate(script, evidence):
     segments = script.get('segments')
     if not isinstance(segments, list) or len(segments) != len(evidence['segments']):
-        raise ValueError('Expected exactly one passage per supplied time slot')
+        raise ValueError('Expected exactly %d passages with slots %s; received %s. No extra outro slot.' % (len(evidence['segments']), [s['id'] for s in evidence['segments']], len(segments) if isinstance(segments, list) else 'non-list'))
     for actual, expected in zip(segments, evidence['segments']):
         if actual.get('slot') != expected['id']:
             raise ValueError('Incorrect time-slot order')
         if not isinstance(actual.get('text'), str) or not actual['text'].strip():
             raise ValueError('Missing spoken text')
         if len(actual['text'].split()) > expected['max_words']:
-            raise ValueError('Word budget exceeded: ' + expected['id'])
+            raise ValueError('Word budget exceeded in %s: %d words, maximum %d. Shorten this passage.' % (expected['id'], len(actual['text'].split()), expected['max_words']))
         refs = actual.get('evidence_ids')
         allowed = {o['id'] for o in expected['observations']}
         if not isinstance(refs, list) or not refs or any(r not in allowed for r in refs):
             raise ValueError('Unsupported evidence ID')
     return script
+
+
+def narration_schema(evidence):
+    slots = evidence['segments']
+    return {'type': 'object', 'additionalProperties': False,
+            'properties': {'segments': {'type': 'array',
+                'minItems': len(slots), 'maxItems': len(slots),
+                'items': {'type': 'object', 'additionalProperties': False,
+                    'properties': {'slot': {'type': 'string', 'enum': [s['id'] for s in slots]},
+                                   'text': {'type': 'string'},
+                                   'evidence_ids': {'type': 'array', 'minItems': 1,
+                                                    'items': {'type': 'string'}}},
+                    'required': ['slot', 'text', 'evidence_ids']}}},
+            'required': ['segments']}
 
 
 def main():
@@ -111,10 +125,7 @@ def main():
         temp.write_text(json.dumps(value, indent=2), encoding='utf-8')
         temp.replace(path)
     save('manifest.json', manifest)
-    schema = {'type': 'object', 'properties': {'segments': {'type': 'array', 'items': {
-        'type': 'object', 'properties': {'slot': {'type': 'string'}, 'text': {'type': 'string'},
-        'evidence_ids': {'type': 'array', 'items': {'type': 'string'}}},
-        'required': ['slot', 'text', 'evidence_ids']}}}, 'required': ['segments']}
+    schema = narration_schema(evidence)
     outputs = []
     for stage, model in zip(['draft_a', 'draft_b', 'master'], models):
         path = args.out_dir / (stage + '.json')
@@ -122,7 +133,7 @@ def main():
             outputs.append(validate(json.loads(path.read_text()), evidence))
             print('Kept', stage, flush=True)
             continue
-        role = ROLES[stage]
+        role = ROLES[stage] + '\nUse exactly these slots in order: ' + ', '.join(s['id'] for s in evidence['segments']) + '. Put the closing invitation inside the last slot; do not add an outro.'
         prompt = RULES + '\nROLE: ' + role + '\nORIGINAL EVIDENCE:\n' + json.dumps(evidence)
         if stage == 'master':
             prompt += '\nDRAFTS (not factual authority):\n' + json.dumps(outputs)
@@ -146,7 +157,7 @@ def main():
             except (ValueError, TypeError, KeyError) as exc:
                 if attempt:
                     raise
-                prompt += '\nPrevious output failed validation: ' + str(exc) + '. Regenerate within all limits.'
+                prompt += '\nPREVIOUS OUTPUT (data to repair):\n' + answer.get('response', '') + '\nREPAIR REQUIRED: ' + str(exc) + '\nReturn the complete corrected JSON. Preserve valid slots. The closing invitation belongs INSIDE the final supplied slot, within its word budget; never add an outro slot.'
         save(stage + '.json', script)
         save(stage + '_metrics.json', {'seconds': time.monotonic() - started, 'model': model})
         readable = '\n\n'.join('%s–%ss\n%s' % (slot['start'], slot['end'], seg['text'])

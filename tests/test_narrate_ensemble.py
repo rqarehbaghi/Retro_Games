@@ -3,7 +3,7 @@ from pathlib import Path
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
-from narrate_ensemble import validate
+from narrate_ensemble import validate, narration_schema
 
 
 class EnsembleValidationTest(unittest.TestCase):
@@ -19,3 +19,11 @@ class EnsembleValidationTest(unittest.TestCase):
         for text, refs in [('Okay.', ['invented']), ('One two three four five', ['e1'])]:
             with self.assertRaises(ValueError):
                 validate({'segments': [{'slot': 's1', 'text': text, 'evidence_ids': refs}]}, self.evidence)
+
+    def test_schema_forbids_extra_outro(self):
+        schema = narration_schema(self.evidence)['properties']['segments']
+        self.assertEqual(schema['minItems'], 1)
+        self.assertEqual(schema['maxItems'], 1)
+        self.assertEqual(schema['items']['properties']['slot']['enum'], ['s1'])
+        with self.assertRaisesRegex(ValueError, 'No extra outro'):
+            validate({'segments': []}, self.evidence)

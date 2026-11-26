@@ -448,17 +448,52 @@ def configured_repress_index(buttons, config):
     return buttons.index(button) if isinstance(button, str) and button in buttons else None
 
 
+def latest_session_save(root, game, players):
+    from pathlib import Path
+    # UTC timestamps in names determine order, independent of file copy times.
+    saves = sorted((Path(root) / game / f"{players}p").glob("????????T??????_????????????Z.state"))
+    return str(saves[-1]) if saves else None
+
+
+def write_session_save(root, game, players, data):
+    import gzip
+    import datetime
+    from pathlib import Path
+    directory = Path(root) / game / f"{players}p"
+    directory.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S_%f")
+    # Extra nanosecond digits avoid collisions in rapid saves.
+    target = directory / (stamp + f"{time.time_ns() % 1000000:06d}Z.state")
+    temporary = target.with_suffix('.tmp')
+    with gzip.open(temporary, 'wb') as handle:
+        handle.write(data)
+    os.replace(temporary, target)
+    return str(target)
+
+
 def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
                mode="versus", players=2, boot_screen=False, p2_human=False,
                fullscreen=False, render_mp4=True, deterministic=False,
-               ai_player=None):
+               ai_player=None, autosave_root=None, fresh=False):
     os.makedirs(record_dir, exist_ok=True)
     import custom_integrations
     custom_integrations.register()
     before_bk2s = set(glob.glob(os.path.join(record_dir, "*.bk2")))
     session_start = time.time()
 
-    if boot_screen or (isinstance(state, str) and state.upper() == "NONE"):
+    resume_path = None
+    if autosave_root and not (fresh or boot_screen or state):
+        resume_path = latest_session_save(autosave_root, game, players)
+    if resume_path:
+        state_val = retro.State.NONE
+        print(f"Resuming: {resume_path}")
+    elif fresh or (autosave_root and boot_screen):
+        state_val = retro.State.NONE
+        print("Starting fresh from power-on; previous saves are preserved.")
+    elif autosave_root and not state and not boot_screen:
+        state_val = retro.State.NONE
+        print("No session save found; starting from power-on.")
+    elif boot_screen or (isinstance(state, str) and state.upper() == "NONE"):
         # Prefer a saved boot state over an unreliable cold boot -- see
         # _boot_state_name. Falls back to State.NONE when no boot.state exists.
         boot_name = _boot_state_name(game)
@@ -514,6 +549,12 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
             use_restricted_actions=retro.Actions.ALL,
             render_mode="rgb_array",
         )
+
+    if resume_path:
+        import gzip
+        with gzip.open(resume_path, 'rb') as saved:
+            env.unwrapped.initial_state = saved.read()
+        env.unwrapped.statename = "resume"
 
     # Cold boot (State.NONE) needs two things fixed up before reset(), and both
     # only bite when recording is on:
@@ -1245,6 +1286,15 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
             announced_retro_end = False
 
     signal.signal(signal.SIGINT, _old_sigint)
+    if autosave_root:
+        try:
+            saved = write_session_save(autosave_root, game, num_players,
+                                       env.unwrapped.em.get_state())
+            print(f"Saved position: {saved}")
+            import shutil
+            shutil.copy2(saved, os.path.join(record_dir, "session_end.state"))
+        except Exception as exc:
+            print(f"WARNING: could not save position: {exc}. Recording is preserved.")
 
     # stable-retro's env.close() does NOT finalize the movie -- the .bk2 is
     # only written when the Movie object is closed, which stop_record does.

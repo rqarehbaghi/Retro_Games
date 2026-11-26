@@ -776,7 +776,7 @@ by the studio pipeline into `%s`.
 
 ## What I want
 
-This is my own gameplay -- one human, one sitting, no save states. Help me put
+This is my own gameplay -- one recorded session; it may resume from a saved position. Help me put
 it on YouTube, TikTok and Instagram.
 
 Rules, and they are not negotiable:
@@ -886,6 +886,7 @@ def main():
     parser.add_argument("--list-all-games", action="store_true", help="List all known game definitions in stable-retro (including unimported ones) and exit")
     parser.add_argument("--game", help="stable-retro game id. Required unless --brief, --paste-block, --list-games or --print-upload-plan.")
     parser.add_argument("--players", type=int, choices=[1, 2], default=None, help="How many players the game runs. Defaults to 2 when there is a --model or --two-human, 1 otherwise. --players 1 WITH a --model means the AI plays alone, with no human in the match.")
+    parser.add_argument("--fresh", action="store_true", help="Start from power-on instead of automatically resuming the newest saved position.")
     parser.add_argument("--boot-screen", action="store_true", help="Start from the power-on title screen (state=NONE) instead of a mid-level save state, so you can pick 1P/2P and the game mode yourself. Passed through to the play window.")
     parser.add_argument("--two-human", action="store_true", help="Compatibility alias for --players 2 --human.")
     controllers = parser.add_mutually_exclusive_group()
@@ -942,6 +943,8 @@ def main():
     parser.add_argument("--paste-block", metavar="DIR", default=None, help="Print the copy-paste block for an already staged folder (or a metadata.json) and exit. A normal run also writes it to paste.txt.")
     parser.add_argument("--print-upload-plan", action="store_true", help="Explain what can and cannot be automated per platform, then exit")
     args = parser.parse_args()
+    if args.state and (args.fresh or args.boot_screen):
+        parser.error("Use --state OR --fresh/--boot-screen, not both")
     try:
         args.players, args.two_human = resolve_controllers(
             args.players, args.human, args.ai, args.two_human, args.model)
@@ -1195,7 +1198,8 @@ def main():
             play_match(args.game, args.state, None, record_dir, players=2,
                        p2_human=True, mode=args.mode, boot_screen=args.boot_screen,
                        scale=args.scale, fullscreen=args.fullscreen,
-                       render_mp4=False)
+                       autosave_root=os.path.join(os.path.dirname(os.path.abspath(__file__)), "studio_out", "save_states"),
+                       fresh=args.fresh, render_mp4=False)
         elif args.model:
             # A model means an AI player, whatever --players says. This used to
             # fall through to the single-player branch below, which passes NO
@@ -1208,7 +1212,8 @@ def main():
                        players=n_players,
                        mode=args.mode, boot_screen=args.boot_screen,
                        scale=args.scale, fullscreen=args.fullscreen,
-                       render_mp4=False, deterministic=args.deterministic,
+                       autosave_root=os.path.join(os.path.dirname(os.path.abspath(__file__)), "studio_out", "save_states"),
+                       fresh=args.fresh, render_mp4=False, deterministic=args.deterministic,
                        ai_player=args.player)
         elif n_players == 1:
             print(f"Starting {args.game} -- single player (gamepad & keyboard enabled). "
@@ -1216,14 +1221,16 @@ def main():
             play_match(args.game, args.state, None, record_dir, players=1,
                        boot_screen=args.boot_screen,
                        scale=args.scale, fullscreen=args.fullscreen,
-                       render_mp4=False)
+                       autosave_root=os.path.join(os.path.dirname(os.path.abspath(__file__)), "studio_out", "save_states"),
+                       fresh=args.fresh, render_mp4=False)
         else:
             print("WARNING: --players 2 with no --model means the AI player is "
                   "picking random buttons. Fine for a pipeline test, weak as content.\n")
             play_match(args.game, args.state, None, record_dir, players=2,
                        mode=args.mode, boot_screen=args.boot_screen,
                        scale=args.scale, fullscreen=args.fullscreen,
-                       render_mp4=False, deterministic=args.deterministic,
+                       autosave_root=os.path.join(os.path.dirname(os.path.abspath(__file__)), "studio_out", "save_states"),
+                       fresh=args.fresh, render_mp4=False, deterministic=args.deterministic,
                        ai_player=args.player)
 
         from recording import require_single_replay, render_to_mp4

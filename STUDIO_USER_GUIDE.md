@@ -188,3 +188,16 @@ Code-path tests are not a guarantee of entertaining writing, accurate events for
 
 `--bot` is an alias for `--ai`. Explicit AI selection requires a checkpoint.
 Older commands still work; `--two-human` is a compatibility alias.
+
+## Automatic session resume
+
+Studio saves the emulator position on normal window close or Ctrl+C, before
+video processing. Saves live in `studio_out/save_states/<game>/<players>p/`,
+ordered by UTC timestamp in their filenames, with a copy named
+`session_end.state` beside the recording. The next play resumes the newest
+save for that game and player count. No save means power-on. `--fresh` starts
+from power-on without deleting old saves; `--boot-screen` is a compatibility
+alias. An explicit `--state NAME` overrides automatic resume and cannot be
+combined with either fresh-start flag. Abrupt process termination or power
+loss cannot save. Use --fresh only for the first chapter, then omit it to
+continue the next chapter in a new recording.

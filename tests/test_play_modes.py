@@ -67,3 +67,24 @@ class ContinuousRecordingTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'Multiple replay segments'):
                 recording.require_single_replay(directory, set())
             self.assertEqual(first.read_bytes(), b'gameplay')
+
+
+class SessionSaveTests(unittest.TestCase):
+    def test_timestamp_selection_and_player_isolation(self):
+        import tempfile, gzip, time, os
+        tree = ast.parse((Path(__file__).resolve().parents[1] / 'play_engine.py').read_text())
+        helper = ast.Module(body=[n for n in tree.body if isinstance(n, ast.FunctionDef)
+                                  and n.name in ('latest_session_save', 'write_session_save')], type_ignores=[])
+        scope = {'time': time, 'os': os}
+        exec(compile(helper, 'play_engine.py', 'exec'), scope)
+        with tempfile.TemporaryDirectory() as directory:
+            write, latest = scope['write_session_save'], scope['latest_session_save']
+            self.assertIsNone(latest(directory, 'game', 1))
+            first = write(directory, 'game', 1, b'first')
+            second = write(directory, 'game', 1, b'second')
+            os.utime(first, (9999999999, 9999999999))
+            self.assertEqual(latest(directory, 'game', 1), second)
+            self.assertIsNone(latest(directory, 'game', 2))
+            self.assertIsNone(latest(directory, 'other', 1))
+            with gzip.open(second, 'rb') as handle:
+                self.assertEqual(handle.read(), b'second')

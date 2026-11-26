@@ -351,3 +351,16 @@ signals. The game's own continue/game-over screens remain playable and recording
 stays continuous. Studio rejects ambiguous multiple new replay segments rather
 than exporting only the last. For --from-mp4, a same-stem replay takes precedence;
 multiple unmatched siblings must not supply guessed event evidence.
+
+## Automatic session resume
+
+Studio saves the emulator position on normal window close or Ctrl+C, before
+video processing. Saves live in `studio_out/save_states/<game>/<players>p/`,
+ordered by UTC timestamp in their filenames, with a copy named
+`session_end.state` beside the recording. The next play resumes the newest
+save for that game and player count. No save means power-on. `--fresh` starts
+from power-on without deleting old saves; `--boot-screen` is a compatibility
+alias. An explicit `--state NAME` overrides automatic resume and cannot be
+combined with either fresh-start flag. Abrupt process termination or power
+loss cannot save. Use --fresh only for the first chapter, then omit it to
+continue the next chapter in a new recording.

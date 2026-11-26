@@ -529,6 +529,7 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
         env.unwrapped.initial_state = env.unwrapped.em.get_state()
 
     obs, info = env.reset()
+    announced_retro_end = False
     buttons = env.unwrapped.buttons
     num_players = getattr(env.unwrapped, "players", 1)
 
@@ -1219,8 +1220,7 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
         # games.json's `episode_end` is REPORTED here, never acted on. Ending
         # the round on it was tried and the owner rejected it: a live session
         # is not a training episode, and restarting the game out from under
-        # the player is not wanted. Only retro's own done flag resets, exactly
-        # as it did before. The note still earns its place -- a dead board
+        # the player is not wanted. Retro's own done flag is also informational. The note still earns its place -- a dead board
         # that keeps being played looks identical to a frozen engine, and not
         # being able to tell those apart cost a whole session of debugging.
         if episode_end_cfg and game_vars is not None and not announced_end:
@@ -1234,34 +1234,15 @@ def play_match(game, state, model_path, record_dir, scale=4, fps_cap=60,
             except Exception:                                    # noqa: BLE001
                 pass
 
-        if terminated or truncated:
-            resets += 1
-            print(f"Round finished at step {step_count}! Resetting...")
-            obs, info = env.reset()
-            step_count = 0
-            # Refill the AI's frame-stack from the fresh round so it doesn't
-            # keep reacting to stale frames from the round that just ended.
-            if is_macro:
-                macro_state = "IDLE"
-                macro_ctrl = None
-                macro_pending = None
-                macro_plan_queue.clear()
-                prev_p2_row = None
-                initial_p2_type = None
-                # The gates carry per-round counters. Rounds only started
-                # resetting when episode_end was wired up, so before that
-                # these could never go stale; now they can, and a settle gate
-                # holding the previous round's frame count would let the first
-                # decision of a new round read a half-drawn board.
-                if settle_gate is not None:
-                    settle_gate.reset()
-                if transition_gate is not None:
-                    transition_gate.reset()
-            if model is not None and is_image:
-                reset_frame = ai_frame(obs, env.unwrapped.get_ram())
-                frame_stack.clear()
-                for _ in range(4):
-                    frame_stack.append(reset_frame)
+        # Interactive play is continuous. Integration episode boundaries are
+        # training hints, not permission to reboot the user's game or split
+        # their recording. Let the game handle its own game-over/continue UI.
+        if (terminated or truncated) and not announced_retro_end:
+            announced_retro_end = True
+            print(f"Integration episode ended at step {step_count}; "
+                  "play and recording continue without reset.")
+        elif not (terminated or truncated):
+            announced_retro_end = False
 
     signal.signal(signal.SIGINT, _old_sigint)
 

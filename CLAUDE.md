@@ -345,3 +345,9 @@ session and a read-only sandbox. It cannot inspect or modify the repository.
   and consecutive jump actions merge into one held press (no release frame).
 - Uploading is manual by design: only TikTok supports post-privately-then-
   review with an unaudited client. See `studio.py --print-upload-plan`.
+
+Interactive play must never reset the emulator on integration terminated/truncated
+signals. The game's own continue/game-over screens remain playable and recording
+stays continuous. Studio rejects ambiguous multiple new replay segments rather
+than exporting only the last. For --from-mp4, a same-stem replay takes precedence;
+multiple unmatched siblings must not supply guessed event evidence.

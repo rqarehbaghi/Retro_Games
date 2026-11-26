@@ -1161,6 +1161,12 @@ def main():
         # which is exactly the case --from-mp4 exists to serve.
         siblings = sorted(glob.glob(os.path.join(
             os.path.dirname(os.path.abspath(args.from_mp4)), "*.bk2")))
+        matching = os.path.splitext(os.path.abspath(args.from_mp4))[0] + ".bk2"
+        if matching in siblings:
+            siblings = [matching]
+        elif len(siblings) > 1:
+            print("WARNING: multiple sibling replays; skipping ambiguous event evidence.")
+            siblings = []
         if siblings:
             bk2_path = os.path.join(folder, os.path.basename(siblings[0]))
             if os.path.abspath(siblings[0]) != os.path.abspath(bk2_path):
@@ -1220,8 +1226,8 @@ def main():
                        render_mp4=False, deterministic=args.deterministic,
                        ai_player=args.player)
 
-        from recording import find_new_bk2, render_to_mp4
-        bk2_path = find_new_bk2(record_dir, before, started_at=started)
+        from recording import require_single_replay, render_to_mp4
+        bk2_path = require_single_replay(record_dir, before, started_at=started)
         if not bk2_path:
             sys.exit("No .bk2 was written -- nothing to render.")
         if os.path.dirname(os.path.abspath(bk2_path)) != os.path.abspath(folder):

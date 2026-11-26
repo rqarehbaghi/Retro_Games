@@ -59,6 +59,15 @@ def find_all_new_bk2(record_dir, before, started_at=None):
                   key=os.path.getmtime)
 
 
+def require_single_replay(record_dir, before, started_at=None):
+    """Never silently discard earlier gameplay by choosing the newest movie."""
+    paths = find_all_new_bk2(record_dir, before, started_at)
+    if len(paths) > 1:
+        raise RuntimeError("Multiple replay segments were recorded; all are preserved. "
+                           "Refusing to export only the last segment: " + ", ".join(paths))
+    return paths[0] if paths else None
+
+
 def render_to_mp4(bk2_path, mp4_path=None, check=True):
     """Replay a .bk2 through the emulator and encode it. Needs ffmpeg on PATH.
 

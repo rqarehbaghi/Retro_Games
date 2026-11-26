@@ -44,3 +44,26 @@ class StudioControllerTests(unittest.TestCase):
                        (1, False, True, False, None), (2, False, True, True, 'm')]:
             with self.assertRaises(ValueError):
                 resolve(*values)
+
+
+class ContinuousRecordingTests(unittest.TestCase):
+    def test_interactive_loop_never_resets(self):
+        tree = ast.parse((Path(__file__).resolve().parents[1] / 'play_engine.py').read_text())
+        play = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'play_match')
+        for loop in (n for n in ast.walk(play) if isinstance(n, ast.While)):
+            resets = [n for n in ast.walk(loop) if isinstance(n, ast.Call)
+                      and isinstance(n.func, ast.Attribute) and n.func.attr == 'reset'
+                      and isinstance(n.func.value, ast.Name) and n.func.value.id == 'env']
+            self.assertEqual(resets, [])
+
+    def test_multiple_recordings_are_not_silently_discarded(self):
+        import tempfile
+        import recording
+        with tempfile.TemporaryDirectory() as directory:
+            first = Path(directory) / 'game-000000.bk2'
+            first.write_bytes(b'gameplay')
+            self.assertEqual(recording.require_single_replay(directory, set()), str(first))
+            (Path(directory) / 'game-000001.bk2').write_bytes(b'boot screen')
+            with self.assertRaisesRegex(RuntimeError, 'Multiple replay segments'):
+                recording.require_single_replay(directory, set())
+            self.assertEqual(first.read_bytes(), b'gameplay')

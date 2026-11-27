@@ -1472,6 +1472,23 @@ def main():
             print(f"  WARNING: voice failed ({exc.__class__.__name__}: {exc})")
             print( "           the videos and narration.txt are unaffected.")
 
+    if cfg.get("branding", {}).get("enabled"):
+        from overlays import brand_video
+        branded = []
+        for aspect, source in zip(("16x9", "9x16"), (wide, tall)):
+            target = os.path.join(folder, f"{slug}_{aspect}_branded.mp4")
+            try:
+                print(f"Adding intro and outro: {os.path.basename(target)}")
+                branded.append(brand_video(source, target, cfg["branding"]))
+                if aspect == "16x9":
+                    wide = target
+                else:
+                    tall = target
+            except Exception as exc:
+                print(f"WARNING: branding failed; original exports preserved: {exc}")
+        with open(os.path.join(folder, "branding.json"), "w") as handle:
+            json.dump(branded, handle, indent=2)
+
     if not args.no_captions:
         with open(os.path.join(folder, "captions.txt"), "w") as handle:
             for at, text in lines:

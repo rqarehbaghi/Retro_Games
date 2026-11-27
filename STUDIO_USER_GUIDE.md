@@ -201,3 +201,20 @@ alias. An explicit `--state NAME` overrides automatic resume and cannot be
 combined with either fresh-start flag. Abrupt process termination or power
 loss cannot save. Use --fresh only for the first chapter, then omit it to
 continue the next chapter in a new recording.
+
+## Automatic channel branding
+
+Studio uses the `branding` block in studio.json to create two additional
+`*_16x9_branded.mp4` and `*_9x16_branded.mp4` exports. These contain a logo
+opening with Intro.wav, the full finished gameplay (with narration when
+successful), and a logo closing with Outro.wav. The actual WAV durations
+control the bumpers. Game audio is retained during gameplay; it fades out
+briefly at the end before the outro starts. Clean and intermediate exports
+are retained. UPLOAD_BRIEF.md points to the branded outputs when successful.
+
+Assets are tracked in assets/branding/RetroNESTV, so git pull brings them into
+WSL without requiring the NAS. Set branding.enabled to false to disable.
+No extra command flags are needed. branding.json records the selected sources,
+assets and intro time offset; standalone narration timestamps refer to the
+unbranded gameplay. The first implementation uses static centered logos with
+short fades, not character animation. Branding adds a final encoding pass.

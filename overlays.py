@@ -714,3 +714,49 @@ def save_spec(spec, path):
     with open(path, "w") as handle:
         json.dump(spec, handle, indent=2)
     return path
+
+
+def brand_video(source, destination, config):
+    """Wrap a finished movie in local logo/music bumpers; preserve its timeline."""
+    from fractions import Fraction
+    root = os.path.dirname(os.path.abspath(__file__))
+    assets = [os.path.join(root, config[key]) for key in ('logo', 'intro', 'outro')]
+    for asset in assets:
+        if not os.path.isfile(asset):
+            raise FileNotFoundError('Missing branding asset: ' + asset)
+    def probe(path):
+        return json.loads(subprocess.check_output(['ffprobe', '-v', 'error',
+            '-show_streams', '-show_format', '-of', 'json', path], text=True))
+    info = probe(source)
+    video = next(s for s in info['streams'] if s['codec_type'] == 'video')
+    width, height = video['width'], video['height']
+    fps = str(Fraction(video['avg_frame_rate']))
+    duration = float(info['format']['duration'])
+    intro, outro = [float(probe(a)['format']['duration']) for a in assets[1:]]
+    logo_size = int(min(width, height) * .8) // 2 * 2
+    graph = [f'[1:v]scale={logo_size}:{logo_size}:force_original_aspect_ratio=decrease,'
+             f'pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=0x101827,setsar=1,fps={fps},split=2[li][lo]',
+             f'[li]trim=duration={intro},setpts=PTS-STARTPTS,fade=t=in:st=0:d=0.15[iv]',
+             f'[lo]trim=duration={outro},setpts=PTS-STARTPTS,fade=t=out:st={max(0,outro-.2)}:d=0.2[ov]',
+             f'[0:v]fps={fps},setsar=1,format=yuv420p,setpts=PTS-STARTPTS[gamev]',
+             f'[2:a]aresample=48000,aformat=channel_layouts=stereo,atrim=duration={intro},asetpts=PTS-STARTPTS[ia]',
+             f'[3:a]aresample=48000,aformat=channel_layouts=stereo,atrim=duration={outro},asetpts=PTS-STARTPTS[oa]']
+    if any(s['codec_type'] == 'audio' for s in info['streams']):
+        graph.append(f'[0:a]aresample=48000,aformat=channel_layouts=stereo,apad,atrim=duration={duration},asetpts=PTS-STARTPTS,afade=t=out:st={max(0,duration-.15)}:d=0.15[ga]')
+    else:
+        graph.append(f'anullsrc=r=48000:cl=stereo,atrim=duration={duration}[ga]')
+    graph.append('[iv][ia][gamev][ga][ov][oa]concat=n=3:v=1:a=1[v][a]')
+    temporary = os.path.splitext(destination)[0] + '.tmp.mp4'
+    try:
+        subprocess.run(['ffmpeg', '-nostdin', '-y', '-v', 'error', '-i', source,
+            '-loop', '1', '-i', assets[0], '-i', assets[1], '-i', assets[2],
+            '-filter_complex_threads', '1', '-filter_complex', ';'.join(graph),
+            '-map', '[v]', '-map', '[a]', '-c:v', 'libx264', '-preset', 'veryfast',
+            '-crf', '18', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k',
+            '-movflags', '+faststart', temporary], check=True)
+        os.replace(temporary, destination)
+    finally:
+        if os.path.exists(temporary):
+            os.remove(temporary)
+    return {'source': source, 'output': destination, 'intro_seconds': intro,
+            'outro_seconds': outro, 'gameplay_offset_seconds': intro, 'assets': config}

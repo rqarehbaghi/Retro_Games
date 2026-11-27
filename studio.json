@@ -3,7 +3,13 @@
   "_writer": "'chatgpt' shells out to the Codex CLI authenticated to the existing ChatGPT subscription. 'ollama' is local and free. No separately billed writer API exists. 'auto' tries ChatGPT and then Ollama; pin a backend when it must not switch.",
   "_style": "size_div divides the SHORT edge of the frame, so one setting renders the same size in both outputs and a bigger number means smaller text. case: sentence|upper|lower|none. Depth is border + shadow; box draws a solid plate instead and is off. Captions stay up for length/cps seconds, clamped between min_hold and max_hold -- cps 10 is deliberately slower than Netflix (20) or the BBC (~15), because those assume the subtitle is what you are looking at and here the viewer is also watching the game. Anything here can be overridden per caption in a staged overlays.json.",
   "_fonts": "Press Start 2P is fixed-cell at about one em per character, so caption LENGTH decides the rendered size more than size_div does. Captions wrap to three lines, so keep them under about 70 characters. Press Start 2P itself is installed by 'bash tools/get_fonts.sh'; 'fc-list' lists every face this machine has.",
-  "watermark": "@PlayerTwoIsABot",
+  "watermark": "@RetroNESTV",
+  "branding": {
+    "enabled": true,
+    "logo": "assets/branding/RetroNESTV/Main_Logo.png",
+    "intro": "assets/branding/RetroNESTV/Intro.wav",
+    "outro": "assets/branding/RetroNESTV/Outro.wav"
+  },
   "level": "World 1-1",
   "short_seconds": 0,
   "writer": "chatgpt",
